@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neues Ticket | Ticketsystem</title>
+    <link rel="stylesheet" href="/style.css?v=2">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <div class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                        </div>
+                        <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
+                    </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/ticket/new" class="nav-link active">Neues Ticket</a>
+                        <a href="/admin/systems" class="nav-link">Systeme</a>
+                        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Breadcrumbs -->
+        <nav class="flex mb-6" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-4">
+                <li><a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a></li>
+                <li class="text-gray-400">/</li>
+                <li class="text-gray-900 font-medium">Neues Ticket</li>
+            </ol>
+        </nav>
+
+        <div class="card">
+            <div class="card-header">
+                <h2 class="text-xl font-bold text-gray-900">Neues Ticket erstellen</h2>
+            </div>
+            
+            <div class="card-body">
+                <form method="post" action="/ticket/new" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Typ</label>
+                            <select name="type" required class="form-select">
+                                <option value="bug">Bug</option>
+                                <option value="feature">Feature</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Priorität</label>
+                            <select name="priority" required class="form-select">
+                                <option value="niedrig">Niedrig</option>
+                                <option value="mittel" selected>Mittel</option>
+                                <option value="hoch">Hoch</option>
+                                <option value="kritisch">Kritisch</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Titel</label>
+                        <input type="text" name="title" required maxlength="200" class="form-input" placeholder="Kurze Beschreibung des Problems">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
+                        <textarea name="description" required rows="4" class="form-textarea" placeholder="Detaillierte Beschreibung..."></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">User</label>
+                            <input type="text" name="username" class="form-input" placeholder="Name des Meldenden">
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Kontakt-E-Mail</label>
+                            <input type="email" name="contact_email" class="form-input" placeholder="email@beispiel.de">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">System</label>
+                            <select name="system_id" class="form-select">
+                                <option value="">-- Keines --</option>
+                                <% systems.forEach(sys => { %>
+                                <option value="<%= sys.id %>"><%= sys.name %></option>
+                                <% }); %>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Standort</label>
+                            <input type="text" name="location" class="form-input" placeholder="z.B. Gebäude A, Raum 101">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Dringlichkeit</label>
+                            <select name="urgency" class="form-select">
+                                <option value="normal" selected>Normal</option>
+                                <option value="safety">Sicherheitsrelevant</option>
+                                <option value="emergency">Notfall</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Zugewiesen an</label>
+                            <select name="assigned_to" class="form-select">
+                                <option value="">-- Nicht zugewiesen --</option>
+                                <% staffList.forEach(s => { %>
+                                <option value="<%= s.id %>"><%= s.name %></option>
+                                <% }); %>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4 pt-4">
+                        <button type="submit" class="btn-primary">Ticket erstellen</button>
+                        <a href="/" class="btn-secondary">Abbrechen</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

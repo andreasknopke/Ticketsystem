@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Components */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+  }
+  
+  .btn-primary {
+    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+  }
+  
+  .btn-secondary {
+    @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-500;
+  }
+  
+  .btn-success {
+    @apply btn bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
+  }
+  
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+  }
+  
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden;
+  }
+  
+  .card-header {
+    @apply px-6 py-4 border-b border-gray-200 bg-gray-50;
+  }
+  
+  .card-body {
+    @apply p-6;
+  }
+  
+  .form-input {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors;
+  }
+  
+  .form-select {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white;
+  }
+  
+  .form-textarea {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors resize-y;
+  }
+  
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  
+  .badge-status-offen {
+    @apply badge bg-amber-100 text-amber-800;
+  }
+  
+  .badge-status-in_bearbeitung {
+    @apply badge bg-blue-100 text-blue-800;
+  }
+  
+  .badge-status-wartend {
+    @apply badge bg-purple-100 text-purple-800;
+  }
+  
+  .badge-status-geschlossen {
+    @apply badge bg-green-100 text-green-800;
+  }
+  
+  .badge-priority-niedrig {
+    @apply badge bg-gray-100 text-gray-800;
+  }
+  
+  .badge-priority-mittel {
+    @apply badge bg-blue-100 text-blue-800;
+  }
+  
+  .badge-priority-hoch {
+    @apply badge bg-amber-100 text-amber-800;
+  }
+  
+  .badge-priority-kritisch {
+    @apply badge bg-red-100 text-red-800;
+  }
+  
+  .badge-type-bug {
+    @apply badge bg-red-100 text-red-800;
+  }
+  
+  .badge-type-feature {
+    @apply badge bg-green-100 text-green-800;
+  }
+  
+  .nav-link {
+    @apply flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-colors;
+  }
+  
+  .nav-link.active {
+    @apply bg-primary-50 text-primary-700;
+  }
+  
+  .sidebar-link {
+    @apply flex items-center gap-3 px-4 py-3 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-50 hover:text-gray-900 transition-colors;
+  }
+  
+  .sidebar-link.active {
+    @apply bg-primary-50 text-primary-700 border-r-2 border-primary-500;
+  }
+  
+  .timeline-item {
+    @apply relative pl-8 pb-8 border-l-2 border-gray-200 last:border-l-0 last:pb-0;
+  }
+  
+  .timeline-dot {
+    @apply absolute -left-2 top-0 w-4 h-4 rounded-full border-2 border-white shadow-sm;
+  }
+  
+  .sla-indicator {
+    @apply flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium;
+  }
+  
+  .sla-fulfilled {
+    @apply sla-indicator bg-green-100 text-green-800;
+  }
+  
+  .sla-warning {
+    @apply sla-indicator bg-amber-100 text-amber-800;
+  }
+  
+  .sla-breached {
+    @apply sla-indicator bg-red-100 text-red-800;
+  }
+}
+
+/* Custom Utilities */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 3px;
+  }
+}

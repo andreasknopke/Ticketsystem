@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticket #<%= ticket.id %> | Ticketsystem</title>
+    <link rel="stylesheet" href="/style.css?v=2">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <div class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                        </div>
+                        <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
+                    </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+                        <a href="/admin/systems" class="nav-link">Systeme</a>
+                        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-600"><%= user %></span>
+                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Breadcrumbs -->
+        <nav class="flex mb-6" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-4">
+                <li>
+                    <a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a>
+                </li>
+                <li class="text-gray-400">/</li>
+                <li class="text-gray-900 font-medium">Ticket #<%= ticket.id %></li>
+            </ol>
+        </nav>
+
+        <!-- Header with Status -->
+        <div class="mb-8">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-900"><%= ticket.title %></h1>
+                    <p class="text-sm text-gray-500 mt-1">Erstellt am <%= formatDateTime(ticket.created_at) %></p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="badge badge-status-<%= ticket.status %>"><%= toTitle(ticket.status) %></span>
+                    <span class="badge badge-priority-<%= ticket.priority %>"><%= toTitle(ticket.priority) %></span>
+                    <span class="badge badge-type-<%= ticket.type %>"><%= ticket.type.toUpperCase() %></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Left Column: Main Content -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- SLA Status -->
+                <% if (sla && sla.firstResponseDue) { %>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            SLA Status
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="p-4 rounded-lg <%= sla.firstResponseStatus === 'fulfilled' ? 'bg-green-50 border border-green-200' : sla.firstResponseStatus === 'breached' ? 'bg-red-50 border border-red-200' : 'bg-amber-50 border border-amber-200' %>">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="text-sm font-medium text-gray-700">First Response</span>
+                                    <% if (sla.firstResponseStatus === 'fulfilled') { %>
+                                        <span class="badge bg-green-100 text-green-800">Erfüllt</span>
+                                    <% } else if (sla.firstResponseStatus === 'breached') { %>
+                                        <span class="badge bg-red-100 text-red-800">Verletzt</span>
+                                    <% } else { %>
+                                        <span class="badge bg-amber-100 text-amber-800">Ausstehend</span>
+                                    <% } %>
+                                </div>
+                                <p class="text-xs text-gray-500">Fällig bis: <%= formatDateTime(sla.firstResponseDue) %></p>
+                                <% if (sla.firstResponseAt) { %>
+                                    <p class="text-xs text-gray-500">Erledigt: <%= formatDateTime(sla.firstResponseAt) %></p>
+                                <% } %>
+                            </div>
+                            <div class="p-4 rounded-lg <%= sla.resolutionStatus === 'fulfilled' ? 'bg-green-50 border border-green-200' : sla.resolutionStatus === 'breached' ? 'bg-red-50 border border-red-200' : 'bg-amber-50 border border-amber-200' %>">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="text-sm font-medium text-gray-700">Resolution</span>
+                                    <% if (sla.resolutionStatus === 'fulfilled') { %>
+                                        <span class="badge bg-green-100 text-green-800">Erfüllt</span>
+                                    <% } else if (sla.resolutionStatus === 'breached') { %>
+                                        <span class="badge bg-red-100 text-red-800">Verletzt</span>
+                                    <% } else { %>
+                                        <span class="badge bg-amber-100 text-amber-800">Ausstehend</span>
+                                    <% } %>
+                                </div>
+                                <p class="text-xs text-gray-500">Fällig bis: <%= formatDateTime(sla.resolutionDue) %></p>
+                                <% if (sla.resolutionAt) { %>
+                                    <p class="text-xs text-gray-500">Erledigt: <%= formatDateTime(sla.resolutionAt) %></p>
+                                <% } %>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <% } %>
+
+                <!-- Description -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Beschreibung</h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-gray-700 whitespace-pre-wrap"><%= ticket.description || 'Keine Beschreibung vorhanden.' %></p>
+                    </div>
+                </div>
+
+                <!-- Comments -->
+                <div class="card" id="comments-section">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Kommentare (<%= notes.length %>)</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="notes-container" class="space-y-4 mb-6">
+                            <% notes.forEach(n => { %>
+                            <div class="flex gap-4 <%= n.is_internal ? 'bg-yellow-50 p-4 rounded-lg border border-yellow-200' : '' %>">
+                                <div class="flex-shrink-0">
+                                    <div class="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
+                                        <span class="text-sm font-medium text-primary-700"><%= n.author ? n.author.charAt(0).toUpperCase() : 'S' %></span>
+                                    </div>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="text-sm font-medium text-gray-900"><%= n.author %></span>
+                                        <span class="text-xs text-gray-500"><%= formatDateTime(n.created_at) %></span>
+                                        <% if (n.is_internal) { %>
+                                            <span class="badge bg-yellow-100 text-yellow-800">Intern</span>
+                                        <% } %>
+                                    </div>
+                                    <p class="text-sm text-gray-700 whitespace-pre-wrap"><%= n.text %></p>
+                                </div>
+                            </div>
+                            <% }); %>
+                            <% if (notes.length === 0) { %>
+                                <p class="text-gray-500 text-center py-4">Noch keine Kommentare vorhanden.</p>
+                            <% } %>
+                        </div>
+
+                        <!-- Add Comment Form -->
+                        <form method="post" action="/ticket/<%= ticket.id %>/notes" class="border-t border-gray-200 pt-6">
+                            <div class="mb-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Neuer Kommentar</label>
+                                <textarea name="text" rows="4" class="form-textarea" placeholder="Ihre Nachricht..." required></textarea>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label class="flex items-center">
+                                    <input type="checkbox" name="is_internal" value="1" checked class="rounded border-gray-300 text-primary-600 focus:ring-primary-500">
+                                    <span class="ml-2 text-sm text-gray-600">Intern (nur für Mitarbeiter sichtbar)</span>
+                                </label>
+                                <button type="submit" class="btn-primary">Kommentar hinzufügen</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Activity Stream -->
+                <% if (activities && activities.length > 0) { %>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Aktivitäten</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="flow-root">
+                            <ul class="-mb-8">
+                                <% activities.forEach((activity, index) => { %>
+                                <li class="relative pb-8 <%= index === activities.length - 1 ? '' : '' %>">
+                                    <div class="relative flex items-start space-x-3">
+                                        <div class="relative">
+                                            <div class="h-8 w-8 rounded-full bg-gray-100 flex items-center justify-center ring-8 ring-white">
+                                                <span class="text-xs font-medium text-gray-600"><%= activity.actor ? activity.actor.charAt(0).toUpperCase() : 'S' %></span>
+                                            </div>
+                                        </div>
+                                        <div class="min-w-0 flex-1">
+                                            <div>
+                                                <div class="text-sm">
+                                                    <span class="font-medium text-gray-900"><%= activity.actor || 'System' %></span>
+                                                    <span class="text-gray-500"> - <%= activity.action_text %></span>
+                                                </div>
+                                                <p class="mt-0.5 text-xs text-gray-500"><%= formatDateTime(activity.created_at) %></p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </li>
+                                <% }); %>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <% } %>
+            </div>
+
+            <!-- Right Column: Sidebar -->
+            <div class="space-y-6">
+                <!-- Actions -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Aktionen</h3>
+                    </div>
+                    <div class="card-body space-y-3">
+                        <form method="post" action="/ticket/<%= ticket.id %>/status" class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Status ändern</label>
+                            <select name="status" class="form-select" onchange="this.form.submit()">
+                                <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
+                                <option value="in_bearbeitung" <%= ticket.status === 'in_bearbeitung' ? 'selected' : '' %>>In Bearbeitung</option>
+                                <option value="wartend" <%= ticket.status === 'wartend' ? 'selected' : '' %>>Wartend</option>
+                                <option value="geschlossen" <%= ticket.status === 'geschlossen' ? 'selected' : '' %>>Geschlossen</option>
+                            </select>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Assignment -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Zuweisung</h3>
+                    </div>
+                    <div class="card-body">
+                        <form method="post" action="/ticket/<%= ticket.id %>/assign" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">System</label>
+                                <select name="system_id" class="form-select">
+                                    <option value="">Kein System</option>
+                                    <% systems.forEach(sys => { %>
+                                    <option value="<%= sys.id %>" <%= ticket.system_id == sys.id ? 'selected' : '' %>><%= sys.name %></option>
+                                    <% }); %>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Zugewiesen an</label>
+                                <select name="assigned_to" class="form-select">
+                                    <option value="">Nicht zugewiesen</option>
+                                    <% staffList.forEach(s => { %>
+                                    <option value="<%= s.id %>" <%= ticket.assigned_to == s.id ? 'selected' : '' %>><%= s.name %></option>
+                                    <% }); %>
+                                </select>
+                            </div>
+                            <button type="submit" class="btn-primary w-full">Speichern</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Ticket Info -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Ticket-Informationen</h3>
+                    </div>
+                    <div class="card-body">
+                        <dl class="space-y-3">
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Typ</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.type.toUpperCase() %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Priorität</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= toTitle(ticket.priority) %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Dringlichkeit</dt>
+                                <dd class="mt-1 text-sm text-gray-900">
+                                    <% if (ticket.urgency === 'emergency') { %>
+                                        <span class="text-red-600 font-medium">Notfall</span>
+                                    <% } else if (ticket.urgency === 'safety') { %>
+                                        <span class="text-orange-600 font-medium">Sicherheitsrelevant</span>
+                                    <% } else { %>
+                                        Normal
+                                    <% } %>
+                                </dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Standort</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.location || '-' %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Kontakt</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.contact_email || '-' %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Erstellt von</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.username || '-' %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Deadline</dt>
+                                <dd class="mt-1 text-sm text-gray-900">
+                                    <form method="post" action="/ticket/<%= ticket.id %>/deadline" class="flex gap-2">
+                                        <input type="datetime-local" name="deadline" 
+                                            value="<%= ticket.deadline ? new Date(ticket.deadline).toISOString().slice(0,16) : '' %>"
+                                            class="form-input text-sm flex-1">
+                                        <button type="submit" class="btn-secondary text-sm">💾</button>
+                                    </form>
+                                </dd>
+                            </div>
+                        </dl>
+                    </div>
+                </div>
+
+                <!-- Feedback -->
+                <% if (ticket.status === 'geschlossen' && !feedback) { %>
+                <div class="card border-primary-200">
+                    <div class="card-header bg-primary-50 border-primary-200">
+                        <h3 class="text-lg font-semibold text-primary-900">Feedback abgeben</h3>
+                    </div>
+                    <div class="card-body">
+                        <form id="feedback-form" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Bewertung</label>
+                                <div class="flex gap-2">
+                                    <% for(let i = 1; i <= 5; i++) { %>
+                                    <button type="button" class="feedback-star text-2xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="<%= i %>">★</button>
+                                    <% } %>
+                                </div>
+                                <input type="hidden" name="rating" id="rating-input">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Kommentar (optional)</label>
+                                <textarea name="comment" rows="3" class="form-textarea text-sm" placeholder="Ihr Feedback..."></textarea>
+                            </div>
+                            <button type="submit" class="btn-primary w-full">Feedback senden</button>
+                        </form>
+                    </div>
+                </div>
+                <% } else if (feedback) { %>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="text-lg font-semibold text-gray-900">Feedback</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="flex items-center gap-1 mb-2">
+                            <% for(let i = 1; i <= 5; i++) { %>
+                            <svg class="w-5 h-5 <%= i <= feedback.rating ? 'text-yellow-400' : 'text-gray-300' %>" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                            </svg>
+                            <% } %>
+                        </div>
+                        <% if (feedback.comment) { %>
+                        <p class="text-sm text-gray-600"><%= feedback.comment %></p>
+                        <% } %>
+                        <p class="text-xs text-gray-400 mt-2"><%= formatDateTime(feedback.created_at) %></p>
+                    </div>
+                </div>
+                <% } %>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Socket.io für Echtzeit-Updates
+        const socket = io();
+        const ticketId = '<%= ticket.id %>';
+        
+        socket.emit('join-ticket', ticketId);
+        
+        socket.on('new-note', (data) => {
+            // Seite neu laden um neuen Kommentar anzuzeigen
+            location.reload();
+        });
+        
+        socket.on('ticket-updated', (data) => {
+            // Optional: UI aktualisieren ohne Neuladen
+        });
+        
+        // Feedback Form
+        const feedbackForm = document.getElementById('feedback-form');
+        if (feedbackForm) {
+            const stars = document.querySelectorAll('.feedback-star');
+            const ratingInput = document.getElementById('rating-input');
+            
+            stars.forEach(star => {
+                star.addEventListener('click', () => {
+                    const rating = star.dataset.rating;
+                    ratingInput.value = rating;
+                    stars.forEach((s, i) => {
+                        s.classList.toggle('text-yellow-400', i < rating);
+                        s.classList.toggle('text-gray-300', i >= rating);
+                    });
+                });
+            });
+            
+            feedbackForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(feedbackForm);
+                const rating = formData.get('rating');
+                const comment = formData.get('comment');
+                
+                if (!rating) {
+                    alert('Bitte geben Sie eine Bewertung ab.');
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`/api/tickets/${ticketId}/feedback`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rating: parseInt(rating), comment })
+                    });
+                    
+                    if (response.ok) {
+                        location.reload();
+                    } else {
+                        alert('Fehler beim Speichern des Feedbacks.');
+                    }
+                } catch (err) {
+                    alert('Fehler beim Speichern des Feedbacks.');
+                }
+            });
+        }
+    </script>
+</body>
+</html>
