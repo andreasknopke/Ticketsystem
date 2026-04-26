@@ -19,3 +19,5 @@ Weitere Informationen: [ticketsystem/README.md](ticketsystem/README.md)
 
 Nutze in Coolify den Dockerfile-Pfad `ticketsystem/Dockerfile`.
 Details zu Environment-Variablen und Persistent Volume stehen in [ticketsystem/README.md](ticketsystem/README.md).
+
+Alternativ (ohne Pfad-Konfiguration in Coolify) kann das Root-Dockerfile `Dockerfile` verwendet werden.

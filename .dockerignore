@@ -1,0 +1,13 @@
+.git
+.gitignore
+
+**/node_modules
+**/npm-debug.log
+
+ticketsystem/.env
+ticketsystem/.env.*
+ticketsystem/tickets.db
+ticketsystem/*.sqlite
+ticketsystem/*.sqlite3
+ticketsystem/error.log
+ticketsystem/output.log
