@@ -127,6 +127,7 @@ BASE_URL=https://deine-domain.tld
 Optional (API/SMTP):
 
 - `API_KEY`, `REQUIRE_API_KEY`
+- `CORS_ALLOWED_ORIGINS` (kommagetrennt, z. B. `https://cf.coolify.kliniksued-rostock.de`)
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
 - `EMAIL_NOTIFY_NEW`, `EMAIL_NOTIFY_STATUS`, `EMAIL_NOTIFY_ASSIGN`, `EMAIL_NOTIFY_COMMENT`
 
@@ -142,6 +143,12 @@ Sie konnen Tickets uber die API erstellen, indem Sie einen `x-api-key` im Header
 ```
 x-api-key: dein-api-key-12345
 Content-Type: application/json
+```
+
+Wenn die API von einer anderen Domain aus dem Browser aufgerufen wird, muss diese Domain in `CORS_ALLOWED_ORIGINS` freigegeben werden, z. B.:
+
+```env
+CORS_ALLOWED_ORIGINS=https://cf.coolify.kliniksued-rostock.de
 ```
 
 **Body (JSON):**

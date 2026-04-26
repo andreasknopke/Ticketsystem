@@ -17,6 +17,28 @@ const PORT = process.env.PORT || 8010;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:' + PORT;
 const DB_FILE = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(__dirname, 'tickets.db');
 
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:8010', 'http://localhost:3000', 'http://localhost:5173'];
+
+function normalizeOrigin(value) {
+    if (!value) return null;
+    try {
+        return new URL(value).origin;
+    } catch {
+        return null;
+    }
+}
+
+const configuredAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => normalizeOrigin(origin.trim()))
+    .filter(Boolean);
+
+const allowedOrigins = new Set(
+    [...DEFAULT_ALLOWED_ORIGINS, BASE_URL, ...configuredAllowedOrigins]
+        .map(normalizeOrigin)
+        .filter(Boolean)
+);
+
 const APP_SECRET = process.env.APP_SECRET;
 const ADMIN_USER = process.env.ADMIN_USER;
 const ADMIN_PASS = process.env.ADMIN_PASS;
@@ -58,6 +80,27 @@ if (!APP_SECRET || ADMIN_USER === undefined || ADMIN_PASS === undefined) {
 }
 
 // Middleware
+app.use('/api', (req, res, next) => {
+    const requestOrigin = normalizeOrigin(req.headers.origin);
+
+    if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+        res.header('Access-Control-Allow-Origin', requestOrigin);
+        res.header('Vary', 'Origin');
+        res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+        res.header('Access-Control-Allow-Credentials', 'true');
+    }
+
+    if (req.method === 'OPTIONS') {
+        if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+            return res.status(403).json({ error: 'Origin nicht erlaubt.' });
+        }
+        return res.sendStatus(204);
+    }
+
+    next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
