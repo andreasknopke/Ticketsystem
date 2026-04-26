@@ -162,6 +162,16 @@ CORS_ALLOWED_ORIGINS=https://cf.coolify.kliniksued-rostock.de
 }
 ```
 
+**Erfolgsantwort:**
+```json
+{
+  "id": 123,
+  "status": "created",
+  "ticketUrl": "https://deine-domain.tld/ticket/123",
+  "apiUrl": "https://deine-domain.tld/api/tickets/123"
+}
+```
+
 ## Projektstruktur
 
 ```

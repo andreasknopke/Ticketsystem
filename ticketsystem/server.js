@@ -890,7 +890,12 @@ app.post('/api/tickets', requireApiKey, (req, res) => {
                 });
             }
         });
-        res.redirect('/ticket/' + ticketId);
+        return res.status(201).json({
+            id: ticketId,
+            status: 'created',
+            ticketUrl: `${BASE_URL}/ticket/${ticketId}`,
+            apiUrl: `${BASE_URL}/api/tickets/${ticketId}`
+        });
     });
 });
 
