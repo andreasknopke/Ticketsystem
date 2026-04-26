@@ -99,6 +99,39 @@ npm run dev
 
 Das System ist nun unter `http://localhost:8010` erreichbar. Die Standard-Login-Daten sind die in der `.env` konfigurierten Werte.
 
+## Deployment mit Coolify (Dockerfile)
+
+Fur das Projekt ist ein Dockerfile in `ticketsystem/Dockerfile` vorbereitet.
+
+### Coolify Einstellungen
+
+- **Build Pack / Typ:** Dockerfile
+- **Dockerfile Pfad:** `ticketsystem/Dockerfile`
+- **Port:** `8010`
+- **Persistent Volume (wichtig fur SQLite):**
+  - Mount Path: `/app/data`
+
+### Wichtige Umgebungsvariablen in Coolify
+
+Mindestens diese Werte setzen:
+
+```env
+APP_SECRET=ein-sehr-sicherer-schluessel
+ADMIN_USER=admin
+ADMIN_PASS=dein-sicheres-passwort
+PORT=8010
+DB_FILE=/app/data/tickets.db
+BASE_URL=https://deine-domain.tld
+```
+
+Optional (API/SMTP):
+
+- `API_KEY`, `REQUIRE_API_KEY`
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+- `EMAIL_NOTIFY_NEW`, `EMAIL_NOTIFY_STATUS`, `EMAIL_NOTIFY_ASSIGN`, `EMAIL_NOTIFY_COMMENT`
+
+Hinweis: Ohne Volume auf `/app/data` wird die SQLite-Datenbank bei Redeployments verloren.
+
 ## API Nutzung
 
 Sie konnen Tickets uber die API erstellen, indem Sie einen `x-api-key` im Header mitsenden (falls in der `.env` konfiguriert).

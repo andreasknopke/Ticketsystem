@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.*
+tickets.db
+*.sqlite
+*.sqlite3
+error.log
+output.log
+coverage
+.vscode

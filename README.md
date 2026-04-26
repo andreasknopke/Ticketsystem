@@ -14,3 +14,8 @@ npm start
 ```
 
 Weitere Informationen: [ticketsystem/README.md](ticketsystem/README.md)
+
+## Coolify Deployment
+
+Nutze in Coolify den Dockerfile-Pfad `ticketsystem/Dockerfile`.
+Details zu Environment-Variablen und Persistent Volume stehen in [ticketsystem/README.md](ticketsystem/README.md).

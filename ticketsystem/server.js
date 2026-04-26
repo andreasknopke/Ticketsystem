@@ -15,7 +15,7 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 8010;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:' + PORT;
-const DB_FILE = path.join(__dirname, 'tickets.db');
+const DB_FILE = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(__dirname, 'tickets.db');
 
 const APP_SECRET = process.env.APP_SECRET;
 const ADMIN_USER = process.env.ADMIN_USER;
