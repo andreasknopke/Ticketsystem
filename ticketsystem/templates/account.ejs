@@ -80,13 +80,15 @@
                                 <p class="mt-2 text-xs text-slate-500">Für diesen Benutzer ist kein Mitarbeiterprofil verknüpft, daher kann hier keine E-Mail gespeichert werden.</p>
                                 <% } %>
                             </div>
-                            <div>
-                                <label class="mb-1 block text-sm font-medium text-gray-700">Neues Passwort</label>
-                                <input name="password" type="password" class="form-input w-full" placeholder="Leer lassen, wenn unverändert">
-                            </div>
-                            <div>
-                                <label class="mb-1 block text-sm font-medium text-gray-700">Passwort bestätigen</label>
-                                <input name="password_confirm" type="password" class="form-input w-full" placeholder="Zur Kontrolle wiederholen">
+                            <div class="space-y-5 md:col-span-2 md:max-w-md">
+                                <div>
+                                    <label class="mb-1 block text-sm font-medium text-gray-700">Neues Passwort</label>
+                                    <input name="password" type="password" class="form-input w-full" placeholder="Leer lassen, wenn unverändert">
+                                </div>
+                                <div>
+                                    <label class="mb-1 block text-sm font-medium text-gray-700">Passwort bestätigen</label>
+                                    <input name="password_confirm" type="password" class="form-input w-full" placeholder="Zur Kontrolle wiederholen">
+                                </div>
                             </div>
                         </div>
                         <div class="flex justify-end border-t border-slate-200 pt-5">
