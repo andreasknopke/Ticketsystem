@@ -571,6 +571,29 @@ function formatDuration(ms) {
     return parts.join(' ');
 }
 
+function formatMinutes(minutes) {
+    if (minutes === null || minutes === undefined || Number.isNaN(Number(minutes))) return '-';
+    return formatDuration(Number(minutes) * 60000);
+}
+
+function dbAll(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.all(sql, params, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+        });
+    });
+}
+
+function dbGet(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.get(sql, params, (err, row) => {
+            if (err) reject(err);
+            else resolve(row || {});
+        });
+    });
+}
+
 function getReminderInfo(ticket) {
     if (!ticket || !ticket.deadline) return null;
 
@@ -1399,6 +1422,195 @@ app.post('/account', requireAuth, (req, res) => {
             afterPasswordUpdate();
         });
     });
+});
+
+app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
+    const nowIso = new Date().toISOString();
+
+    try {
+        const [
+            totals,
+            byStatus,
+            byPriority,
+            bySystem,
+            byStaff,
+            responseStats,
+            slaOverview,
+            feedbackStats,
+            weeklyTrend,
+            monthlyTrend,
+            yearlyTrend,
+            agingBuckets,
+            unassignedTickets,
+            overdueSlaTickets,
+            longestOpenTickets,
+            busiestCreators
+        ] = await Promise.all([
+            dbGet(`SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
+                SUM(CASE WHEN deadline IS NOT NULL AND status != 'geschlossen' AND deadline < ? THEN 1 ELSE 0 END) AS overdue_deadline,
+                SUM(CASE WHEN assigned_to IS NULL AND status != 'geschlossen' THEN 1 ELSE 0 END) AS unassigned_open
+                FROM tickets`, [nowIso]),
+            dbAll(`SELECT status, COUNT(*) AS count FROM tickets GROUP BY status ORDER BY count DESC`),
+            dbAll(`SELECT priority, COUNT(*) AS count FROM tickets GROUP BY priority ORDER BY
+                CASE priority WHEN 'kritisch' THEN 1 WHEN 'hoch' THEN 2 WHEN 'mittel' THEN 3 WHEN 'niedrig' THEN 4 ELSE 5 END`),
+            dbAll(`SELECT COALESCE(s.name, 'Ohne System') AS name,
+                COUNT(t.id) AS total,
+                SUM(CASE WHEN t.status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN t.status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
+                ROUND(AVG(CASE WHEN COALESCE(ts.first_response_at, t.first_responded_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
+                ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                FROM tickets t
+                LEFT JOIN systems s ON t.system_id = s.id
+                LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id
+                GROUP BY COALESCE(s.name, 'Ohne System')
+                ORDER BY total DESC, name ASC`),
+            dbAll(`SELECT COALESCE(st.name, 'Nicht zugewiesen') AS name,
+                COUNT(t.id) AS total,
+                SUM(CASE WHEN t.status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN t.status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
+                SUM(CASE WHEN t.status != 'geschlossen' AND t.deadline IS NOT NULL AND t.deadline < ? THEN 1 ELSE 0 END) AS overdue_total,
+                ROUND(AVG(CASE WHEN COALESCE(ts.first_response_at, t.first_responded_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
+                ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                FROM tickets t
+                LEFT JOIN staff st ON t.assigned_to = st.id
+                LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id
+                GROUP BY COALESCE(st.name, 'Nicht zugewiesen')
+                ORDER BY total DESC, name ASC`, [nowIso]),
+            dbGet(`SELECT
+                ROUND(AVG(CASE WHEN COALESCE(ts.first_response_at, t.first_responded_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
+                ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes,
+                ROUND(AVG(CASE WHEN t.status != 'geschlossen'
+                    THEN (julianday('now') - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_open_age_minutes,
+                ROUND(AVG(CASE WHEN t.status = 'geschlossen' AND COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
+                    THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_closed_cycle_minutes
+                FROM tickets t
+                LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id`),
+            dbGet(`SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN first_response_at IS NOT NULL THEN 1 ELSE 0 END) AS responses_done,
+                SUM(CASE WHEN resolution_at IS NOT NULL THEN 1 ELSE 0 END) AS resolutions_done,
+                SUM(CASE WHEN first_response_at IS NOT NULL AND first_response_due IS NOT NULL AND first_response_at <= first_response_due THEN 1 ELSE 0 END) AS responses_in_time,
+                SUM(CASE WHEN resolution_at IS NOT NULL AND resolution_due IS NOT NULL AND resolution_at <= resolution_due THEN 1 ELSE 0 END) AS resolutions_in_time,
+                SUM(CASE WHEN first_response_at IS NULL AND first_response_due IS NOT NULL AND first_response_due < ? THEN 1 ELSE 0 END) AS pending_response_breached,
+                SUM(CASE WHEN resolution_at IS NULL AND resolution_due IS NOT NULL AND resolution_due < ? THEN 1 ELSE 0 END) AS pending_resolution_breached
+                FROM ticket_sla`, [nowIso, nowIso]),
+            dbGet(`SELECT ROUND(AVG(rating), 2) AS avg_rating, COUNT(*) AS count FROM ticket_feedback`),
+            dbAll(`SELECT strftime('%Y-W%W', created_at) AS period,
+                COUNT(*) AS created,
+                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                FROM tickets
+                WHERE created_at >= date('now', '-12 weeks')
+                GROUP BY period
+                ORDER BY period DESC
+                LIMIT 12`),
+            dbAll(`SELECT strftime('%Y-%m', created_at) AS period,
+                COUNT(*) AS created,
+                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                FROM tickets
+                WHERE created_at >= date('now', '-12 months')
+                GROUP BY period
+                ORDER BY period DESC
+                LIMIT 12`),
+            dbAll(`SELECT strftime('%Y', created_at) AS period,
+                COUNT(*) AS created,
+                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                FROM tickets
+                GROUP BY period
+                ORDER BY period DESC
+                LIMIT 5`),
+            dbAll(`SELECT bucket, COUNT(*) AS count FROM (
+                    SELECT CASE
+                        WHEN (julianday('now') - julianday(created_at)) < 1 THEN '< 1 Tag'
+                        WHEN (julianday('now') - julianday(created_at)) < 3 THEN '1-3 Tage'
+                        WHEN (julianday('now') - julianday(created_at)) < 7 THEN '3-7 Tage'
+                        WHEN (julianday('now') - julianday(created_at)) < 14 THEN '7-14 Tage'
+                        ELSE '> 14 Tage'
+                    END AS bucket
+                    FROM tickets
+                    WHERE status != 'geschlossen'
+                ) grouped
+                GROUP BY bucket
+                ORDER BY CASE bucket WHEN '< 1 Tag' THEN 1 WHEN '1-3 Tage' THEN 2 WHEN '3-7 Tage' THEN 3 WHEN '7-14 Tage' THEN 4 ELSE 5 END`),
+            dbAll(`SELECT t.id, t.title, t.priority, t.status, t.created_at, s.name AS system_name
+                FROM tickets t
+                LEFT JOIN systems s ON t.system_id = s.id
+                WHERE t.assigned_to IS NULL AND t.status != 'geschlossen'
+                ORDER BY t.created_at ASC
+                LIMIT 10`),
+            dbAll(`SELECT t.id, t.title, t.priority, t.status, t.created_at, t.deadline, s.name AS system_name, st.name AS assigned_name,
+                    ts.first_response_due, ts.resolution_due
+                FROM tickets t
+                LEFT JOIN systems s ON t.system_id = s.id
+                LEFT JOIN staff st ON t.assigned_to = st.id
+                LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id
+                WHERE t.status != 'geschlossen' AND (
+                    (ts.first_response_at IS NULL AND ts.first_response_due IS NOT NULL AND ts.first_response_due < ?) OR
+                    (ts.resolution_at IS NULL AND ts.resolution_due IS NOT NULL AND ts.resolution_due < ?) OR
+                    (t.deadline IS NOT NULL AND t.deadline < ?)
+                )
+                ORDER BY COALESCE(t.deadline, ts.resolution_due, ts.first_response_due) ASC
+                LIMIT 10`, [nowIso, nowIso, nowIso]),
+            dbAll(`SELECT t.id, t.title, t.priority, t.status, t.created_at, s.name AS system_name, st.name AS assigned_name,
+                    ROUND((julianday('now') - julianday(t.created_at)) * 24 * 60, 0) AS age_minutes
+                FROM tickets t
+                LEFT JOIN systems s ON t.system_id = s.id
+                LEFT JOIN staff st ON t.assigned_to = st.id
+                WHERE t.status != 'geschlossen'
+                ORDER BY t.created_at ASC
+                LIMIT 10`),
+            dbAll(`SELECT COALESCE(NULLIF(TRIM(username), ''), 'Unbekannt') AS name, COUNT(*) AS total
+                FROM tickets
+                GROUP BY COALESCE(NULLIF(TRIM(username), ''), 'Unbekannt')
+                ORDER BY total DESC
+                LIMIT 8`)
+        ]);
+
+        const responseRate = slaOverview.responses_done ? Math.round((slaOverview.responses_in_time || 0) / slaOverview.responses_done * 100) : 0;
+        const resolutionRate = slaOverview.resolutions_done ? Math.round((slaOverview.resolutions_in_time || 0) / slaOverview.resolutions_done * 100) : 0;
+        const closedRate = totals.total ? Math.round((totals.closed_total || 0) / totals.total * 100) : 0;
+
+        res.render('stats', {
+            user: req.session.user,
+            role: req.session.role || 'user',
+            totals,
+            byStatus,
+            byPriority,
+            bySystem,
+            byStaff,
+            responseStats,
+            slaOverview: {
+                ...slaOverview,
+                responseRate,
+                resolutionRate
+            },
+            feedbackStats,
+            weeklyTrend: weeklyTrend.reverse(),
+            monthlyTrend: monthlyTrend.reverse(),
+            yearlyTrend: yearlyTrend.reverse(),
+            agingBuckets,
+            unassignedTickets,
+            overdueSlaTickets,
+            longestOpenTickets,
+            busiestCreators,
+            closedRate,
+            formatMinutes
+        });
+    } catch (err) {
+        console.error('Stats Error:', err.message);
+        res.status(500).send('Statistiken konnten nicht geladen werden.');
+    }
 });
 
 // --- Web UI: Dashboard & Detail ---

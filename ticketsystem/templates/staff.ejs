@@ -22,6 +22,9 @@
                     </div>
                     <div class="hidden md:ml-8 md:flex md:space-x-1">
                         <a href="/" class="nav-link">Dashboard</a>
+                        <% if (role === 'admin' || role === 'root') { %>
+                        <a href="/stats" class="nav-link">Statistiken</a>
+                        <% } %>
                         <a href="/admin/systems" class="nav-link">Systeme</a>
                         <a href="/admin/staff" class="nav-link active">Mitarbeiter</a>
                         <% if (role === 'root') { %>

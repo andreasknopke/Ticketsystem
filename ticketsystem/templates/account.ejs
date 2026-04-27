@@ -19,6 +19,12 @@
                         </div>
                         <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
                     </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <% if (role === 'admin' || role === 'root') { %>
+                        <a href="/stats" class="nav-link">Statistiken</a>
+                        <% } %>
+                    </div>
                 </div>
                 <div class="flex items-center gap-3">
                     <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
