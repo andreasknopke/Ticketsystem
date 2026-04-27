@@ -73,6 +73,11 @@ SMTP_USER="dein-email@beispiel.de"
 SMTP_PASS="dein-app-passwort"
 SMTP_FROM="Ticketsystem <dein-email@beispiel.de>"
 
+# Optional: Brevo statt SMTP verwenden
+BREVO_API_KEY=
+BREVO_FROM_EMAIL="dein-email@beispiel.de"
+BREVO_FROM_NAME="Ticketsystem"
+
 # Benachrichtigungs-Optionen
 EMAIL_NOTIFY_NEW=true
 EMAIL_NOTIFY_STATUS=true
@@ -133,7 +138,10 @@ Optional (API/SMTP):
 - `CORS_ALLOWED_ORIGINS` (kommagetrennt, z. B. `https://cf.coolify.kliniksued-rostock.de`)
 - `TRUST_PROXY=true` bei Betrieb hinter Coolify/Reverse Proxy, damit sichere Session-Cookies korrekt funktionieren
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+- `BREVO_API_KEY`, optional `BREVO_FROM_EMAIL`, `BREVO_FROM_NAME`, `BREVO_API_URL`
 - `EMAIL_NOTIFY_NEW`, `EMAIL_NOTIFY_STATUS`, `EMAIL_NOTIFY_ASSIGN`, `EMAIL_NOTIFY_COMMENT`
+
+Wenn `BREVO_API_KEY` gesetzt ist, versendet das System E-Mails über die Brevo API. SMTP wird dann nicht verwendet. Ohne `BREVO_API_KEY` bleibt der bisherige SMTP-Versand aktiv.
 
 Hinweis: Ohne Volume auf `/app/data` wird die SQLite-Datenbank bei Redeployments verloren.
 

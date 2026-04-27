@@ -174,49 +174,55 @@
         <!-- Recent Activity -->
         <% if (recentActivity && recentActivity.length > 0) { %>
         <div class="card mb-8">
-            <div class="card-header">
-                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                    <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            <details class="group">
+                <summary class="card-header flex cursor-pointer list-none items-center justify-between gap-4">
+                    <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                        </svg>
+                        Aktuelle Aktivitäten
+                        <span class="badge bg-slate-100 text-slate-700"><%= recentActivity.length %></span>
+                    </h3>
+                    <svg class="h-5 w-5 text-slate-400 transition group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                     </svg>
-                    Aktuelle Aktivitäten
-                </h3>
-            </div>
-            <div class="card-body">
-                <div class="flow-root">
-                    <ul class="-mb-8">
-                        <% recentActivity.forEach((activity, index) => { %>
-                        <li class="relative pb-8">
-                            <div class="relative flex items-start space-x-3">
-                                <div class="relative">
-                                    <div class="h-8 w-8 rounded-full bg-primary-100 flex items-center justify-center ring-8 ring-white">
-                                        <span class="text-xs font-medium text-primary-700"><%= activity.actor ? activity.actor.charAt(0).toUpperCase() : 'S' %></span>
-                                    </div>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <div>
-                                        <div class="text-sm">
-                                            <span class="font-medium text-gray-900"><%= activity.actor || 'System' %></span>
-                                            <span class="text-gray-500"> - <%= activity.action_text %></span>
+                </summary>
+                <div class="card-body border-t border-gray-200">
+                    <div class="flow-root">
+                        <ul class="-mb-8">
+                            <% recentActivity.forEach((activity, index) => { %>
+                            <li class="relative pb-8">
+                                <div class="relative flex items-start space-x-3">
+                                    <div class="relative">
+                                        <div class="h-8 w-8 rounded-full bg-primary-100 flex items-center justify-center ring-8 ring-white">
+                                            <span class="text-xs font-medium text-primary-700"><%= activity.actor ? activity.actor.charAt(0).toUpperCase() : 'S' %></span>
                                         </div>
-                                        <p class="mt-0.5 text-xs text-gray-500">
-                                            <%= formatDateTime(activity.created_at) %>
-                                        </p>
                                     </div>
-                                    <% if (activity.ticket_id) { %>
-                                    <div class="mt-1">
-                                        <a href="/ticket/<%= activity.ticket_id %>" class="text-xs text-primary-600 hover:text-primary-800">
-                                            Ticket #<%= activity.ticket_id %> <%= activity.ticket_title ? '- ' + activity.ticket_title : '' %>
-                                        </a>
+                                    <div class="min-w-0 flex-1">
+                                        <div>
+                                            <div class="text-sm">
+                                                <span class="font-medium text-gray-900"><%= activity.actor || 'System' %></span>
+                                                <span class="text-gray-500"> - <%= activity.action_text %></span>
+                                            </div>
+                                            <p class="mt-0.5 text-xs text-gray-500">
+                                                <%= formatDateTime(activity.created_at) %>
+                                            </p>
+                                        </div>
+                                        <% if (activity.ticket_id) { %>
+                                        <div class="mt-1">
+                                            <a href="/ticket/<%= activity.ticket_id %>" class="text-xs text-primary-600 hover:text-primary-800">
+                                                Ticket #<%= activity.ticket_id %> <%= activity.ticket_title ? '- ' + activity.ticket_title : '' %>
+                                            </a>
+                                        </div>
+                                        <% } %>
                                     </div>
-                                    <% } %>
                                 </div>
-                            </div>
-                        </li>
-                        <% }); %>
-                    </ul>
+                            </li>
+                            <% }); %>
+                        </ul>
+                    </div>
                 </div>
-            </div>
+            </details>
         </div>
         <% } %>
 

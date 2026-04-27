@@ -4,6 +4,7 @@ const session = require('express-session');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 
 function hashPassword(password) {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -92,6 +93,10 @@ const SMTP_SECURE = (process.env.SMTP_SECURE || 'false').toLowerCase() === 'true
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM;
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_API_URL = process.env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email';
+const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL;
+const BREVO_FROM_NAME = process.env.BREVO_FROM_NAME;
 
 const EMAIL_NOTIFY_NEW = (process.env.EMAIL_NOTIFY_NEW || 'true').toLowerCase() === 'true';
 const EMAIL_NOTIFY_STATUS = (process.env.EMAIL_NOTIFY_STATUS || 'true').toLowerCase() === 'true';
@@ -807,7 +812,107 @@ function buildTicketChangeDetails(oldTicket, updates) {
 // --- E-Mail Service ---
 
 let transporter = null;
+let mailProvider = 'disabled';
+
+function parseMailSender(value) {
+    const trimmed = (value || '').trim();
+    if (!trimmed) return { name: '', email: '' };
+
+    const match = trimmed.match(/^(.*)<([^>]+)>$/);
+    if (match) {
+        return {
+            name: match[1].trim().replace(/^"|"$/g, ''),
+            email: match[2].trim()
+        };
+    }
+
+    if (trimmed.includes('@')) {
+        return { name: '', email: trimmed };
+    }
+
+    return { name: trimmed, email: '' };
+}
+
+function getMailSender() {
+    const parsedSmtpSender = parseMailSender(SMTP_FROM);
+    return {
+        name: BREVO_FROM_NAME || parsedSmtpSender.name || 'Ticketsystem',
+        email: BREVO_FROM_EMAIL || parsedSmtpSender.email || SMTP_USER || ''
+    };
+}
+
+function hasMailProvider() {
+    return mailProvider !== 'disabled';
+}
+
+function normalizeMailRecipients(value) {
+    if (Array.isArray(value)) {
+        return value.map(item => (item || '').trim()).filter(Boolean);
+    }
+
+    return String(value || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+function sendBrevoMail(to, subject, html, text) {
+    const recipients = normalizeMailRecipients(to);
+    if (!recipients.length) return;
+
+    const sender = getMailSender();
+    if (!sender.email) {
+        console.error('Brevo Versand nicht moeglich: Keine Absenderadresse konfiguriert.');
+        return;
+    }
+
+    const payload = {
+        sender,
+        to: recipients.map(email => ({ email })),
+        subject,
+        htmlContent: html
+    };
+
+    if (text) payload.textContent = text;
+
+    const request = https.request(BREVO_API_URL, {
+        method: 'POST',
+        headers: {
+            'accept': 'application/json',
+            'api-key': BREVO_API_KEY,
+            'content-type': 'application/json'
+        }
+    }, (response) => {
+        let responseBody = '';
+        response.on('data', (chunk) => {
+            responseBody += chunk;
+        });
+        response.on('end', () => {
+            if (response.statusCode >= 200 && response.statusCode < 300) {
+                console.log('Mail via Brevo gesendet an', recipients.join(', '));
+                return;
+            }
+
+            const details = responseBody ? ` ${responseBody}` : '';
+            console.error(`Brevo Mail-Fehler (${response.statusCode || 'unbekannt'}):${details}`);
+        });
+    });
+
+    request.on('error', (error) => {
+        console.error('Brevo Mail-Fehler:', error.message);
+    });
+
+    request.write(JSON.stringify(payload));
+    request.end();
+}
+
 function initMailer() {
+    if (BREVO_API_KEY) {
+        mailProvider = 'brevo';
+        console.log('Brevo Mailversand aktiviert.');
+        return;
+    }
+
     if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
         console.log('SMTP nicht konfiguriert. Keine E-Mails werden versendet.');
         return;
@@ -819,6 +924,7 @@ function initMailer() {
             secure: SMTP_SECURE,
             auth: { user: SMTP_USER, pass: SMTP_PASS }
         });
+        mailProvider = 'smtp';
         transporter.verify((err) => {
             if (err) console.error('SMTP Verbindung fehlgeschlagen:', err.message);
             else console.log('SMTP Verbindung erfolgreich.');
@@ -830,6 +936,11 @@ function initMailer() {
 initMailer();
 
 function sendMail(to, subject, html, text) {
+    if (mailProvider === 'brevo') {
+        sendBrevoMail(to, subject, html, text);
+        return;
+    }
+
     if (!transporter) return;
     transporter.sendMail({
         from: SMTP_FROM || 'Ticketsystem',
@@ -888,7 +999,7 @@ function sendMailToRecipients(recipients, subject, html, text) {
 }
 
 function mailNewTicket(ticket, staff) {
-    if (!EMAIL_NOTIFY_NEW || !transporter) return;
+    if (!EMAIL_NOTIFY_NEW || !hasMailProvider()) return;
     const recipients = [];
     if (ticket.contact_email) recipients.push(ticket.contact_email);
 
@@ -910,7 +1021,7 @@ function mailNewTicket(ticket, staff) {
 }
 
 function mailStatusChange(ticket, oldStatus) {
-    if (!EMAIL_NOTIFY_STATUS || !transporter) return;
+    if (!EMAIL_NOTIFY_STATUS || !hasMailProvider()) return;
     const recipients = [];
     if (ticket.contact_email) recipients.push(ticket.contact_email);
     let subject = `[Ticket #${ticket.id}] Status geändert: ${ticket.status}`;
@@ -928,7 +1039,7 @@ function mailStatusChange(ticket, oldStatus) {
 }
 
 function mailAssigned(ticket, staff) {
-    if (!EMAIL_NOTIFY_ASSIGN || !transporter || !staff) return;
+    if (!EMAIL_NOTIFY_ASSIGN || !hasMailProvider() || !staff) return;
     let subject = `[Ticket #${ticket.id}] Dir zugewiesen: ${ticket.title}`;
     let html = `<p>Dir wurde ein Ticket zugewiesen.</p>
         <table border="0" cellpadding="6" style="font-family:sans-serif;font-size:14px">
@@ -945,7 +1056,7 @@ function mailAssigned(ticket, staff) {
 }
 
 function mailComment(ticket, note, author) {
-    if (!EMAIL_NOTIFY_COMMENT || !transporter || !ticket.contact_email || note.is_internal) return;
+    if (!EMAIL_NOTIFY_COMMENT || !hasMailProvider() || !ticket.contact_email || note.is_internal) return;
     let subject = `[Ticket #${ticket.id}] Neuer Kommentar: ${ticket.title}`;
     let html = `<p>Ein neuer Kommentar wurde zu Ticket #${ticket.id} hinzugefügt.</p>
         <p><b>Von:</b> ${author}</p>
@@ -2185,7 +2296,11 @@ server.listen(PORT, () => {
     console.log('====================================================');
     console.log('  Features: SLA-Tracking, Activity Stream, Feedback');
     console.log('  Echtzeit-Updates: Socket.io aktiviert');
-    console.log('  E-Mail:     ' + (transporter ? 'Aktiv' : 'Inaktiv (SMTP nicht konfiguriert)'));
+    console.log('  E-Mail:     ' + (mailProvider === 'brevo'
+        ? 'Aktiv (Brevo API)'
+        : transporter
+            ? 'Aktiv (SMTP)'
+            : 'Inaktiv (kein Mail-Provider konfiguriert)'));
     console.log('====================================================');
 });
 
