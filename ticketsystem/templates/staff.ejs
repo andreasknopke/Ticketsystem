@@ -24,9 +24,14 @@
                         <a href="/" class="nav-link">Dashboard</a>
                         <a href="/admin/systems" class="nav-link">Systeme</a>
                         <a href="/admin/staff" class="nav-link active">Mitarbeiter</a>
+                        <% if (role === 'root') { %>
+                        <a href="/admin/users" class="nav-link">Benutzer</a>
+                        <% } %>
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <a href="/account" class="btn-secondary text-sm">Account</a>
                     <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
                 </div>
             </div>
@@ -82,6 +87,10 @@
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><%= s.email %></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><%= s.phone || '-' %></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                    <button
+                                        type="button"
+                                        class="mr-4 text-primary-600 hover:text-primary-800"
+                                        onclick='openStaffModal(<%- JSON.stringify(s) %>)'>Bearbeiten</button>
                                     <form method="post" action="/admin/staff/<%= s.id %>/delete" style="display:inline;" onsubmit="return confirm('Mitarbeiter <%= s.name %> wirklich löschen?');">
                                         <button type="submit" class="text-red-600 hover:text-red-900">Löschen</button>
                                     </form>
@@ -99,5 +108,75 @@
             </div>
         </div>
     </main>
+
+    <div id="staffModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+        <div class="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200">
+            <div class="border-b border-slate-200 px-6 py-4">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-primary-600">Mitarbeiter bearbeiten</p>
+                        <h3 id="staffModalTitle" class="mt-1 text-xl font-semibold text-slate-900">Datensatz aktualisieren</h3>
+                        <p class="mt-1 text-sm text-slate-500">Name, Mailadresse und Telefonnummer werden direkt im Mitarbeiterstamm gespeichert.</p>
+                    </div>
+                    <button type="button" class="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onclick="closeStaffModal()" aria-label="Dialog schließen">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <form method="post" id="staffEditForm" class="space-y-5 px-6 py-6">
+                <div class="grid gap-5 md:grid-cols-2">
+                    <div class="md:col-span-2">
+                        <label class="mb-1 block text-sm font-medium text-slate-700">Name</label>
+                        <input id="staff_name" name="name" required class="form-input w-full">
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-sm font-medium text-slate-700">E-Mail</label>
+                        <input id="staff_email" name="email" type="email" required class="form-input w-full">
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-sm font-medium text-slate-700">Telefon</label>
+                        <input id="staff_phone" name="phone" class="form-input w-full" placeholder="Optional">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">
+                    <button type="button" onclick="closeStaffModal()" class="btn-secondary">Abbrechen</button>
+                    <button type="submit" class="btn-primary">Änderungen speichern</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+    const staffModal = document.getElementById('staffModal');
+
+    function openStaffModal(staff) {
+        document.getElementById('staffModalTitle').textContent = staff.name;
+        document.getElementById('staff_name').value = staff.name || '';
+        document.getElementById('staff_email').value = staff.email || '';
+        document.getElementById('staff_phone').value = staff.phone || '';
+        document.getElementById('staffEditForm').action = '/admin/staff/' + staff.id + '/update';
+        staffModal.classList.remove('hidden');
+        staffModal.classList.add('flex');
+        document.body.classList.add('overflow-hidden');
+    }
+
+    function closeStaffModal() {
+        staffModal.classList.add('hidden');
+        staffModal.classList.remove('flex');
+        document.body.classList.remove('overflow-hidden');
+    }
+
+    staffModal.addEventListener('click', function(event) {
+        if (event.target === staffModal) closeStaffModal();
+    });
+
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && !staffModal.classList.contains('hidden')) {
+            closeStaffModal();
+        }
+    });
+    </script>
 </body>
 </html>

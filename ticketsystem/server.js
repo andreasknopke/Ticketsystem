@@ -17,6 +17,10 @@ function verifyPassword(password, stored) {
     const checkHash = crypto.scryptSync(password, salt, 64).toString('hex');
     return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(checkHash, 'hex'));
 }
+
+function parseCheckbox(value) {
+    return value === 'on' || value === '1' || value === 1 ? 1 : 0;
+}
 const nodemailer = require('nodemailer');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -188,6 +192,22 @@ function requireRoot(req, res, next) {
     res.status(403).send('Nur root-Benutzer haben Zugriff.');
 }
 
+function loadCurrentUserAccount(req, callback) {
+    if (!req.session || !req.session.authenticated || !req.session.user) {
+        return callback(null, null);
+    }
+
+    db.get(`SELECT u.id, u.username, u.role, u.staff_id, u.default_system_id,
+            u.notify_new_tickets, u.notify_assigned_tickets, u.notify_status_changes,
+            s.name AS staff_name, s.email AS staff_email,
+            sys.name AS system_name
+        FROM users u
+        LEFT JOIN staff s ON u.staff_id = s.id
+        LEFT JOIN systems sys ON u.default_system_id = sys.id
+        WHERE u.username = ? AND u.active = 1`,
+    [req.session.user], callback);
+}
+
 function requireApiKey(req, res, next) {
     if (!REQUIRE_API_KEY) return next();
     const key = req.headers['x-api-key'];
@@ -297,11 +317,35 @@ function initDb() {
         role TEXT CHECK(role IN ('root','admin','user')) DEFAULT 'user',
         staff_id INTEGER,
         default_system_id INTEGER,
+        notify_new_tickets INTEGER DEFAULT 0,
+        notify_assigned_tickets INTEGER DEFAULT 1,
+        notify_status_changes INTEGER DEFAULT 1,
         active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (staff_id) REFERENCES staff(id),
         FOREIGN KEY (default_system_id) REFERENCES systems(id)
     )`, (err) => { if (err) console.error('Users table error:', err.message); });
+
+    db.all("PRAGMA table_info(users)", (err, rows) => {
+        if (err) {
+            console.error('Fehler beim Pruefen der User-Tabelle:', err.message);
+            return;
+        }
+        const userColumns = rows.map(r => r.name);
+        const userMigrations = [
+            { col: 'notify_new_tickets', sql: 'ALTER TABLE users ADD COLUMN notify_new_tickets INTEGER DEFAULT 0' },
+            { col: 'notify_assigned_tickets', sql: 'ALTER TABLE users ADD COLUMN notify_assigned_tickets INTEGER DEFAULT 1' },
+            { col: 'notify_status_changes', sql: 'ALTER TABLE users ADD COLUMN notify_status_changes INTEGER DEFAULT 1' }
+        ];
+
+        userMigrations.forEach(m => {
+            if (!userColumns.includes(m.col)) {
+                db.run(m.sql, (migrationError) => {
+                    if (migrationError) console.error(`Fehler beim Hinzufuegen von ${m.col}:`, migrationError.message);
+                });
+            }
+        });
+    });
 
     db.all("PRAGMA table_info(tickets)", (err, rows) => {
         if (err) {
@@ -644,6 +688,50 @@ function sendMail(to, subject, html, text) {
     });
 }
 
+function getNotificationRecipients(type, filters, callback) {
+    const conditions = [
+        'u.active = 1',
+        's.active = 1',
+        's.email IS NOT NULL',
+        "TRIM(s.email) != ''"
+    ];
+    const params = [];
+
+    if (type === 'new') conditions.push('u.notify_new_tickets = 1');
+    if (type === 'assigned') conditions.push('u.notify_assigned_tickets = 1');
+    if (type === 'status') conditions.push('u.notify_status_changes = 1');
+
+    if (filters.staffId) {
+        conditions.push('u.staff_id = ?');
+        params.push(filters.staffId);
+    }
+
+    if (filters.systemId) {
+        conditions.push('(u.default_system_id IS NULL OR u.default_system_id = ?)');
+        params.push(filters.systemId);
+    }
+
+    db.all(`SELECT DISTINCT s.email
+        FROM users u
+        INNER JOIN staff s ON u.staff_id = s.id
+        WHERE ${conditions.join(' AND ')}`,
+        params,
+        (err, rows) => {
+            if (err) {
+                console.error('Fehler beim Laden der Mail-Empfaenger:', err.message);
+                return callback([]);
+            }
+            callback(rows.map(row => row.email));
+        }
+    );
+}
+
+function sendMailToRecipients(recipients, subject, html, text) {
+    const uniqueRecipients = [...new Set((recipients || []).filter(Boolean))];
+    if (!uniqueRecipients.length) return;
+    sendMail(uniqueRecipients.join(', '), subject, html, text);
+}
+
 function mailNewTicket(ticket, staff) {
     if (!EMAIL_NOTIFY_NEW || !transporter) return;
     const recipients = [];
@@ -661,11 +749,15 @@ function mailNewTicket(ticket, staff) {
         <tr><td><b>Erstellt von:</b></td><td>${ticket.username || '-'}</td></tr>
         </table>
         <p><a href="${BASE_URL}/ticket/${ticket.id}">Zum Ticket</a></p>`;
-    sendMail(to, subject, html, 'Neues Ticket erstellt. Siehe Webinterface.');
+    getNotificationRecipients('new', { systemId: ticket.system_id }, (userRecipients) => {
+        sendMailToRecipients([...recipients, ...userRecipients], subject, html, 'Neues Ticket erstellt. Siehe Webinterface.');
+    });
 }
 
 function mailStatusChange(ticket, oldStatus) {
-    if (!EMAIL_NOTIFY_STATUS || !transporter || !ticket.contact_email) return;
+    if (!EMAIL_NOTIFY_STATUS || !transporter) return;
+    const recipients = [];
+    if (ticket.contact_email) recipients.push(ticket.contact_email);
     let subject = `[Ticket #${ticket.id}] Status geändert: ${ticket.status}`;
     let html = `<p>Das Ticket #${ticket.id} hat den Status gewechselt.</p>
         <table border="0" cellpadding="6" style="font-family:sans-serif;font-size:14px">
@@ -675,11 +767,13 @@ function mailStatusChange(ticket, oldStatus) {
         <tr><td><b>Neuer Status:</b></td><td>${ticket.status}</td></tr>
         </table>
         <p><a href="${BASE_URL}/ticket/${ticket.id}">Zum Ticket</a></p>`;
-    sendMail(ticket.contact_email, subject, html, `Status geändert zu ${ticket.status}`);
+    getNotificationRecipients('status', { staffId: ticket.assigned_to }, (userRecipients) => {
+        sendMailToRecipients([...recipients, ...userRecipients], subject, html, `Status geändert zu ${ticket.status}`);
+    });
 }
 
 function mailAssigned(ticket, staff) {
-    if (!EMAIL_NOTIFY_ASSIGN || !transporter || !staff || !staff.email) return;
+    if (!EMAIL_NOTIFY_ASSIGN || !transporter || !staff) return;
     let subject = `[Ticket #${ticket.id}] Dir zugewiesen: ${ticket.title}`;
     let html = `<p>Dir wurde ein Ticket zugewiesen.</p>
         <table border="0" cellpadding="6" style="font-family:sans-serif;font-size:14px">
@@ -689,7 +783,10 @@ function mailAssigned(ticket, staff) {
         <tr><td><b>Kontakt:</b></td><td>${ticket.username || '-'} (${ticket.contact_email || '-'})</td></tr>
         </table>
         <p><a href="${BASE_URL}/ticket/${ticket.id}">Zum Ticket</a></p>`;
-    sendMail(staff.email, subject, html, `Ticket #${ticket.id} wurde dir zugewiesen.`);
+    const recipients = staff.email ? [staff.email] : [];
+    getNotificationRecipients('assigned', { staffId: staff.id }, (userRecipients) => {
+        sendMailToRecipients([...recipients, ...userRecipients], subject, html, `Ticket #${ticket.id} wurde dir zugewiesen.`);
+    });
 }
 
 function mailComment(ticket, note, author) {
@@ -1088,7 +1185,11 @@ app.delete('/api/tickets/:id', requireAuth, (req, res) => {
 app.get('/admin/systems', requireAuth, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).send('DB Error');
-        res.render('systems', { systems: rows, user: ADMIN_USER });
+        res.render('systems', {
+            systems: rows,
+            user: req.session.user,
+            role: req.session.role || 'user'
+        });
     });
 });
 
@@ -1107,14 +1208,14 @@ app.post('/admin/systems/:id/delete', requireAuth, (req, res) => {
     });
 });
 
-app.get('/admin/staff', requireAuth, (req, res) => {
+app.get('/admin/staff', requireAuth, requireAdmin, (req, res) => {
     db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).send('DB Error');
-        res.render('staff', { staff: rows, user: ADMIN_USER });
+        res.render('staff', { staff: rows, user: req.session.user, role: req.session.role || 'user' });
     });
 });
 
-app.post('/admin/staff', requireAuth, (req, res) => {
+app.post('/admin/staff', requireAuth, requireAdmin, (req, res) => {
     const { name, email, phone } = req.body;
     db.run('INSERT INTO staff (name, email, phone) VALUES (?, ?, ?)', [name, email, phone], (err) => {
         if (err) return res.status(500).send('DB Error');
@@ -1122,7 +1223,15 @@ app.post('/admin/staff', requireAuth, (req, res) => {
     });
 });
 
-app.post('/admin/staff/:id/delete', requireAuth, (req, res) => {
+app.post('/admin/staff/:id/update', requireAuth, requireAdmin, (req, res) => {
+    const { name, email, phone } = req.body;
+    db.run('UPDATE staff SET name = ?, email = ?, phone = ? WHERE id = ?', [name, email, phone || null, req.params.id], (err) => {
+        if (err) return res.status(500).send('DB Error');
+        res.redirect('/admin/staff');
+    });
+});
+
+app.post('/admin/staff/:id/delete', requireAuth, requireAdmin, (req, res) => {
     db.run('UPDATE staff SET active = 0 WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).send('DB Error');
         res.redirect('/admin/staff');
@@ -1140,7 +1249,14 @@ app.get('/admin/users', requireAuth, requireRoot, (req, res) => {
         if (err) return res.status(500).send('DB Error');
         db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, staffList) => {
             db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, systems) => {
-                res.render('users', { users: users || [], staffList: staffList || [], systems: systems || [], user: req.session.user, role: req.session.role });
+                res.render('users', {
+                    users: users || [],
+                    staffList: staffList || [],
+                    systems: systems || [],
+                    user: req.session.user,
+                    role: req.session.role,
+                    error: req.query.error || null
+                });
             });
         });
     });
@@ -1152,8 +1268,14 @@ app.post('/admin/users', requireAuth, requireRoot, (req, res) => {
     const hash = hashPassword(password);
     const staffId = staff_id ? parseInt(staff_id, 10) : null;
     const sysId = default_system_id ? parseInt(default_system_id, 10) : null;
-    db.run('INSERT INTO users (username, password_hash, role, staff_id, default_system_id) VALUES (?, ?, ?, ?, ?)',
-        [username, hash, role || 'user', staffId, sysId],
+    const notifyNewTickets = parseCheckbox(req.body.notify_new_tickets);
+    const notifyAssignedTickets = parseCheckbox(req.body.notify_assigned_tickets);
+    const notifyStatusChanges = parseCheckbox(req.body.notify_status_changes);
+    db.run(`INSERT INTO users (
+            username, password_hash, role, staff_id, default_system_id,
+            notify_new_tickets, notify_assigned_tickets, notify_status_changes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [username, hash, role || 'user', staffId, sysId, notifyNewTickets, notifyAssignedTickets, notifyStatusChanges],
         function(err) {
             if (err) {
                 const msg = err.message.includes('UNIQUE') ? 'Benutzername+bereits+vergeben' : 'DB+Fehler';
@@ -1167,16 +1289,23 @@ app.post('/admin/users/:id/update', requireAuth, requireRoot, (req, res) => {
     const { role, staff_id, default_system_id, password } = req.body;
     const staffId = staff_id ? parseInt(staff_id, 10) : null;
     const sysId = default_system_id ? parseInt(default_system_id, 10) : null;
+    const notifyNewTickets = parseCheckbox(req.body.notify_new_tickets);
+    const notifyAssignedTickets = parseCheckbox(req.body.notify_assigned_tickets);
+    const notifyStatusChanges = parseCheckbox(req.body.notify_status_changes);
     if (password) {
         const hash = hashPassword(password);
-        db.run('UPDATE users SET role=?, staff_id=?, default_system_id=?, password_hash=? WHERE id=?',
-            [role, staffId, sysId, hash, req.params.id], (err) => {
+        db.run(`UPDATE users SET role = ?, staff_id = ?, default_system_id = ?,
+            notify_new_tickets = ?, notify_assigned_tickets = ?, notify_status_changes = ?, password_hash = ?
+            WHERE id = ?`,
+            [role, staffId, sysId, notifyNewTickets, notifyAssignedTickets, notifyStatusChanges, hash, req.params.id], (err) => {
                 if (err) return res.status(500).send('DB Error');
                 res.redirect('/admin/users');
             });
     } else {
-        db.run('UPDATE users SET role=?, staff_id=?, default_system_id=? WHERE id=?',
-            [role, staffId, sysId, req.params.id], (err) => {
+        db.run(`UPDATE users SET role = ?, staff_id = ?, default_system_id = ?,
+            notify_new_tickets = ?, notify_assigned_tickets = ?, notify_status_changes = ?
+            WHERE id = ?`,
+            [role, staffId, sysId, notifyNewTickets, notifyAssignedTickets, notifyStatusChanges, req.params.id], (err) => {
                 if (err) return res.status(500).send('DB Error');
                 res.redirect('/admin/users');
             });
@@ -1187,6 +1316,88 @@ app.post('/admin/users/:id/delete', requireAuth, requireRoot, (req, res) => {
     db.run('UPDATE users SET active = 0 WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).send('DB Error');
         res.redirect('/admin/users');
+    });
+});
+
+app.get('/account', requireAuth, (req, res) => {
+    loadCurrentUserAccount(req, (err, account) => {
+        if (err) return res.status(500).send('DB Error');
+        res.render('account', {
+            user: req.session.user,
+            role: req.session.role || 'user',
+            account: account || null,
+            error: req.query.error || null,
+            success: req.query.success || null,
+            isRootAccount: req.session.role === 'root' && !account
+        });
+    });
+});
+
+app.post('/account', requireAuth, (req, res) => {
+    const { email, password, password_confirm } = req.body;
+
+    if (password && password !== password_confirm) {
+        return res.redirect('/account?error=Passworteingaben+stimmen+nicht+ueberein');
+    }
+
+    loadCurrentUserAccount(req, (err, account) => {
+        if (err) return res.status(500).send('DB Error');
+
+        if (!account) {
+            if (req.session.role === 'root') {
+                return res.redirect('/account?error=Das+Root-Konto+wird+ueber+Umgebungsvariablen+verwaltet');
+            }
+            return res.redirect('/account?error=Benutzerkonto+nicht+gefunden');
+        }
+
+        const updates = [];
+        const afterPasswordUpdate = () => {
+            if (!account.staff_id) {
+                return res.redirect('/account?success=Passwort+aktualisiert');
+            }
+
+            if (!email || email === account.staff_email) {
+                return res.redirect('/account?success=Account+aktualisiert');
+            }
+
+            db.run('UPDATE staff SET email = ? WHERE id = ?', [email.trim(), account.staff_id], (staffErr) => {
+                if (staffErr) return res.status(500).send('DB Error');
+                res.redirect('/account?success=Account+aktualisiert');
+            });
+        };
+
+        if (password) {
+            updates.push((done) => {
+                db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(password), account.id], (passwordErr) => {
+                    if (passwordErr) return done(passwordErr);
+                    done(null);
+                });
+            });
+        }
+
+        const trimmedEmail = email ? email.trim() : '';
+        if (account.staff_id && !trimmedEmail) {
+            return res.redirect('/account?error=E-Mail+darf+nicht+leer+sein');
+        }
+
+        if (updates.length === 0) {
+            if (!account.staff_id) {
+                return res.redirect('/account?error=Keine+Aenderungen+zum+Speichern');
+            }
+
+            if (trimmedEmail === account.staff_email) {
+                return res.redirect('/account?error=Keine+Aenderungen+zum+Speichern');
+            }
+        }
+
+        if (updates.length === 0) {
+            return afterPasswordUpdate();
+        }
+
+        updates[0]((updateErr) => {
+            if (updateErr) return res.status(500).send('DB Error');
+            afterPasswordUpdate();
+        });
     });
 });
 
@@ -1276,7 +1487,13 @@ app.get('/ticket/new', requireAuth, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1', [], (err, systems) => {
         db.all('SELECT * FROM ticket_templates WHERE active = 1', [], (err, templates) => {
             db.all('SELECT * FROM staff', [], (err, staff) => {
-                res.render('new', { systems: systems || [], templates: templates || [], staffList: staff || [] });
+                res.render('new', {
+                    systems: systems || [],
+                    templates: templates || [],
+                    staffList: staff || [],
+                    user: req.session.user,
+                    role: req.session.role || 'user'
+                });
             });
         });
     });

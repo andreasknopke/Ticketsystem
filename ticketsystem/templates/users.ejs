@@ -30,6 +30,7 @@
                 </div>
                 <div class="flex items-center gap-4">
                     <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-purple-100 text-purple-800"><%= role %></span></span>
+                    <a href="/account" class="btn-secondary text-sm">Account</a>
                     <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
                 </div>
             </div>
@@ -92,6 +93,24 @@
                                     <% }); %>
                                 </select>
                             </div>
+                            <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                <p class="text-sm font-semibold text-slate-900">Mail-Benachrichtigungen</p>
+                                <p class="mt-1 text-xs text-slate-500">Die Benachrichtigungen gehen an die E-Mail-Adresse des verknüpften Mitarbeiters.</p>
+                                <div class="mt-4 space-y-3">
+                                    <label class="flex items-start gap-3 text-sm text-slate-700">
+                                        <input type="checkbox" name="notify_new_tickets" class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                        <span>Neue Tickets melden, die zum Hauptsystem des Benutzers passen.</span>
+                                    </label>
+                                    <label class="flex items-start gap-3 text-sm text-slate-700">
+                                        <input type="checkbox" name="notify_assigned_tickets" checked class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                        <span>Benachrichtigen, wenn dem Benutzer ein Ticket zugewiesen wird.</span>
+                                    </label>
+                                    <label class="flex items-start gap-3 text-sm text-slate-700">
+                                        <input type="checkbox" name="notify_status_changes" checked class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                        <span>Benachrichtigen, wenn sich der Status eines zugewiesenen Tickets ändert.</span>
+                                    </label>
+                                </div>
+                            </div>
                             <button type="submit" class="btn-primary w-full">Benutzer anlegen</button>
                         </form>
                     </div>
@@ -117,6 +136,7 @@
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rolle</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mitarbeiter</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hauptsystem</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mail</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktionen</th>
                                 </tr>
                             </thead>
@@ -131,14 +151,23 @@
                                     </td>
                                     <td class="px-4 py-3 text-sm text-gray-600"><%= u.staff_name || '—' %></td>
                                     <td class="px-4 py-3 text-sm text-gray-600"><%= u.system_name || '—' %></td>
+                                    <td class="px-4 py-3 text-sm text-gray-600">
+                                        <div class="flex flex-wrap gap-1">
+                                            <% if (u.notify_new_tickets) { %><span class="badge bg-slate-100 text-slate-700">Neu</span><% } %>
+                                            <% if (u.notify_assigned_tickets) { %><span class="badge bg-blue-100 text-blue-700">Zuweisung</span><% } %>
+                                            <% if (u.notify_status_changes) { %><span class="badge bg-emerald-100 text-emerald-700">Status</span><% } %>
+                                            <% if (!u.notify_new_tickets && !u.notify_assigned_tickets && !u.notify_status_changes) { %>
+                                            <span class="text-xs text-slate-400">Keine</span>
+                                            <% } %>
+                                        </div>
+                                    </td>
                                     <td class="px-4 py-3">
                                         <div class="flex gap-2 items-center">
-                                            <!-- Edit modal trigger -->
-                                            <button type="button" class="text-xs text-primary-600 hover:underline"
-                                                onclick="openEditModal(<%= JSON.stringify(u) %>)">Bearbeiten</button>
+                                            <button type="button" class="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 transition hover:border-primary-300 hover:text-primary-700"
+                                                onclick='openEditModal(<%- JSON.stringify(u) %>)'>Bearbeiten</button>
                                             <form method="post" action="/admin/users/<%= u.id %>/delete"
                                                 onsubmit="return confirm('Benutzer <%= u.username %> wirklich löschen?')">
-                                                <button type="submit" class="text-xs text-red-600 hover:underline">Löschen</button>
+                                                <button type="submit" class="rounded-full border border-red-200 px-3 py-1 text-xs font-medium text-red-600 transition hover:bg-red-50">Löschen</button>
                                             </form>
                                         </div>
                                     </td>
@@ -154,65 +183,119 @@
     </main>
 
     <!-- Edit Modal -->
-    <div id="editModal" class="fixed inset-0 z-50 hidden bg-black/50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Benutzer bearbeiten</h3>
-            <form method="post" id="editForm" class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Benutzername</label>
-                    <input type="text" id="edit_username" class="form-input bg-gray-100" disabled>
+    <div id="editModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+        <div class="w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-slate-200">
+            <div class="border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white px-6 py-5">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-primary-600">Benutzerverwaltung</p>
+                        <h3 class="mt-1 text-2xl font-semibold text-slate-900">Benutzer bearbeiten</h3>
+                        <p class="mt-1 text-sm text-slate-500">Rolle, Verknüpfungen und Mail-Benachrichtigungen an einer Stelle verwalten.</p>
+                    </div>
+                    <button type="button" class="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onclick="closeEditModal()" aria-label="Dialog schließen">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Neues Passwort (leer = unverändert)</label>
-                    <input type="password" name="password" class="form-input" placeholder="Neues Passwort eingeben">
+            </div>
+            <form method="post" id="editForm" class="space-y-6 px-6 py-6">
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Benutzer</p>
+                    <p id="edit_username_display" class="mt-1 text-lg font-semibold text-slate-900"></p>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Rolle</label>
-                    <select name="role" id="edit_role" class="form-input">
-                        <option value="user">Benutzer</option>
-                        <option value="admin">Admin</option>
-                    </select>
+                <div class="grid gap-6 lg:grid-cols-2">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Neues Passwort</label>
+                            <input type="password" name="password" class="form-input" placeholder="Leer lassen, um es nicht zu ändern">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Rolle</label>
+                            <select name="role" id="edit_role" class="form-input">
+                                <option value="user">Benutzer</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Verknüpfter Mitarbeiter</label>
+                            <select name="staff_id" id="edit_staff_id" class="form-input">
+                                <option value="">— Kein Mitarbeiter —</option>
+                                <% staffList.forEach(s => { %>
+                                <option value="<%= s.id %>"><%= s.name %></option>
+                                <% }); %>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Hauptsystem</label>
+                            <select name="default_system_id" id="edit_system_id" class="form-input">
+                                <option value="">— Kein System —</option>
+                                <% systems.forEach(s => { %>
+                                <option value="<%= s.id %>"><%= s.name %></option>
+                                <% }); %>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <p class="text-sm font-semibold text-slate-900">Mail-Benachrichtigungen</p>
+                            <p class="mt-1 text-xs text-slate-500">Benachrichtigungen werden nur versendet, wenn ein Mitarbeiter mit E-Mail hinterlegt ist.</p>
+                            <div class="mt-4 space-y-3">
+                                <label class="flex items-start gap-3 text-sm text-slate-700">
+                                    <input id="edit_notify_new_tickets" type="checkbox" name="notify_new_tickets" class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                    <span>Neue Tickets zum Hauptsystem melden</span>
+                                </label>
+                                <label class="flex items-start gap-3 text-sm text-slate-700">
+                                    <input id="edit_notify_assigned_tickets" type="checkbox" name="notify_assigned_tickets" class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                    <span>Bei neuer Zuweisung informieren</span>
+                                </label>
+                                <label class="flex items-start gap-3 text-sm text-slate-700">
+                                    <input id="edit_notify_status_changes" type="checkbox" name="notify_status_changes" class="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                                    <span>Bei Statusänderungen informieren</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Verknüpfter Mitarbeiter</label>
-                    <select name="staff_id" id="edit_staff_id" class="form-input">
-                        <option value="">— Kein Mitarbeiter —</option>
-                        <% staffList.forEach(s => { %>
-                        <option value="<%= s.id %>"><%= s.name %></option>
-                        <% }); %>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Hauptsystem</label>
-                    <select name="default_system_id" id="edit_system_id" class="form-input">
-                        <option value="">— Kein System —</option>
-                        <% systems.forEach(s => { %>
-                        <option value="<%= s.id %>"><%= s.name %></option>
-                        <% }); %>
-                    </select>
-                </div>
-                <div class="flex gap-3 pt-2">
-                    <button type="submit" class="btn-primary flex-1">Speichern</button>
-                    <button type="button" onclick="closeEditModal()" class="btn-secondary flex-1">Abbrechen</button>
+                <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">
+                    <button type="button" onclick="closeEditModal()" class="btn-secondary">Abbrechen</button>
+                    <button type="submit" class="btn-primary">Speichern</button>
                 </div>
             </form>
         </div>
     </div>
 
     <script>
+    const editModal = document.getElementById('editModal');
+
     function openEditModal(u) {
-        document.getElementById('edit_username').value = u.username;
+        document.getElementById('edit_username_display').textContent = u.username;
         document.getElementById('edit_role').value = u.role;
         document.getElementById('edit_staff_id').value = u.staff_id || '';
         document.getElementById('edit_system_id').value = u.default_system_id || '';
+        document.getElementById('edit_notify_new_tickets').checked = !!u.notify_new_tickets;
+        document.getElementById('edit_notify_assigned_tickets').checked = !!u.notify_assigned_tickets;
+        document.getElementById('edit_notify_status_changes').checked = !!u.notify_status_changes;
         document.getElementById('editForm').action = '/admin/users/' + u.id + '/update';
-        document.getElementById('editModal').classList.remove('hidden');
+        editModal.classList.remove('hidden');
+        editModal.classList.add('flex');
+        document.body.classList.add('overflow-hidden');
     }
+
     function closeEditModal() {
-        document.getElementById('editModal').classList.add('hidden');
+        editModal.classList.add('hidden');
+        editModal.classList.remove('flex');
+        document.body.classList.remove('overflow-hidden');
     }
-    document.getElementById('editModal').addEventListener('click', function(e) {
-        if (e.target === this) closeEditModal();
+
+    editModal.addEventListener('click', function(e) {
+        if (e.target === editModal) closeEditModal();
+    });
+
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && !editModal.classList.contains('hidden')) {
+            closeEditModal();
+        }
     });
     </script>
 </body>
