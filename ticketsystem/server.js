@@ -161,6 +161,52 @@ function requireApiAllowedIp(req, res, next) {
 }
 
 // Middleware
+// GitHub Webhook MUST be before express.json() to get raw body for HMAC verification
+app.post('/api/github/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+    const signature = req.headers['x-hub-signature-256'];
+    let body;
+    try { body = JSON.parse(req.body.toString('utf-8')); } catch(e) { return res.status(400).json({ error: 'Invalid JSON' }); }
+    const event = req.headers['x-github-event'];
+
+    if (signature && body.repository) {
+        const [owner, repo] = body.repository.full_name.split('/');
+        db.get('SELECT * FROM github_integration WHERE repo_owner = ? AND repo_name = ?', [owner, repo], (err, integration) => {
+            if (integration && integration.webhook_secret) {
+                const hmac = crypto.createHmac('sha256', integration.webhook_secret);
+                hmac.update(req.body);
+                const expectedSig = 'sha256=' + hmac.digest('hex');
+                try {
+                    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+                        return res.status(401).json({ error: 'Invalid signature' });
+                    }
+                } catch(e) {
+                    return res.status(401).json({ error: 'Invalid signature' });
+                }
+            }
+
+            if (event === 'issues' && body.action === 'opened' && body.issue && !body.issue.pull_request) {
+                const i = body.issue;
+                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [integration.project_id, i.number, i.title, i.state, i.html_url,
+                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
+                io.emit('github:issue_opened', { projectId: integration.project_id, issue: i });
+            } else if (event === 'issues' && body.action === 'closed' && body.issue) {
+                const i = body.issue;
+                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [integration.project_id, i.number, i.title, i.state, i.html_url,
+                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
+                io.emit('github:issue_closed', { projectId: integration.project_id, issue: i });
+            }
+
+            res.status(200).json({ status: 'processed', event });
+        });
+    } else {
+        res.status(200).json({ status: 'received_no_repo' });
+    }
+});
+
 app.use('/api', (req, res, next) => {
     const requestOrigin = normalizeOrigin(req.headers.origin);
 
@@ -1949,53 +1995,6 @@ app.get('/api/projects/:projectId/github/milestones', requireAuth, (req, res) =>
             res.status(500).json({ error: e.message });
         }
     });
-});
-
-// GitHub Webhook (public endpoint - signature verified)
-app.post('/api/github/webhook', express.raw({ type: 'application/json' }), (req, res) => {
-    const signature = req.headers['x-hub-signature-256'];
-    let body;
-    try { body = JSON.parse(req.body.toString('utf-8')); } catch(e) { return res.status(400).json({ error: 'Invalid JSON' }); }
-    const event = req.headers['x-github-event'];
-
-    if (signature && body.repository) {
-        const [owner, repo] = body.repository.full_name.split('/');
-        db.get('SELECT * FROM github_integration WHERE repo_owner = ? AND repo_name = ?', [owner, repo], (err, integration) => {
-            if (integration && integration.webhook_secret) {
-                const hmac = crypto.createHmac('sha256', integration.webhook_secret);
-                hmac.update(req.body);
-                const expectedSig = 'sha256=' + hmac.digest('hex');
-                try {
-                    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
-                        return res.status(401).json({ error: 'Invalid signature' });
-                    }
-                } catch(e) {
-                    return res.status(401).json({ error: 'Invalid signature' });
-                }
-            }
-
-            // Process webhook events
-            if (event === 'issues' && body.action === 'opened' && body.issue && !body.issue.pull_request) {
-                const i = body.issue;
-                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                    [integration.project_id, i.number, i.title, i.state, i.html_url,
-                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
-                io.emit('github:issue_opened', { projectId: integration.project_id, issue: i });
-            } else if (event === 'issues' && body.action === 'closed' && body.issue) {
-                const i = body.issue;
-                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                    [integration.project_id, i.number, i.title, i.state, i.html_url,
-                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
-                io.emit('github:issue_closed', { projectId: integration.project_id, issue: i });
-            }
-
-            res.status(200).json({ status: 'processed', event });
-        });
-    } else {
-        res.status(200).json({ status: 'received_no_repo' });
-    }
 });
 
 // Markdown render helper

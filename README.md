@@ -1,8 +1,17 @@
 # Ticketsystem
 
-Ein webbasiertes Ticketsystem zur Verwaltung von Bug-Reports und Feature-Requests.
+Ein webbasiertes Ticketsystem mit Projektmanagement zur Verwaltung von Bug-Reports und Feature-Requests.
 
 Das Projekt befindet sich im Unterordner [ticketsystem/](ticketsystem/).
+
+## Features
+
+- **Ticket-Management** mit SLA-Tracking und Feedback-System
+- **Projektmanagement** mit Meilensteinen, Key-User-Verwaltung und Zeitleisten
+- **Wiki-Dokumentation** pro Projekt mit Markdown und Mermaid-Flowcharts
+- **GitHub-Integration** mit Issue-Sync und Webhook-Unterstützung
+- **E-Mail-Benachrichtigungen** über SMTP oder Brevo API
+- **Echtzeit-Updates** via Socket.io
 
 ## Schnellstart
 
@@ -10,6 +19,7 @@ Das Projekt befindet sich im Unterordner [ticketsystem/](ticketsystem/).
 cd ticketsystem
 npm install
 # .env Datei erstellen (siehe README in ticketsystem/)
+npm run seed   # Testdaten mit Projekten, Meilensteinen und Wiki-Seiten
 npm start
 ```
 
