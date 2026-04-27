@@ -114,25 +114,32 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             <% milestones.forEach(m => { %>
-                            <tr>
+                            <tr class="cursor-pointer hover:bg-gray-50" onclick="toggleMilestoneDetail(<%= m.id %>)" data-milestone='<%- JSON.stringify({id:m.id,title:m.title,description:m.description||"",phase:m.phase||"",start_date:m.start_date||"",end_date:m.end_date||"",status:m.status,color:m.color||"#2563eb"}) %>'>
                                 <td class="px-6 py-4 text-sm font-medium text-gray-900">
                                     <span class="w-3 h-3 rounded-full inline-block mr-2" style="background:<%= m.color || '#2563eb' %>"></span><%= m.title %>
+                                    <% if (m.description) { %><span class="text-xs text-gray-400 ml-1">ⓘ</span><% } %>
                                 </td>
                                 <td class="px-6 py-4 text-sm text-gray-500"><%= m.phase ? 'Phase ' + m.phase : '-' %></td>
                                 <td class="px-6 py-4 text-sm text-gray-500"><%= m.start_date ? new Date(m.start_date).toLocaleDateString('de-DE') : '-' %></td>
                                 <td class="px-6 py-4 text-sm text-gray-500"><%= m.end_date ? new Date(m.end_date).toLocaleDateString('de-DE') : '-' %></td>
                                 <td class="px-6 py-4"><span class="badge text-xs <%= m.status === 'completed' ? 'bg-green-100 text-green-800' : m.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : m.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[m.status] %></span></td>
                                 <% if (canManage) { %>
-                                <td class="px-6 py-4 text-sm">
+                                <td class="px-6 py-4 text-sm" onclick="event.stopPropagation()">
                                     <select onchange="updateStatus(<%= m.id %>, this.value)" class="text-xs form-input py-1">
                                         <option value="pending" <%= m.status === 'pending' ? 'selected' : '' %>>Offen</option>
                                         <option value="in_progress" <%= m.status === 'in_progress' ? 'selected' : '' %>>In Arbeit</option>
                                         <option value="completed" <%= m.status === 'completed' ? 'selected' : '' %>>Erledigt</option>
                                         <option value="blocked" <%= m.status === 'blocked' ? 'selected' : '' %>>Blockiert</option>
                                     </select>
+                                    <button onclick="editMilestoneFromData(this.closest('tr'))" class="text-primary-600 hover:text-primary-800 ml-2">Bearbeiten</button>
                                     <button onclick="deleteMilestone(<%= m.id %>)" class="text-red-600 hover:text-red-900 ml-2">Löschen</button>
                                 </td>
                                 <% } %>
+                            </tr>
+                            <tr id="detail-<%= m.id %>" class="hidden bg-gray-50">
+                                <td colspan="<%= canManage ? 6 : 5 %>" class="px-6 py-4">
+                                    <div class="text-sm text-gray-700 whitespace-pre-wrap"><%= m.description ? m.description : '' %><% if (!m.description) { %><span class="text-gray-400 italic">Keine Beschreibung</span><% } %></div>
+                                </td>
                             </tr>
                             <% }); %>
                             <% if (milestones.length === 0) { %>
@@ -143,9 +150,86 @@
                 </div>
             </div>
         </div>
+        
+        <% if (canManage) { %>
+        <!-- Edit Milestone Modal -->
+        <div id="editModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+            <div class="card max-w-lg w-full mx-4">
+                <div class="card-header flex items-center justify-between">
+                    <h2 class="text-lg font-semibold text-gray-900">Meilenstein bearbeiten</h2>
+                    <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+                </div>
+                <div class="card-body">
+                    <form id="editForm" onsubmit="saveMilestone(event)" class="space-y-4">
+                        <input type="hidden" id="editId">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Titel *</label>
+                            <input id="editTitle" name="title" required class="form-input">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
+                            <textarea id="editDescription" name="description" class="form-input" rows="3"></textarea>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="block text-sm font-medium text-gray-700 mb-1">Phase</label>
+                                <select id="editPhase" name="phase" class="form-input"><option value="">Keine</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
+                            <div><label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                                <select id="editStatus" name="status" class="form-input"><option value="pending">Offen</option><option value="in_progress">In Arbeit</option><option value="completed">Erledigt</option><option value="blocked">Blockiert</option></select></div>
+                            <div><label class="block text-sm font-medium text-gray-700 mb-1">Startdatum</label><input type="date" id="editStartDate" name="start_date" class="form-input"></div>
+                            <div><label class="block text-sm font-medium text-gray-700 mb-1">Enddatum</label><input type="date" id="editEndDate" name="end_date" class="form-input"></div>
+                        </div>
+                        <div><label class="block text-sm font-medium text-gray-700 mb-1">Farbe</label><input type="color" id="editColor" name="color" class="form-input h-10"></div>
+                        <div class="flex gap-2">
+                            <button type="submit" class="btn-primary">Speichern</button>
+                            <button type="button" onclick="closeEditModal()" class="btn-secondary">Abbrechen</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <% } %>
     </main>
     <script>
         function toggleAddForm() { document.getElementById('addMilestoneForm').classList.toggle('hidden'); }
+        function toggleMilestoneDetail(id) {
+            document.getElementById('detail-' + id).classList.toggle('hidden');
+        }
+        function editMilestoneFromData(tr) {
+            const data = JSON.parse(tr.dataset.milestone);
+            editMilestone(data.id, data.title, data.description, data.phase, data.start_date, data.end_date, data.status, data.color);
+        }
+        function editMilestone(id, title, description, phase, startDate, endDate, status, color) {
+            document.getElementById('editId').value = id;
+            document.getElementById('editTitle').value = title;
+            document.getElementById('editDescription').value = description;
+            document.getElementById('editPhase').value = phase;
+            document.getElementById('editStartDate').value = startDate;
+            document.getElementById('editEndDate').value = endDate;
+            document.getElementById('editStatus').value = status;
+            document.getElementById('editColor').value = color;
+            document.getElementById('editModal').classList.remove('hidden');
+        }
+        function closeEditModal() {
+            document.getElementById('editModal').classList.add('hidden');
+        }
+        async function saveMilestone(e) {
+            e.preventDefault();
+            const id = document.getElementById('editId').value;
+            const body = {
+                title: document.getElementById('editTitle').value,
+                description: document.getElementById('editDescription').value,
+                phase: document.getElementById('editPhase').value ? parseInt(document.getElementById('editPhase').value) : null,
+                start_date: document.getElementById('editStartDate').value || null,
+                end_date: document.getElementById('editEndDate').value || null,
+                status: document.getElementById('editStatus').value,
+                color: document.getElementById('editColor').value
+            };
+            const resp = await fetch('/api/milestones/' + id, {
+                method:'PATCH', headers:{'Content-Type':'application/json','X-CSRF-Token':'<%= csrfToken %>'}, body:JSON.stringify(body)
+            });
+            if (resp.ok) location.reload();
+            else alert('Fehler: ' + (await resp.json()).error);
+        }
         async function createMilestone(e) {
             e.preventDefault();
             const fd = new FormData(e.target);
@@ -164,11 +248,13 @@
             if (resp.ok) location.reload();
         }
         async function deleteMilestone(id) {
-            if (!confirm('Milestone löschen?')) return;
+            if (!confirm('Meilenstein wirklich löschen?')) return;
             const resp = await fetch('/api/milestones/' + id, { method:'DELETE', headers:{'X-CSRF-Token':'<%= csrfToken %>'} });
             if (resp.ok) location.reload();
             else alert('Fehler beim Löschen');
         }
+        // Close modal on background click
+        document.getElementById('editModal').addEventListener('click', function(e) { if (e.target === this) closeEditModal(); });
     </script>
 </body>
 </html>
