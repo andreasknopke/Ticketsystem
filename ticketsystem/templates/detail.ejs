@@ -26,10 +26,13 @@
                         <a href="/ticket/new" class="nav-link">Neues Ticket</a>
                         <a href="/admin/systems" class="nav-link">Systeme</a>
                         <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% if (role === 'root') { %>
+                        <a href="/admin/users" class="nav-link">Benutzer</a>
+                        <% } %>
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
-                    <span class="text-sm text-gray-600"><%= user %></span>
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
                     <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
                 </div>
             </div>
@@ -60,6 +63,17 @@
                     <span class="badge badge-status-<%= ticket.status %>"><%= toTitle(ticket.status) %></span>
                     <span class="badge badge-priority-<%= ticket.priority %>"><%= toTitle(ticket.priority) %></span>
                     <span class="badge badge-type-<%= ticket.type %>"><%= ticket.type.toUpperCase() %></span>
+                    <% if (role === 'admin' || role === 'root') { %>
+                    <form method="post" action="/ticket/<%= ticket.id %>/delete"
+                        onsubmit="return confirm('Ticket #<%= ticket.id %> wirklich endgültig löschen? Dies kann nicht rückgängig gemacht werden.')">
+                        <button type="submit" class="btn-secondary text-sm text-red-600 border-red-200 hover:bg-red-50">
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                            Ticket löschen
+                        </button>
+                    </form>
+                    <% } %>
                 </div>
             </div>
         </div>

@@ -3,6 +3,20 @@ const express = require('express');
 const session = require('express-session');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const crypto = require('crypto');
+
+function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+    const [salt, hash] = stored.split(':');
+    if (!salt || !hash) return false;
+    const checkHash = crypto.scryptSync(password, salt, 64).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(checkHash, 'hex'));
+}
 const nodemailer = require('nodemailer');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -154,6 +168,26 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
+function requireAdmin(req, res, next) {
+    if (req.session && req.session.authenticated && (req.session.role === 'admin' || req.session.role === 'root')) {
+        return next();
+    }
+    if (req.path.startsWith('/api/')) {
+        return res.status(403).json({ error: 'Keine Berechtigung.' });
+    }
+    res.status(403).send('Keine Berechtigung.');
+}
+
+function requireRoot(req, res, next) {
+    if (req.session && req.session.authenticated && req.session.role === 'root') {
+        return next();
+    }
+    if (req.path.startsWith('/api/')) {
+        return res.status(403).json({ error: 'Nur root-Benutzer haben Zugriff.' });
+    }
+    res.status(403).send('Nur root-Benutzer haben Zugriff.');
+}
+
 function requireApiKey(req, res, next) {
     if (!REQUIRE_API_KEY) return next();
     const key = req.headers['x-api-key'];
@@ -255,6 +289,20 @@ function initDb() {
     )`);
 
     // Bestehende Tabellen-Spalten aktualisieren (Migrationen)
+    // Users table
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT CHECK(role IN ('root','admin','user')) DEFAULT 'user',
+        staff_id INTEGER,
+        default_system_id INTEGER,
+        active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (staff_id) REFERENCES staff(id),
+        FOREIGN KEY (default_system_id) REFERENCES systems(id)
+    )`, (err) => { if (err) console.error('Users table error:', err.message); });
+
     db.all("PRAGMA table_info(tickets)", (err, rows) => {
         if (err) {
             console.error('Fehler beim Pruefen der Tabellenstruktur:', err.message);
@@ -681,12 +729,29 @@ app.get('/login', (req, res) => {
 
 app.post('/login', (req, res) => {
     const { username, password } = req.body;
+    if (!username || !password) return res.redirect('/login?error=Benutzername%20und%20Passwort%20erforderlich');
+
+    // Root user from env
     if (username === ADMIN_USER && password === ADMIN_PASS) {
         req.session.authenticated = true;
         req.session.user = username;
+        req.session.role = 'root';
+        req.session.staff_id = null;
+        req.session.default_system_id = null;
         return res.redirect('/');
     }
-    res.redirect('/login?error=Ungueltige%20Anmeldedaten');
+
+    // DB users
+    db.get('SELECT * FROM users WHERE username = ? AND active = 1', [username], (err, user) => {
+        if (err || !user) return res.redirect('/login?error=Ungueltige%20Anmeldedaten');
+        if (!verifyPassword(password, user.password_hash)) return res.redirect('/login?error=Ungueltige%20Anmeldedaten');
+        req.session.authenticated = true;
+        req.session.user = user.username;
+        req.session.role = user.role;
+        req.session.staff_id = user.staff_id;
+        req.session.default_system_id = user.default_system_id;
+        res.redirect('/');
+    });
 });
 
 app.get('/logout', (req, res) => {
@@ -1064,17 +1129,88 @@ app.post('/admin/staff/:id/delete', requireAuth, (req, res) => {
     });
 });
 
+// --- Web UI: User Management (root only) ---
+
+app.get('/admin/users', requireAuth, requireRoot, (req, res) => {
+    db.all(`SELECT u.*, s.name as staff_name, sys.name as system_name
+        FROM users u
+        LEFT JOIN staff s ON u.staff_id = s.id
+        LEFT JOIN systems sys ON u.default_system_id = sys.id
+        WHERE u.active = 1 ORDER BY u.username`, [], (err, users) => {
+        if (err) return res.status(500).send('DB Error');
+        db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, staffList) => {
+            db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, systems) => {
+                res.render('users', { users: users || [], staffList: staffList || [], systems: systems || [], user: req.session.user, role: req.session.role });
+            });
+        });
+    });
+});
+
+app.post('/admin/users', requireAuth, requireRoot, (req, res) => {
+    const { username, password, role, staff_id, default_system_id } = req.body;
+    if (!username || !password) return res.redirect('/admin/users?error=Benutzername+und+Passwort+erforderlich');
+    const hash = hashPassword(password);
+    const staffId = staff_id ? parseInt(staff_id, 10) : null;
+    const sysId = default_system_id ? parseInt(default_system_id, 10) : null;
+    db.run('INSERT INTO users (username, password_hash, role, staff_id, default_system_id) VALUES (?, ?, ?, ?, ?)',
+        [username, hash, role || 'user', staffId, sysId],
+        function(err) {
+            if (err) {
+                const msg = err.message.includes('UNIQUE') ? 'Benutzername+bereits+vergeben' : 'DB+Fehler';
+                return res.redirect('/admin/users?error=' + msg);
+            }
+            res.redirect('/admin/users');
+        });
+});
+
+app.post('/admin/users/:id/update', requireAuth, requireRoot, (req, res) => {
+    const { role, staff_id, default_system_id, password } = req.body;
+    const staffId = staff_id ? parseInt(staff_id, 10) : null;
+    const sysId = default_system_id ? parseInt(default_system_id, 10) : null;
+    if (password) {
+        const hash = hashPassword(password);
+        db.run('UPDATE users SET role=?, staff_id=?, default_system_id=?, password_hash=? WHERE id=?',
+            [role, staffId, sysId, hash, req.params.id], (err) => {
+                if (err) return res.status(500).send('DB Error');
+                res.redirect('/admin/users');
+            });
+    } else {
+        db.run('UPDATE users SET role=?, staff_id=?, default_system_id=? WHERE id=?',
+            [role, staffId, sysId, req.params.id], (err) => {
+                if (err) return res.status(500).send('DB Error');
+                res.redirect('/admin/users');
+            });
+    }
+});
+
+app.post('/admin/users/:id/delete', requireAuth, requireRoot, (req, res) => {
+    db.run('UPDATE users SET active = 0 WHERE id = ?', [req.params.id], (err) => {
+        if (err) return res.status(500).send('DB Error');
+        res.redirect('/admin/users');
+    });
+});
+
 // --- Web UI: Dashboard & Detail ---
 
 app.get('/', requireAuth, (req, res) => {
     const user = req.session.user;
+    const role = req.session.role || 'user';
+    const staffId = req.session.staff_id;
+    const myTickets = req.query.my_tickets === '1' && staffId;
 
-    // Alle Tickets laden
-    db.all(`SELECT t.*, s.name as system_name, st.name as assigned_name 
+    let ticketQuery = `SELECT t.*, s.name as system_name, st.name as assigned_name 
         FROM tickets t 
         LEFT JOIN systems s ON t.system_id = s.id 
-        LEFT JOIN staff st ON t.assigned_to = st.id 
-        ORDER BY t.updated_at DESC`, [], (err, tickets) => {
+        LEFT JOIN staff st ON t.assigned_to = st.id`;
+    const ticketParams = [];
+    if (myTickets) {
+        ticketQuery += ' WHERE t.assigned_to = ?';
+        ticketParams.push(staffId);
+    }
+    ticketQuery += ' ORDER BY t.updated_at DESC';
+
+    // Alle Tickets laden
+    db.all(ticketQuery, ticketParams, (err, tickets) => {
         if (err) {
             console.error('Fehler beim Laden der Tickets:', err);
             tickets = [];
@@ -1116,6 +1252,9 @@ app.get('/', requireAuth, (req, res) => {
 
                                 res.render('dashboard', { 
                                     user, 
+                                    role,
+                                    staffId,
+                                    myTickets: !!myTickets,
                                     tickets: tickets.map(enrichTicket),
                                     stats, 
                                     overdue: overdue.map(enrichTicket), 
@@ -1146,6 +1285,7 @@ app.get('/ticket/new', requireAuth, (req, res) => {
 app.get('/ticket/:id', requireAuth, (req, res) => {
     const ticketId = req.params.id;
     const user = req.session.user;
+    const role = req.session.role || 'user';
 
     db.get(`SELECT t.*, s.name as system_name, st.name as assigned_name, st.email as assigned_email
         FROM tickets t 
@@ -1170,7 +1310,8 @@ app.get('/ticket/:id', requireAuth, (req, res) => {
                                         sla: sla || {},
                                         activities: activities || [],
                                         feedback: feedback || null,
-                                        user
+                                        user,
+                                        role
                                     });
                                 });
                             });
@@ -1179,6 +1320,16 @@ app.get('/ticket/:id', requireAuth, (req, res) => {
                 });
             });
         });
+    });
+});
+
+app.post('/ticket/:id/delete', requireAuth, requireAdmin, (req, res) => {
+    const ticketId = req.params.id;
+    const actor = getActor(req);
+    logAction(ticketId, actor, 'deleted', 'Ticket endgültig gelöscht');
+    db.run('DELETE FROM tickets WHERE id = ?', [ticketId], function(err) {
+        if (err) return res.status(500).send('DB Error');
+        res.redirect('/');
     });
 });
 
