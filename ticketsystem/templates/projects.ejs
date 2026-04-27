@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projekte | Ticketsystem</title>
+    <link rel="stylesheet" href="/style.css?v=2">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <div class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                        </div>
+                        <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
+                    </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+                        <a href="/projects" class="nav-link active">Projekte</a>
+                        <% if (role === 'admin' || role === 'root') { %>
+                        <a href="/stats" class="nav-link">Statistiken</a>
+                        <a href="/admin/systems" class="nav-link">Systeme</a>
+                        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% if (role === 'root') { %><a href="/admin/users" class="nav-link">Benutzer</a><% } %>
+                        <% } %>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <a href="/account" class="btn-secondary text-sm">Account</a>
+                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <nav class="flex mb-6" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-4">
+                <li><a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a></li>
+                <li class="text-gray-400">/</li>
+                <li class="text-gray-900 font-medium">Projekte</li>
+            </ol>
+        </nav>
+
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-2xl font-bold text-gray-900">Projekte</h1>
+            <% if (canManage) { %>
+            <button onclick="toggleNewProject()" class="btn-primary">+ Neues Projekt</button>
+            <% } %>
+        </div>
+
+        <% if (canManage) { %>
+        <div id="newProjectForm" class="card mb-8 hidden">
+            <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Neues Projekt</h2></div>
+            <div class="card-body">
+                <form method="post" action="/api/projects" id="createProjectForm" class="space-y-4">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                            <input name="name" placeholder="z.B. CuraFlow" required class="form-input">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Verknüpftes System</label>
+                            <select name="system_id" class="form-input">
+                                <option value="">Kein System</option>
+                                <% systems.forEach(sys => { %><option value="<%= sys.id %>"><%= sys.name %></option><% }); %>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                            <select name="status" class="form-input">
+                                <option value="planning">Planung</option>
+                                <option value="active">Aktiv</option>
+                                <option value="maintenance">Wartung</option>
+                                <option value="completed">Abgeschlossen</option>
+                            </select>
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
+                            <textarea name="description" class="form-input" rows="3"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Startdatum</label>
+                            <input type="date" name="start_date" class="form-input">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Enddatum</label>
+                            <input type="date" name="end_date" class="form-input">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-primary">Projekt erstellen</button>
+                </form>
+            </div>
+        </div>
+        <% } %>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <% projects.forEach(p => { %>
+            <a href="/project/<%= p.id %>" class="card hover:shadow-lg transition-shadow no-underline block">
+                <div class="card-body">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-lg font-semibold text-gray-900"><%= p.name %></h3>
+                        <span class="badge <%= p.status === 'active' ? 'bg-green-100 text-green-800' : p.status === 'planning' ? 'bg-blue-100 text-blue-800' : p.status === 'maintenance' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800' %>">
+                            <%= {planning:'Planung',active:'Aktiv',maintenance:'Wartung',completed:'Abgeschlossen'}[p.status] || p.status %>
+                        </span>
+                    </div>
+                    <% if (p.system_name) { %><p class="text-sm text-primary-600 mb-2"><%= p.system_name %></p><% } %>
+                    <p class="text-sm text-gray-600 mb-4"><%= p.description || 'Keine Beschreibung' %></p>
+                    <div class="flex gap-4 text-sm text-gray-500">
+                        <span title="Meilensteine"><svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg><%= p.completed_milestones || 0 %>/<%= p.milestone_count || 0 %></span>
+                        <span title="Key-User"><svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg><%= p.key_user_count || 0 %></span>
+                    </div>
+                    <% if (p.milestone_count > 0) { %>
+                    <div class="mt-3 bg-gray-200 rounded-full h-2">
+                        <div class="bg-primary-600 rounded-full h-2" style="width:<%= Math.round((p.completed_milestones||0)/(p.milestone_count||1)*100) %>%"></div>
+                    </div>
+                    <% } %>
+                </div>
+            </a>
+            <% }); %>
+        </div>
+        <% if (projects.length === 0) { %>
+        <div class="text-center py-12 text-gray-500">Keine Projekte vorhanden.</div>
+        <% } %>
+    </main>
+    <script>
+        function toggleNewProject() { document.getElementById('newProjectForm').classList.toggle('hidden'); }
+        document.getElementById('createProjectForm')?.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const fd = new FormData(this);
+            const body = Object.fromEntries(fd);
+            const resp = await fetch('/api/projects', { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':'<%= csrfToken %>'}, body:JSON.stringify(body) });
+            if (resp.ok) location.reload();
+            else alert('Fehler: ' + (await resp.json()).error);
+        });
+    </script>
+</body>
+</html>

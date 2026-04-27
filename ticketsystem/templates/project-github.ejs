@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub - <%= project.name %> | Ticketsystem</title>
+    <link rel="stylesheet" href="/style.css?v=2">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <div class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                        </div>
+                        <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
+                    </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+                        <a href="/projects" class="nav-link active">Projekte</a>
+                        <% if (role === 'admin' || role === 'root') { %>
+                        <a href="/stats" class="nav-link">Statistiken</a>
+                        <a href="/admin/systems" class="nav-link">Systeme</a>
+                        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% if (role === 'root') { %><a href="/admin/users" class="nav-link">Benutzer</a><% } %>
+                        <% } %>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <a href="/account" class="btn-secondary text-sm">Account</a>
+                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <nav class="flex mb-6" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-4">
+                <li><a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a></li>
+                <li class="text-gray-400">/</li>
+                <li><a href="/projects" class="text-gray-500 hover:text-gray-700">Projekte</a></li>
+                <li class="text-gray-400">/</li>
+                <li><a href="/project/<%= project.id %>" class="text-gray-500 hover:text-gray-700"><%= project.name %></a></li>
+                <li class="text-gray-400">/</li>
+                <li class="text-gray-900 font-medium">GitHub Integration</li>
+            </ol>
+        </nav>
+
+        <h1 class="text-2xl font-bold text-gray-900 mb-6">GitHub Integration: <%= project.name %></h1>
+
+        <div class="flex flex-wrap gap-2 mb-6">
+            <a href="/project/<%= project.id %>" class="btn-secondary text-sm">Dashboard</a>
+            <a href="/project/<%= project.id %>/timeline" class="btn-secondary text-sm">Zeitleiste</a>
+            <% if (canManage) { %><a href="/project/<%= project.id %>/milestones" class="btn-secondary text-sm">Meilensteine</a><% } %>
+            <% if (canManage) { %><a href="/project/<%= project.id %>/keyusers" class="btn-secondary text-sm">Key-User</a><% } %>
+            <a href="/project/<%= project.id %>/docs" class="btn-secondary text-sm">Wiki</a>
+            <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="btn-secondary text-sm font-medium bg-primary-50 text-primary-700">GitHub</a><% } %>
+        </div>
+
+        <div class="card mb-6">
+            <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">GitHub-Einstellungen</h2></div>
+            <div class="card-body">
+                <form id="githubForm" onsubmit="saveGithub(event)" class="space-y-4">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Repo Owner *</label>
+                            <input name="repo_owner" value="<%= github ? github.repo_owner : '' %>" required class="form-input" placeholder="z.B. mein-krankenhaus">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Repo Name *</label>
+                            <input name="repo_name" value="<%= github ? github.repo_name : '' %>" required class="form-input" placeholder="z.B. curaflow">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Personal Access Token</label>
+                            <input name="access_token" type="password" class="form-input" placeholder="ghp_... (leer lassen falls unverändert)">
+                            <p class="text-xs text-gray-500 mt-1">Fine-grained Token mit repo, issues und wiki Scopes. <a href="https://github.com/settings/tokens" target="_blank" class="text-primary-600">Token erstellen</a></p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Webhook Secret (optional)</label>
+                            <input name="webhook_secret" type="password" class="form-input" value="<%= github ? github.webhook_secret || '' : '' %>">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Webhook URL</label>
+                            <input class="form-input bg-gray-50" readonly value="<%= process.env.BASE_URL || 'http://localhost:'+(process.env.PORT||8010) %>/api/github/webhook">
+                        </div>
+                    </div>
+                    <div class="flex gap-4">
+                        <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="sync_issues" value="1" <%= github && github.sync_issues ? 'checked' : '' %> class="rounded"> Issues synchronisieren</label>
+                        <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="sync_wiki" value="1" <%= github && github.sync_wiki ? 'checked' : '' %> class="rounded"> Wiki synchronisieren</label>
+                    </div>
+                    <button type="submit" class="btn-primary">Einstellungen speichern</button>
+                </form>
+            </div>
+        </div>
+
+        <% if (github) { %>
+        <div class="card">
+            <div class="card-header">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-lg font-semibold text-gray-900">GitHub Sync</h2>
+                    <button onclick="syncGitHub()" class="btn-primary text-sm">Jetzt synchronisieren</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div><span class="text-gray-500">Repository:</span> <a href="https://github.com/<%= github.repo_owner %>/<%= github.repo_name %>" target="_blank" class="text-primary-600"><%= github.repo_owner %>/<%= github.repo_name %></a></div>
+                    <div><span class="text-gray-500">Letzter Sync:</span> <%= github.last_synced_at || 'Nie' %></div>
+                    <div><span class="text-gray-500">Issue Sync:</span> <span class="badge <%= github.sync_issues ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600' %>"><%= github.sync_issues ? 'Aktiv' : 'Inaktiv' %></span></div>
+                    <div><span class="text-gray-500">Wiki Sync:</span> <span class="badge <%= github.sync_wiki ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600' %>"><%= github.sync_wiki ? 'Aktiv' : 'Inaktiv' %></span></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="issuesContainer" class="card mt-6 hidden">
+            <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">GitHub Issues</h2></div>
+            <div class="card-body p-0" id="issuesList"></div>
+        </div>
+        <% } %>
+    </main>
+    <script>
+        async function saveGithub(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const body = Object.fromEntries(fd);
+            body.sync_issues = fd.get('sync_issues') === '1' ? 1 : 0;
+            body.sync_wiki = fd.get('sync_wiki') === '1' ? 1 : 0;
+            if (!body.access_token) delete body.access_token;
+            const resp = await fetch('/api/projects/<%= project.id %>/github', {
+                method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':'<%= csrfToken %>'}, body:JSON.stringify(body)
+            });
+            if (resp.ok) location.reload();
+            else alert('Fehler: ' + (await resp.json()).error);
+        }
+        async function syncGitHub() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Synchronisiere...';
+            const resp = await fetch('/api/projects/<%= project.id %>/github/sync', {
+                method:'POST', headers:{'X-CSRF-Token':'<%= csrfToken %>'}
+            });
+            const data = await resp.json();
+            if (resp.ok) alert('Sync abgeschlossen: ' + (data.issues_count || 0) + ' Issues gefunden');
+            else alert('Fehler: ' + data.error);
+            btn.disabled = false;
+            btn.textContent = 'Jetzt synchronisieren';
+            loadIssues();
+        }
+        async function loadIssues() {
+            const container = document.getElementById('issuesContainer');
+            const list = document.getElementById('issuesList');
+            container.classList.remove('hidden');
+            list.innerHTML = '<div class="px-6 py-4 text-center text-gray-500">Lade...</div>';
+            const resp = await fetch('/api/projects/<%= project.id %>/github/issues');
+            const issues = await resp.json();
+            if (issues.length === 0) {
+                list.innerHTML = '<div class="px-6 py-8 text-center text-gray-500">Keine offenen Issues.</div>';
+                return;
+            }
+            list.innerHTML = issues.map(i => 
+                '<div class="flex items-center justify-between px-6 py-3 border-b border-gray-100">' +
+                    '<div><a href="' + i.html_url + '" target="_blank" class="text-primary-600 text-sm">#' + i.number + ' ' + i.title + '</a>' +
+                    (i.labels.length > 0 ? ' <span class="text-xs text-gray-500">' + i.labels.join(', ') + '</span>' : '') +
+                    '</div>' +
+                    '<span class="text-xs text-gray-400">' + new Date(i.updated_at).toLocaleDateString('de-DE') + '</span>' +
+                '</div>'
+            ).join('');
+        }
+        <% if (github) { %>loadIssues();<% } %>
+    </script>
+</body>
+</html>

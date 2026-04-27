@@ -25,6 +25,8 @@ function parseCheckbox(value) {
 const nodemailer = require('nodemailer');
 const http = require('http');
 const { Server } = require('socket.io');
+const { marked } = require('marked');
+const { Octokit } = require('@octokit/rest');
 
 const app = express();
 const server = http.createServer(app);
@@ -430,6 +432,89 @@ function initDb() {
         metadata TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+    )`);
+
+    // Projektmanagement
+    db.run(`CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        system_id INTEGER,
+        name TEXT NOT NULL,
+        description TEXT,
+        status TEXT CHECK(status IN ('planning','active','maintenance','completed')) DEFAULT 'planning',
+        start_date TEXT,
+        end_date TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (system_id) REFERENCES systems(id) ON DELETE SET NULL
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS project_milestones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        phase INTEGER CHECK(phase IN (1,2,3)),
+        start_date TEXT,
+        end_date TEXT,
+        status TEXT CHECK(status IN ('pending','in_progress','completed','blocked')) DEFAULT 'pending',
+        color TEXT DEFAULT '#2563eb',
+        sort_order INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS project_key_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        staff_id INTEGER NOT NULL,
+        role TEXT CHECK(role IN ('key_user','evaluator','decision_maker')) DEFAULT 'key_user',
+        notes TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS project_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        content TEXT,
+        updated_by TEXT,
+        sort_order INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        UNIQUE(project_id, slug)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS github_integration (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL UNIQUE,
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        access_token TEXT,
+        webhook_secret TEXT,
+        sync_issues INTEGER DEFAULT 1,
+        sync_wiki INTEGER DEFAULT 0,
+        last_synced_at DATETIME,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS github_issues (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        issue_number INTEGER NOT NULL,
+        title TEXT,
+        state TEXT,
+        html_url TEXT,
+        labels TEXT,
+        github_created_at DATETIME,
+        github_updated_at DATETIME,
+        github_user TEXT,
+        synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        UNIQUE(project_id, issue_number)
     )`);
 
     // Bestehende Tabellen-Spalten aktualisieren (Migrationen)
@@ -1489,6 +1574,440 @@ app.delete('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// --- API: Projects ---
+
+app.get('/api/projects', requireAuth, (req, res) => {
+    db.all(`
+        SELECT p.*, s.name as system_name,
+            (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
+            (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
+            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count
+        FROM projects p
+        LEFT JOIN systems s ON p.system_id = s.id
+        ORDER BY p.status, p.name
+    `, [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.get('/api/projects/:id', requireAuth, (req, res) => {
+    db.get(`
+        SELECT p.*, s.name as system_name
+        FROM projects p
+        LEFT JOIN systems s ON p.system_id = s.id
+        WHERE p.id = ?
+    `, [req.params.id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Projekt nicht gefunden' });
+        res.json(row);
+    });
+});
+
+app.post('/api/projects', requireAuth, requireAdmin, (req, res) => {
+    const { system_id, name, description, status, start_date, end_date } = req.body;
+    db.run(`INSERT INTO projects (system_id, name, description, status, start_date, end_date)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+        [system_id || null, name, description || '', status || 'planning', start_date || null, end_date || null],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.status(201).json({ id: this.lastID });
+        });
+});
+
+app.patch('/api/projects/:id', requireAuth, requireAdmin, (req, res) => {
+    const allowed = ['system_id', 'name', 'description', 'status', 'start_date', 'end_date'];
+    const updates = {};
+    for (const key of allowed) {
+        if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren' });
+    updates.updated_at = new Date().toISOString();
+    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = [...Object.values(updates), req.params.id];
+    db.run(`UPDATE projects SET ${setClause} WHERE id = ?`, values, function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ status: 'updated' });
+    });
+});
+
+// --- API: Milestones ---
+
+app.get('/api/projects/:projectId/milestones', requireAuth, (req, res) => {
+    db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
+        [req.params.projectId], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
+});
+
+app.post('/api/projects/:projectId/milestones', requireAuth, requireAdmin, (req, res) => {
+    const { title, description, phase, start_date, end_date, status, color } = req.body;
+    db.run(`INSERT INTO project_milestones (project_id, title, description, phase, start_date, end_date, status, color)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.params.projectId, title, description || '', phase || null, start_date || null, end_date || null, status || 'pending', color || '#2563eb'],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            io.emit('milestone:updated', { projectId: req.params.projectId });
+            res.status(201).json({ id: this.lastID });
+        });
+});
+
+app.patch('/api/milestones/:id', requireAuth, requireAdmin, (req, res) => {
+    const allowed = ['title', 'description', 'phase', 'start_date', 'end_date', 'status', 'color', 'sort_order'];
+    const updates = {};
+    for (const key of allowed) {
+        if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren' });
+    updates.updated_at = new Date().toISOString();
+    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = [...Object.values(updates), req.params.id];
+    db.get('SELECT project_id FROM project_milestones WHERE id = ?', [req.params.id], (err, row) => {
+        db.run(`UPDATE project_milestones SET ${setClause} WHERE id = ?`, values, function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (row) io.emit('milestone:updated', { projectId: row.project_id });
+            res.json({ status: 'updated' });
+        });
+    });
+});
+
+app.delete('/api/milestones/:id', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT project_id FROM project_milestones WHERE id = ?', [req.params.id], (err, row) => {
+        db.run('DELETE FROM project_milestones WHERE id = ?', [req.params.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (row) io.emit('milestone:updated', { projectId: row.project_id });
+            res.json({ status: 'deleted' });
+        });
+    });
+});
+
+// --- API: Key Users ---
+
+app.get('/api/projects/:projectId/keyusers', requireAuth, (req, res) => {
+    db.all(`
+        SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
+        FROM project_key_users k
+        JOIN staff s ON k.staff_id = s.id
+        WHERE k.project_id = ?
+        ORDER BY k.role, s.name
+    `, [req.params.projectId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, res) => {
+    const { staff_id, role, notes } = req.body;
+    db.run(`INSERT INTO project_key_users (project_id, staff_id, role, notes) VALUES (?, ?, ?, ?)`,
+        [req.params.projectId, staff_id, role || 'key_user', notes || null],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            io.emit('keyuser:updated', { projectId: req.params.projectId });
+            res.status(201).json({ id: this.lastID });
+        });
+});
+
+app.delete('/api/keyusers/:id', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT project_id FROM project_key_users WHERE id = ?', [req.params.id], (err, row) => {
+        db.run('DELETE FROM project_key_users WHERE id = ?', [req.params.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (row) io.emit('keyuser:updated', { projectId: row.project_id });
+            res.json({ status: 'deleted' });
+        });
+    });
+});
+
+// --- API: Documents ---
+
+app.get('/api/projects/:projectId/docs', requireAuth, (req, res) => {
+    db.all('SELECT * FROM project_documents WHERE project_id = ? ORDER BY sort_order, title',
+        [req.params.projectId], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
+});
+
+app.get('/api/projects/:projectId/docs/:slug', requireAuth, (req, res) => {
+    db.get('SELECT * FROM project_documents WHERE project_id = ? AND slug = ?',
+        [req.params.projectId, req.params.slug], (err, row) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!row) return res.status(404).json({ error: 'Dokument nicht gefunden' });
+            res.json(row);
+        });
+});
+
+app.post('/api/projects/:projectId/docs', requireAuth, requireAdmin, (req, res) => {
+    const { title, slug, content } = req.body;
+    db.run(`INSERT INTO project_documents (project_id, title, slug, content, updated_by) VALUES (?, ?, ?, ?, ?)`,
+        [req.params.projectId, title, slug, content || '', getActor(req)],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.status(201).json({ id: this.lastID });
+        });
+});
+
+app.patch('/api/docs/:id', requireAuth, requireAdmin, (req, res) => {
+    const allowed = ['title', 'slug', 'content', 'sort_order'];
+    const updates = {};
+    for (const key of allowed) {
+        if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren' });
+    updates.updated_at = new Date().toISOString();
+    updates.updated_by = getActor(req);
+    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = [...Object.values(updates), req.params.id];
+    db.run(`UPDATE project_documents SET ${setClause} WHERE id = ?`, values, function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ status: 'updated' });
+    });
+});
+
+app.delete('/api/docs/:id', requireAuth, requireAdmin, (req, res) => {
+    db.run('DELETE FROM project_documents WHERE id = ?', [req.params.id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ status: 'deleted' });
+    });
+});
+
+// --- API: GitHub Integration ---
+
+app.get('/api/projects/:projectId/github', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.projectId], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        const result = row ? { ...row, access_token: row.access_token ? '***' : null } : null;
+        res.json(result);
+    });
+});
+
+app.post('/api/projects/:projectId/github', requireAuth, requireAdmin, (req, res) => {
+    const { repo_owner, repo_name, access_token, webhook_secret, sync_issues, sync_wiki } = req.body;
+    db.get('SELECT id FROM github_integration WHERE project_id = ?', [req.params.projectId], (err, existing) => {
+        if (existing) {
+            const fields = [];
+            const vals = [];
+            if (repo_owner !== undefined) { fields.push('repo_owner = ?'); vals.push(repo_owner); }
+            if (repo_name !== undefined) { fields.push('repo_name = ?'); vals.push(repo_name); }
+            if (access_token !== undefined) { fields.push('access_token = ?'); vals.push(access_token); }
+            if (webhook_secret !== undefined) { fields.push('webhook_secret = ?'); vals.push(webhook_secret); }
+            if (sync_issues !== undefined) { fields.push('sync_issues = ?'); vals.push(sync_issues); }
+            if (sync_wiki !== undefined) { fields.push('sync_wiki = ?'); vals.push(sync_wiki); }
+            vals.push(req.params.projectId);
+            db.run(`UPDATE github_integration SET ${fields.join(', ')} WHERE project_id = ?`, vals, function(e) {
+                if (e) return res.status(500).json({ error: e.message });
+                res.json({ status: 'updated' });
+            });
+        } else {
+            db.run(`INSERT INTO github_integration (project_id, repo_owner, repo_name, access_token, webhook_secret, sync_issues, sync_wiki)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [req.params.projectId, repo_owner, repo_name, access_token, webhook_secret || null, sync_issues || 1, sync_wiki || 0],
+                function(e) {
+                    if (e) return res.status(500).json({ error: e.message });
+                    res.status(201).json({ id: this.lastID });
+                });
+        }
+    });
+});
+
+async function syncGitHubIssues(projectId, integration) {
+    const octokit = new Octokit({ auth: integration.access_token });
+    let allIssues = [];
+    let page = 1;
+    while (true) {
+        const { data: issues } = await octokit.rest.issues.listForRepo({
+            owner: integration.repo_owner,
+            repo: integration.repo_name,
+            state: 'all',
+            per_page: 100,
+            page: page
+        });
+        allIssues = allIssues.concat(issues);
+        if (issues.length < 100) break;
+        page++;
+    }
+    const stmt = db.prepare(`INSERT OR REPLACE INTO github_issues
+        (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`);
+    for (const issue of allIssues) {
+        if (issue.pull_request) continue;
+        stmt.run(projectId, issue.number, issue.title, issue.state, issue.html_url,
+            JSON.stringify(issue.labels.map(l => l.name)), issue.created_at, issue.updated_at, issue.user?.login);
+    }
+    stmt.finalize();
+    return allIssues.length;
+}
+
+async function syncGitHubWiki(projectId, integration) {
+    const octokit = new Octokit({ auth: integration.access_token });
+    try {
+        const { data: pages } = await octokit.request('GET /repos/{owner}/{repo}/wiki', {
+            owner: integration.repo_owner,
+            repo: integration.repo_name,
+            headers: { accept: 'application/vnd.github+json' }
+        });
+        for (const page of pages) {
+            db.run(`INSERT OR IGNORE INTO project_documents (project_id, title, slug, content, updated_by)
+                    VALUES (?, ?, ?, ?, ?)`,
+                [projectId, page.title, page.title.toLowerCase().replace(/\s+/g, '-'),
+                 page.body || '# Von GitHub Wiki importiert\n\nInhalt muss manuell synchronisiert werden.',
+                 'GitHub-Wiki']);
+        }
+        return pages.length;
+    } catch (e) {
+        console.error('Wiki sync error:', e.message);
+        return 0;
+    }
+}
+
+app.post('/api/projects/:projectId/github/sync', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.projectId], async (err, integration) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!integration || !integration.access_token) return res.status(400).json({ error: 'GitHub-Integration nicht konfiguriert' });
+        try {
+            let issuesCount = 0, wikiPages = 0;
+            if (integration.sync_issues) {
+                issuesCount = await syncGitHubIssues(req.params.projectId, integration);
+            }
+            if (integration.sync_wiki) {
+                wikiPages = await syncGitHubWiki(req.params.projectId, integration);
+            }
+            db.run('UPDATE github_integration SET last_synced_at = CURRENT_TIMESTAMP WHERE project_id = ?', [req.params.projectId]);
+            res.json({ status: 'synced', issues_count: issuesCount, wiki_pages: wikiPages });
+        } catch (e) {
+            res.status(500).json({ error: 'GitHub-Sync fehlgeschlagen: ' + e.message });
+        }
+    });
+});
+
+app.get('/api/projects/:projectId/github/issues', requireAuth, (req, res) => {
+    db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.projectId], async (err, integration) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!integration || !integration.access_token) return res.json([]);
+        try {
+            const octokit = new Octokit({ auth: integration.access_token });
+            const { data: issues } = await octokit.rest.issues.listForRepo({
+                owner: integration.repo_owner,
+                repo: integration.repo_name,
+                state: 'open',
+                per_page: 50
+            });
+            const result = issues.filter(i => !i.pull_request).map(i => ({
+                number: i.number,
+                title: i.title,
+                state: i.state,
+                html_url: i.html_url,
+                labels: i.labels.map(l => l.name),
+                created_at: i.created_at,
+                updated_at: i.updated_at,
+                user: i.user?.login
+            }));
+            // Cache in local DB
+            const stmt = db.prepare(`INSERT OR REPLACE INTO github_issues
+                (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`);
+            for (const issue of result) {
+                stmt.run(req.params.projectId, issue.number, issue.title, issue.state, issue.html_url,
+                    JSON.stringify(issue.labels), issue.created_at, issue.updated_at, issue.user);
+            }
+            stmt.finalize();
+            res.json(result);
+        } catch (e) {
+            // Fallback: return cached issues
+            db.all('SELECT * FROM github_issues WHERE project_id = ? ORDER BY github_updated_at DESC', [req.params.projectId], (err2, cached) => {
+                if (err2) return res.status(500).json({ error: e.message });
+                res.json(cached.map(r => ({
+                    number: r.issue_number,
+                    title: r.title,
+                    state: r.state,
+                    html_url: r.html_url,
+                    labels: JSON.parse(r.labels || '[]'),
+                    created_at: r.github_created_at,
+                    updated_at: r.github_updated_at,
+                    user: r.github_user,
+                    _cached: true
+                })));
+            });
+        }
+    });
+});
+
+app.get('/api/projects/:projectId/github/milestones', requireAuth, (req, res) => {
+    db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.projectId], async (err, integration) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!integration || !integration.access_token) return res.json([]);
+        try {
+            const octokit = new Octokit({ auth: integration.access_token });
+            const { data: milestones } = await octokit.rest.issues.listMilestones({
+                owner: integration.repo_owner,
+                repo: integration.repo_name,
+                state: 'all',
+                per_page: 50
+            });
+            res.json(milestones);
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+});
+
+// GitHub Webhook (public endpoint - signature verified)
+app.post('/api/github/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+    const signature = req.headers['x-hub-signature-256'];
+    let body;
+    try { body = JSON.parse(req.body.toString('utf-8')); } catch(e) { return res.status(400).json({ error: 'Invalid JSON' }); }
+    const event = req.headers['x-github-event'];
+
+    if (signature && body.repository) {
+        const [owner, repo] = body.repository.full_name.split('/');
+        db.get('SELECT * FROM github_integration WHERE repo_owner = ? AND repo_name = ?', [owner, repo], (err, integration) => {
+            if (integration && integration.webhook_secret) {
+                const hmac = crypto.createHmac('sha256', integration.webhook_secret);
+                hmac.update(req.body);
+                const expectedSig = 'sha256=' + hmac.digest('hex');
+                try {
+                    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+                        return res.status(401).json({ error: 'Invalid signature' });
+                    }
+                } catch(e) {
+                    return res.status(401).json({ error: 'Invalid signature' });
+                }
+            }
+
+            // Process webhook events
+            if (event === 'issues' && body.action === 'opened' && body.issue && !body.issue.pull_request) {
+                const i = body.issue;
+                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [integration.project_id, i.number, i.title, i.state, i.html_url,
+                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
+                io.emit('github:issue_opened', { projectId: integration.project_id, issue: i });
+            } else if (event === 'issues' && body.action === 'closed' && body.issue) {
+                const i = body.issue;
+                db.run(`INSERT OR REPLACE INTO github_issues (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [integration.project_id, i.number, i.title, i.state, i.html_url,
+                     JSON.stringify(i.labels.map(l => l.name)), i.created_at, i.updated_at, i.user?.login]);
+                io.emit('github:issue_closed', { projectId: integration.project_id, issue: i });
+            }
+
+            res.status(200).json({ status: 'processed', event });
+        });
+    } else {
+        res.status(200).json({ status: 'received_no_repo' });
+    }
+});
+
+// Markdown render helper
+app.post('/api/markdown/render', requireAuth, (req, res) => {
+    try {
+        const html = marked.parse(req.body.text || '');
+        res.json({ html });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- Web UI: Systems ---
 
 app.get('/admin/systems', requireAuth, requireAdmin, (req, res) => {
@@ -2286,6 +2805,194 @@ app.post('/ticket/:id/deadline', requireAuth, requireAdmin, (req, res) => {
             res.redirect('/ticket/' + ticketId);
         });
     });
+});
+
+// --- Web UI: Projects ---
+
+app.get('/projects', requireAuth, (req, res) => {
+    db.all(`
+        SELECT p.*, s.name as system_name,
+            (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
+            (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
+            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count
+        FROM projects p
+        LEFT JOIN systems s ON p.system_id = s.id
+        ORDER BY p.status, p.name
+    `, [], (err, projects) => {
+        if (err) return res.status(500).send('DB Error');
+        db.all('SELECT id, name FROM systems WHERE active = 1 ORDER BY name', [], (err2, systems) => {
+            db.all('SELECT id, name FROM staff WHERE active = 1 ORDER BY name', [], (err3, staffList) => {
+                res.render('projects', {
+                    projects: projects || [],
+                    systems: systems || [],
+                    staffList: staffList || [],
+                    user: req.session.user,
+                    role: req.session.role || 'user',
+                    canManage: isAdminRole(req.session.role)
+                });
+            });
+        });
+    });
+});
+
+app.get('/project/:id', requireAuth, (req, res) => {
+    const projectId = req.params.id;
+    db.get(`SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?`,
+        [projectId], (err, project) => {
+            if (err) return res.status(500).send('DB Error');
+            if (!project) return res.status(404).send('Projekt nicht gefunden');
+
+            const now = new Date().toISOString();
+            db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
+                [projectId], (err, milestones) => {
+                    db.all(`
+                        SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
+                        FROM project_key_users k JOIN staff s ON k.staff_id = s.id
+                        WHERE k.project_id = ? ORDER BY k.role, s.name
+                    `, [projectId], (err, keyUsers) => {
+                        db.all(`SELECT t.*, st.name as assigned_name, s.name as system_name
+                            FROM tickets t LEFT JOIN staff st ON t.assigned_to = st.id
+                            LEFT JOIN systems s ON t.system_id = s.id
+                            WHERE t.system_id = ? AND t.status != 'geschlossen'
+                            ORDER BY t.created_at DESC LIMIT 10`,
+                            [project.system_id || -1], (err, tickets) => {
+                                db.get('SELECT * FROM github_integration WHERE project_id = ?',
+                                    [projectId], (err, github) => {
+                                        if (github && github.access_token) {
+                                            github.access_token = '***';
+                                        }
+                                        db.all('SELECT * FROM project_documents WHERE project_id = ? ORDER BY created_at DESC LIMIT 5',
+                                            [projectId], (err, docs) => {
+                                                res.render('project-dashboard', {
+                                                    project,
+                                                    milestones: milestones || [],
+                                                    keyUsers: keyUsers || [],
+                                                    tickets: tickets || [],
+                                                    docs: docs || [],
+                                                    github: github || null,
+                                                    user: req.session.user,
+                                                    role: req.session.role || 'user',
+                                                    canManage: isAdminRole(req.session.role)
+                                                });
+                                            });
+                                    });
+                            });
+                    });
+                });
+        });
+});
+
+app.get('/project/:id/timeline', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
+                [req.params.id], (err, milestones) => {
+                    res.render('project-timeline', {
+                        project,
+                        milestones: milestones || [],
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
+                });
+        });
+});
+
+app.get('/project/:id/milestones', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
+                [req.params.id], (err, milestones) => {
+                    res.render('project-milestones', {
+                        project,
+                        milestones: milestones || [],
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
+                });
+        });
+});
+
+app.get('/project/:id/keyusers', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.all(`
+                SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
+                FROM project_key_users k JOIN staff s ON k.staff_id = s.id
+                WHERE k.project_id = ? ORDER BY k.role, s.name
+            `, [req.params.id], (err, keyUsers) => {
+                db.all('SELECT id, name FROM staff WHERE active = 1 ORDER BY name', [], (err, staffList) => {
+                    res.render('project-keyusers', {
+                        project,
+                        keyUsers: keyUsers || [],
+                        staffList: staffList || [],
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
+                });
+            });
+        });
+});
+
+app.get('/project/:id/docs', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.all('SELECT * FROM project_documents WHERE project_id = ? ORDER BY sort_order, title',
+                [req.params.id], (err, docs) => {
+                    res.render('project-docs', {
+                        project,
+                        docs: docs || [],
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
+                });
+        });
+});
+
+app.get('/project/:id/docs/:slug', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.get('SELECT * FROM project_documents WHERE project_id = ? AND slug = ?',
+                [req.params.id, req.params.slug], (err, doc) => {
+                    if (err) return res.status(500).send('DB Error');
+                    if (!doc) return res.status(404).send('Dokument nicht gefunden');
+                    let htmlContent = '';
+                    try { htmlContent = marked.parse(doc.content || ''); } catch(e) { htmlContent = doc.content; }
+                    res.render('project-doc-view', {
+                        project,
+                        doc,
+                        htmlContent,
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
+                });
+        });
+});
+
+app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.id], (err, github) => {
+                if (github && github.access_token) github.access_token = '***';
+                res.render('project-github', {
+                    project,
+                    github: github || null,
+                    user: req.session.user,
+                    role: req.session.role || 'user',
+                    canManage: isAdminRole(req.session.role)
+                });
+            });
+        });
 });
 
 // --- Server Start ---
