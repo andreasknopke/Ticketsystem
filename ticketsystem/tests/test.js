@@ -202,11 +202,11 @@ async function main() {
 
     // --- Webhook ---
     console.log('\n📌 API: Webhook');
-    resp = await request('POST', '/api/github/webhook', JSON.stringify({
+    resp = await request('POST', '/api/github/webhook', {
         action:'opened', repository:{full_name:'test-owner/test-repo'},
         issue:{number:1,title:'Test',state:'open',html_url:'http://example.com',labels:[],created_at:'2026-01-01',updated_at:'2026-01-01',user:{login:'test'}}
-    }), null);
-    assert(resp.status === 200, 'POST /api/github/webhook (stub)');
+    }, null);
+    assert(resp.status === 200, 'POST /api/github/webhook (status ' + resp.status + ')');
 
     // --- Summary ---
     console.log('\n═══════════════════════════');
