@@ -62,6 +62,7 @@ ADMIN_USER="admin"
 ADMIN_PASS="dein-sicheres-passwort"
 API_KEY="dein-api-key-12345"
 REQUIRE_API_KEY=false
+API_ALLOWED_IPS=
 BASE_URL=http://localhost:8010
 
 # E-Mail SMTP Einstellungen
@@ -122,12 +123,15 @@ ADMIN_PASS=dein-sicheres-passwort
 PORT=8010
 DB_FILE=/app/data/tickets.db
 BASE_URL=https://deine-domain.tld
+TRUST_PROXY=true
 ```
 
 Optional (API/SMTP):
 
 - `API_KEY`, `REQUIRE_API_KEY`
+- `API_ALLOWED_IPS` (kommagetrennte IP-Allowlist für `POST /api/tickets`; leer = keine IP-Einschränkung)
 - `CORS_ALLOWED_ORIGINS` (kommagetrennt, z. B. `https://cf.coolify.kliniksued-rostock.de`)
+- `TRUST_PROXY=true` bei Betrieb hinter Coolify/Reverse Proxy, damit sichere Session-Cookies korrekt funktionieren
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
 - `EMAIL_NOTIFY_NEW`, `EMAIL_NOTIFY_STATUS`, `EMAIL_NOTIFY_ASSIGN`, `EMAIL_NOTIFY_COMMENT`
 
@@ -135,7 +139,7 @@ Hinweis: Ohne Volume auf `/app/data` wird die SQLite-Datenbank bei Redeployments
 
 ## API Nutzung
 
-Sie konnen Tickets uber die API erstellen, indem Sie einen `x-api-key` im Header mitsenden (falls in der `.env` konfiguriert).
+Sie konnen Tickets uber die API erstellen. Fur interne Deployments kann der Zugriff uber `API_ALLOWED_IPS` auf definierte Quellsysteme im Kliniknetz begrenzt werden. Optional kann zusatzlich ein `x-api-key` im Header erzwungen werden, wenn `REQUIRE_API_KEY=true` gesetzt ist.
 
 **Endpoint:** `POST /api/tickets`
 
@@ -145,10 +149,11 @@ x-api-key: dein-api-key-12345
 Content-Type: application/json
 ```
 
-Wenn die API von einer anderen Domain aus dem Browser aufgerufen wird, muss diese Domain in `CORS_ALLOWED_ORIGINS` freigegeben werden, z. B.:
+Wenn die API von einer anderen Domain aus dem Browser aufgerufen wird, muss diese Domain in `CORS_ALLOWED_ORIGINS` freigegeben werden. CORS ersetzt aber keine serverseitige Zugriffskontrolle; fur definierte Kliniksysteme sollte `API_ALLOWED_IPS` gesetzt werden, z. B.:
 
 ```env
 CORS_ALLOWED_ORIGINS=https://cf.coolify.kliniksued-rostock.de
+API_ALLOWED_IPS=10.10.1.25,10.10.1.26
 ```
 
 **Body (JSON):**

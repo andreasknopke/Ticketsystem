@@ -27,8 +27,10 @@
                         <a href="/stats" class="nav-link">Statistiken</a>
                         <% } %>
                         <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+                        <% if (role === 'admin' || role === 'root') { %>
                         <a href="/admin/systems" class="nav-link">Systeme</a>
                         <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% } %>
                         <% if (role === 'root') { %>
                         <a href="/admin/users" class="nav-link">Benutzer</a>
                         <% } %>
@@ -70,6 +72,7 @@
                     <% if (role === 'admin' || role === 'root') { %>
                     <form method="post" action="/ticket/<%= ticket.id %>/delete"
                         onsubmit="return confirm('Ticket #<%= ticket.id %> wirklich endgültig löschen? Dies kann nicht rückgängig gemacht werden.')">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                         <button type="submit" class="btn-secondary text-sm text-red-600 border-red-200 hover:bg-red-50">
                             <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -178,15 +181,20 @@
 
                         <!-- Add Comment Form -->
                         <form method="post" action="/ticket/<%= ticket.id %>/notes" class="border-t border-gray-200 pt-6">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <div class="mb-4">
                                 <label class="block text-sm font-medium text-gray-700 mb-2">Neuer Kommentar</label>
                                 <textarea name="text" rows="4" class="form-textarea" placeholder="Ihre Nachricht..." required></textarea>
                             </div>
                             <div class="flex items-center justify-between">
+                                <% if (canManageTickets) { %>
                                 <label class="flex items-center">
                                     <input type="checkbox" name="is_internal" value="1" checked class="rounded border-gray-300 text-primary-600 focus:ring-primary-500">
                                     <span class="ml-2 text-sm text-gray-600">Intern (nur für Mitarbeiter sichtbar)</span>
                                 </label>
+                                <% } else { %>
+                                <span class="text-sm text-gray-500">Öffentlicher Kommentar</span>
+                                <% } %>
                                 <button type="submit" class="btn-primary">Kommentar hinzufügen</button>
                             </div>
                         </form>
@@ -231,6 +239,7 @@
 
             <!-- Right Column: Sidebar -->
             <div class="space-y-6">
+                <% if (canManageTickets) { %>
                 <!-- Actions -->
                 <div class="card">
                     <div class="card-header">
@@ -238,6 +247,7 @@
                     </div>
                     <div class="card-body space-y-3">
                         <form method="post" action="/ticket/<%= ticket.id %>/status" class="space-y-2">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <label class="block text-sm font-medium text-gray-700">Status ändern</label>
                             <select name="status" class="form-select" onchange="this.form.submit()">
                                 <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
@@ -256,6 +266,7 @@
                     </div>
                     <div class="card-body">
                         <form method="post" action="/ticket/<%= ticket.id %>/assign" class="space-y-4">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">System</label>
                                 <select name="system_id" class="form-select">
@@ -278,6 +289,7 @@
                         </form>
                     </div>
                 </div>
+                <% } %>
 
                 <!-- Ticket Info -->
                 <div class="card">
@@ -321,12 +333,17 @@
                             <div>
                                 <dt class="text-sm font-medium text-gray-500">Deadline</dt>
                                 <dd class="mt-1 text-sm text-gray-900">
+                                    <% if (canManageTickets) { %>
                                     <form method="post" action="/ticket/<%= ticket.id %>/deadline" class="flex gap-2">
+                                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                         <input type="datetime-local" name="deadline" 
                                             value="<%= ticket.deadline ? new Date(ticket.deadline).toISOString().slice(0,16) : '' %>"
                                             class="form-input text-sm flex-1">
                                         <button type="submit" class="btn-secondary text-sm">💾</button>
                                     </form>
+                                    <% } else { %>
+                                    <%= ticket.deadline ? formatDateTime(ticket.deadline) : '-' %>
+                                    <% } %>
                                 </dd>
                             </div>
                         </dl>

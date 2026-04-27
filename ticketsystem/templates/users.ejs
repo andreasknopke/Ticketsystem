@@ -61,6 +61,7 @@
                     </div>
                     <div class="card-body">
                         <form method="post" action="/admin/users" class="space-y-4">
+                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Benutzername *</label>
                                 <input type="text" name="username" required class="form-input" placeholder="z.B. akn">
@@ -168,6 +169,7 @@
                                                 onclick='openEditModal(<%- JSON.stringify(u) %>)'>Bearbeiten</button>
                                             <form method="post" action="/admin/users/<%= u.id %>/delete"
                                                 onsubmit="return confirm('Benutzer <%= u.username %> wirklich löschen?')">
+                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                 <button type="submit" class="rounded-full border border-red-200 px-3 py-1 text-xs font-medium text-red-600 transition hover:bg-red-50">Löschen</button>
                                             </form>
                                         </div>
@@ -201,6 +203,7 @@
                 </div>
             </div>
             <form method="post" id="editForm" class="space-y-6 px-6 py-6">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                 <div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Benutzer</p>
                     <p id="edit_username_display" class="mt-1 text-lg font-semibold text-slate-900"></p>

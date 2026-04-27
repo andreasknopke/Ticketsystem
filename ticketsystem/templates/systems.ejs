@@ -55,6 +55,7 @@
             </div>
             <div class="card-body">
                 <form method="post" action="/admin/systems" class="flex flex-col md:flex-row gap-4">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                     <input name="name" placeholder="Name (z.B. KIS)" required class="form-input md:w-72 md:flex-none">
                     <input name="description" placeholder="Beschreibung" class="form-input md:flex-1">
                     <button type="submit" class="btn-primary">Hinzufügen</button>
@@ -85,6 +86,7 @@
                                 <td class="px-6 py-4 text-sm text-gray-500"><%= sys.description || '-' %></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                                     <form method="post" action="/admin/systems/<%= sys.id %>/delete" style="display:inline;" onsubmit="return confirm('System <%= sys.name %> wirklich löschen?');">
+                                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                         <button type="submit" class="text-red-600 hover:text-red-900">Löschen</button>
                                     </form>
                                 </td>

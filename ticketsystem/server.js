@@ -51,6 +51,11 @@ const configuredAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
     .map(origin => normalizeOrigin(origin.trim()))
     .filter(Boolean);
 
+const configuredApiAllowedIps = (process.env.API_ALLOWED_IPS || '')
+    .split(',')
+    .map(ip => ip.trim())
+    .filter(Boolean);
+
 const allowedOrigins = new Set(
     [...DEFAULT_ALLOWED_ORIGINS, BASE_URL, ...configuredAllowedOrigins]
         .map(normalizeOrigin)
@@ -62,6 +67,7 @@ const ADMIN_USER = process.env.ADMIN_USER;
 const ADMIN_PASS = process.env.ADMIN_PASS;
 const API_KEY = process.env.API_KEY;
 const REQUIRE_API_KEY = (process.env.REQUIRE_API_KEY || 'false').toLowerCase() === 'true';
+const TRUST_PROXY = (process.env.TRUST_PROXY || 'false').toLowerCase() === 'true';
 
 // SLA Konfiguration (in Stunden)
 const SLA_CONFIG = {
@@ -97,6 +103,56 @@ if (!APP_SECRET || ADMIN_USER === undefined || ADMIN_PASS === undefined) {
     process.exit(1);
 }
 
+const USE_SECURE_COOKIE = BASE_URL.startsWith('https://');
+if (TRUST_PROXY || USE_SECURE_COOKIE) app.set('trust proxy', 1);
+
+function clientIp(req) {
+    return (req.ip || req.connection?.remoteAddress || '').replace(/^::ffff:/, '');
+}
+
+function createRateLimiter({ windowMs, max, message }) {
+    const attempts = new Map();
+
+    return (req, res, next) => {
+        const key = clientIp(req);
+        const now = Date.now();
+        const entry = attempts.get(key) || { count: 0, resetAt: now + windowMs };
+
+        if (entry.resetAt <= now) {
+            entry.count = 0;
+            entry.resetAt = now + windowMs;
+        }
+
+        entry.count += 1;
+        attempts.set(key, entry);
+
+        if (entry.count > max) {
+            if (req.path.startsWith('/api/')) return res.status(429).json({ error: message });
+            return res.status(429).send(message);
+        }
+
+        next();
+    };
+}
+
+const loginRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.'
+});
+
+const publicTicketApiRateLimit = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: 30,
+    message: 'Zu viele API-Anfragen. Bitte später erneut versuchen.'
+});
+
+function requireApiAllowedIp(req, res, next) {
+    if (configuredApiAllowedIps.length === 0) return next();
+    if (configuredApiAllowedIps.includes(clientIp(req))) return next();
+    res.status(403).json({ error: 'IP-Adresse nicht für die Ticket-API freigegeben.' });
+}
+
 // Middleware
 app.use('/api', (req, res, next) => {
     const requestOrigin = normalizeOrigin(req.headers.origin);
@@ -129,8 +185,38 @@ app.use(session({
     secret: APP_SECRET,
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 }
+    cookie: {
+        maxAge: 1000 * 60 * 60 * 24,
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: USE_SECURE_COOKIE
+    }
 }));
+
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+});
+
+app.use((req, res, next) => {
+    if (!req.session.csrfToken) {
+        req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+
+    res.locals.csrfToken = req.session.csrfToken;
+
+    const methodRequiresCsrf = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+    if (!methodRequiresCsrf || req.path.startsWith('/api/')) return next();
+
+    const token = req.body._csrf || req.headers['x-csrf-token'];
+    if (token !== req.session.csrfToken) {
+        return res.status(403).send('Ungültiger oder fehlender CSRF-Token.');
+    }
+
+    next();
+});
 
 // Hilfsfunktionen fuer EJS
 app.locals.toTitle = (str) => {
@@ -190,6 +276,39 @@ function requireRoot(req, res, next) {
         return res.status(403).json({ error: 'Nur root-Benutzer haben Zugriff.' });
     }
     res.status(403).send('Nur root-Benutzer haben Zugriff.');
+}
+
+function isAdminRole(role) {
+    return role === 'admin' || role === 'root';
+}
+
+function canManageTickets(req) {
+    return req.session && req.session.authenticated && isAdminRole(req.session.role);
+}
+
+function canViewTicket(req, ticket) {
+    if (!ticket || !req.session || !req.session.authenticated) return false;
+    if (isAdminRole(req.session.role)) return true;
+    if (req.session.staff_id && Number(ticket.assigned_to) === Number(req.session.staff_id)) return true;
+    return ticket.username && ticket.username === req.session.user;
+}
+
+function ticketVisibilityClause(req, alias = 't') {
+    if (isAdminRole(req.session.role)) return { clause: '', params: [] };
+
+    const conditions = [`${alias}.username = ?`];
+    const params = [req.session.user];
+    if (req.session.staff_id) {
+        conditions.push(`${alias}.assigned_to = ?`);
+        params.push(req.session.staff_id);
+    }
+
+    return { clause: ` AND (${conditions.join(' OR ')})`, params };
+}
+
+function normalizeText(value, maxLength) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text.slice(0, maxLength);
 }
 
 function loadCurrentUserAccount(req, callback) {
@@ -536,6 +655,19 @@ function getActor(req) {
     return (req.session && req.session.user) || ADMIN_USER || 'System';
 }
 
+function startAuthenticatedSession(req, res, sessionUser, redirectTo = '/') {
+    req.session.regenerate((err) => {
+        if (err) return res.status(500).send('Session konnte nicht erneuert werden.');
+        req.session.authenticated = true;
+        req.session.user = sessionUser.username;
+        req.session.role = sessionUser.role;
+        req.session.staff_id = sessionUser.staff_id || null;
+        req.session.default_system_id = sessionUser.default_system_id || null;
+        req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+        res.redirect(redirectTo);
+    });
+}
+
 function calculateDeadline(type, urgency, priority, baseDate = new Date()) {
     const start = new Date(baseDate);
     const startDate = Number.isNaN(start.getTime()) ? new Date() : start;
@@ -847,30 +979,25 @@ app.get('/login', (req, res) => {
     res.render('login', { error: req.query.error || null });
 });
 
-app.post('/login', (req, res) => {
+app.post('/login', loginRateLimit, (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.redirect('/login?error=Benutzername%20und%20Passwort%20erforderlich');
 
     // Root user from env
     if (username === ADMIN_USER && password === ADMIN_PASS) {
-        req.session.authenticated = true;
-        req.session.user = username;
-        req.session.role = 'root';
-        req.session.staff_id = null;
-        req.session.default_system_id = null;
-        return res.redirect('/');
+        return startAuthenticatedSession(req, res, {
+            username,
+            role: 'root',
+            staff_id: null,
+            default_system_id: null
+        });
     }
 
     // DB users
     db.get('SELECT * FROM users WHERE username = ? AND active = 1', [username], (err, user) => {
         if (err || !user) return res.redirect('/login?error=Ungueltige%20Anmeldedaten');
         if (!verifyPassword(password, user.password_hash)) return res.redirect('/login?error=Ungueltige%20Anmeldedaten');
-        req.session.authenticated = true;
-        req.session.user = user.username;
-        req.session.role = user.role;
-        req.session.staff_id = user.staff_id;
-        req.session.default_system_id = user.default_system_id;
-        res.redirect('/');
+        startAuthenticatedSession(req, res, user);
     });
 });
 
@@ -887,7 +1014,7 @@ app.get('/api/systems', requireAuth, (req, res) => {
     });
 });
 
-app.post('/api/systems', requireAuth, (req, res) => {
+app.post('/api/systems', requireAuth, requireAdmin, (req, res) => {
     const { name, description } = req.body;
     db.run('INSERT INTO systems (name, description) VALUES (?, ?)', [name, description],
         function(err) { if (err) return res.status(500).json({ error: err.message }); res.json({ id: this.lastID }); });
@@ -895,14 +1022,14 @@ app.post('/api/systems', requireAuth, (req, res) => {
 
 // --- API: Staff ---
 
-app.get('/api/staff', requireAuth, (req, res) => {
+app.get('/api/staff', requireAuth, requireAdmin, (req, res) => {
     db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
 });
 
-app.get('/api/staff/:id', requireAuth, (req, res) => {
+app.get('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
     db.get('SELECT * FROM staff WHERE id = ?', [req.params.id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden' });
@@ -910,13 +1037,13 @@ app.get('/api/staff/:id', requireAuth, (req, res) => {
     });
 });
 
-app.post('/api/staff', requireAuth, (req, res) => {
+app.post('/api/staff', requireAuth, requireAdmin, (req, res) => {
     const { name, email, phone } = req.body;
     db.run('INSERT INTO staff (name, email, phone) VALUES (?, ?, ?)', [name, email, phone],
         function(err) { if (err) return res.status(500).json({ error: err.message }); res.json({ id: this.lastID }); });
 });
 
-app.delete('/api/staff/:id', requireAuth, (req, res) => {
+app.delete('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
     db.run('UPDATE staff SET active = 0 WHERE id = ?', [req.params.id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ status: 'deactivated' });
@@ -926,48 +1053,57 @@ app.delete('/api/staff/:id', requireAuth, (req, res) => {
 // --- API: Notes ---
 
 app.get('/api/tickets/:id/notes', requireAuth, (req, res) => {
-    db.all('SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at DESC', [req.params.id], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (ticketErr, ticket) => {
+        if (ticketErr) return res.status(500).json({ error: ticketErr.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+
+        const noteQuery = canManageTickets(req)
+            ? 'SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at DESC'
+            : 'SELECT * FROM ticket_notes WHERE ticket_id = ? AND is_internal = 0 ORDER BY created_at DESC';
+        db.all(noteQuery, [req.params.id], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
     });
 });
 
 app.post('/api/tickets/:id/notes', requireAuth, (req, res) => {
     const { text, is_internal = 1 } = req.body;
     const actor = getActor(req);
-    
-    db.run('INSERT INTO ticket_notes (ticket_id, author, text, is_internal) VALUES (?, ?, ?, ?)',
-        [req.params.id, actor, text, is_internal],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            const noteId = this.lastID;
-            logAction(req.params.id, actor, 'note_added', `${is_internal ? 'Interne' : 'Öffentliche'} Notiz hinzugefügt`);
-            addActivity(req.params.id, actor, 'comment', `Kommentar hinzugefügt`, { text: text.substring(0, 100), is_internal });
-            
-            // Socket.io Broadcast
-            io.to(`ticket-${req.params.id}`).emit('new-note', {
-                ticketId: req.params.id,
-                note: { id: noteId, author: actor, text, is_internal, created_at: new Date().toISOString() }
-            });
-            
-            // E-Mail Benachrichtigung
-            db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
-                if (ticket && !is_internal) {
-                    mailComment(ticket, { text, is_internal }, actor);
-                }
-            });
-            
-            // First Response Tracking
-            db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
-                if (ticket && !ticket.first_responded_at) {
+
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (ticketErr, ticket) => {
+        if (ticketErr) return res.status(500).json({ error: ticketErr.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+
+        const noteText = normalizeText(text, 5000);
+        const noteIsInternal = canManageTickets(req) ? parseCheckbox(is_internal) : 0;
+
+        db.run('INSERT INTO ticket_notes (ticket_id, author, text, is_internal) VALUES (?, ?, ?, ?)',
+            [req.params.id, actor, noteText, noteIsInternal],
+            function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+
+                const noteId = this.lastID;
+                logAction(req.params.id, actor, 'note_added', `${noteIsInternal ? 'Interne' : 'Öffentliche'} Notiz hinzugefügt`);
+                addActivity(req.params.id, actor, 'comment', `Kommentar hinzugefügt`, { text: noteText.substring(0, 100), is_internal: noteIsInternal });
+
+                io.to(`ticket-${req.params.id}`).emit('new-note', {
+                    ticketId: req.params.id,
+                    note: { id: noteId, author: actor, text: noteText, is_internal: noteIsInternal, created_at: new Date().toISOString() }
+                });
+
+                if (canManageTickets(req) && !noteIsInternal) mailComment(ticket, { text: noteText, is_internal: noteIsInternal }, actor);
+
+                if (canManageTickets(req) && !ticket.first_responded_at) {
                     db.run('UPDATE tickets SET first_responded_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
                     updateSLAFirstResponse(req.params.id);
                 }
+
+                res.json({ id: noteId });
             });
-            
-            res.json({ id: noteId });
-        });
+    });
 });
 
 // --- API: Templates ---
@@ -987,7 +1123,7 @@ app.get('/api/templates/:id', requireAuth, (req, res) => {
     });
 });
 
-app.post('/api/templates', requireAuth, (req, res) => {
+app.post('/api/templates', requireAuth, requireAdmin, (req, res) => {
     const { name, type, description, fields } = req.body;
     db.run('INSERT INTO ticket_templates (name, type, description, fields) VALUES (?, ?, ?, ?)',
         [name, type, description, JSON.stringify(fields)],
@@ -997,38 +1133,52 @@ app.post('/api/templates', requireAuth, (req, res) => {
 // --- API: SLA ---
 
 app.get('/api/tickets/:id/sla', requireAuth, (req, res) => {
-    getSLAStatus(req.params.id, (sla) => {
-        res.json(sla || {});
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+        getSLAStatus(req.params.id, (sla) => {
+            res.json(sla || {});
+        });
     });
 });
 
 // --- API: Activity Stream ---
 
 app.get('/api/tickets/:id/activities', requireAuth, (req, res) => {
-    getActivities(req.params.id, (activities) => {
-        res.json(activities);
-    });
+    if (!canManageTickets(req)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+    getActivities(req.params.id, (activities) => res.json(activities));
 });
 
 // --- API: Feedback ---
 
 app.get('/api/tickets/:id/feedback', requireAuth, (req, res) => {
-    getFeedback(req.params.id, (err, feedback) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(feedback || null);
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (ticketErr, ticket) => {
+        if (ticketErr) return res.status(500).json({ error: ticketErr.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+        getFeedback(req.params.id, (err, feedback) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(feedback || null);
+        });
     });
 });
 
 app.post('/api/tickets/:id/feedback', requireAuth, (req, res) => {
     const { rating, comment } = req.body;
-    addFeedback(req.params.id, rating, comment, (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        addActivity(req.params.id, getActor(req), 'feedback', `Feedback abgegeben: ${rating}/5 Sterne`, { rating, comment });
-        res.json(result);
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (ticketErr, ticket) => {
+        if (ticketErr) return res.status(500).json({ error: ticketErr.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+        addFeedback(req.params.id, rating, comment, (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            addActivity(req.params.id, getActor(req), 'feedback', `Feedback abgegeben: ${rating}/5 Sterne`, { rating, comment });
+            res.json(result);
+        });
     });
 });
 
-app.get('/api/feedback/stats', requireAuth, (req, res) => {
+app.get('/api/feedback/stats', requireAuth, requireAdmin, (req, res) => {
     getAverageFeedback((err, stats) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(stats);
@@ -1037,8 +1187,13 @@ app.get('/api/feedback/stats', requireAuth, (req, res) => {
 
 // --- API: Tickets ---
 
-app.post('/api/tickets', requireApiKey, (req, res) => {
+app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireApiKey, (req, res) => {
     const d = req.body;
+    d.title = normalizeText(d.title || 'Unbenannt', 200) || 'Unbenannt';
+    d.description = normalizeText(d.description || '', 5000);
+    d.username = normalizeText(d.username || '', 120) || null;
+    d.location = normalizeText(d.location || '', 200) || null;
+    d.contact_email = normalizeText(d.contact_email || '', 254) || null;
     let swInfo = d.software_info;
     if (swInfo && typeof swInfo === 'object') swInfo = JSON.stringify(swInfo);
     
@@ -1087,6 +1242,9 @@ app.post('/api/tickets', requireApiKey, (req, res) => {
 app.get('/api/tickets', requireAuth, (req, res) => {
     let query = 'SELECT t.*, s.name as system_name, st.name as assigned_name FROM tickets t LEFT JOIN systems s ON t.system_id = s.id LEFT JOIN staff st ON t.assigned_to = st.id WHERE 1=1';
     const params = [];
+    const visibility = ticketVisibilityClause(req, 't');
+    query += visibility.clause;
+    params.push(...visibility.params);
     if (req.query.status) { query += ' AND t.status = ?'; params.push(req.query.status); }
     if (req.query.type) { query += ' AND t.type = ?'; params.push(req.query.type); }
     if (req.query.priority) { query += ' AND t.priority = ?'; params.push(req.query.priority); }
@@ -1109,8 +1267,14 @@ app.get('/api/tickets', requireAuth, (req, res) => {
 });
 
 app.get('/export/csv', requireAuth, (req, res) => {
-    const query = 'SELECT t.id, t.type, t.title, t.status, t.priority, t.system_name, t.assigned_name, t.created_at FROM tickets t LEFT JOIN systems s ON t.system_id = s.id LEFT JOIN staff st ON t.assigned_to = st.id ORDER BY t.created_at DESC';
-    db.all(query, [], (err, rows) => {
+    const visibility = ticketVisibilityClause(req, 't');
+    const query = `SELECT t.id, t.type, t.title, t.status, t.priority, s.name as system_name, st.name as assigned_name, t.created_at
+        FROM tickets t
+        LEFT JOIN systems s ON t.system_id = s.id
+        LEFT JOIN staff st ON t.assigned_to = st.id
+        WHERE 1=1${visibility.clause}
+        ORDER BY t.created_at DESC`;
+    db.all(query, visibility.params, (err, rows) => {
         if (err) return res.status(500).send('DB Error');
         
         let csv = 'ID,Typ,Titel,Status,Priorität,System,Zuweisung,Erstellt\n';
@@ -1138,13 +1302,14 @@ app.get('/api/tickets/:id', requireAuth, (req, res) => {
     db.get('SELECT t.*, s.name as system_name, st.name as assigned_name, st.email as assigned_email FROM tickets t LEFT JOIN systems s ON t.system_id = s.id LEFT JOIN staff st ON t.assigned_to = st.id WHERE t.id = ?', [req.params.id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, row)) return res.status(403).json({ error: 'Keine Berechtigung.' });
         const t = enrichTicket({ ...row });
         if (t.software_info) { try { t.software_info = JSON.parse(t.software_info); } catch(e) {} }
         res.json(t);
     });
 });
 
-app.patch('/api/tickets/:id', requireAuth, (req, res) => {
+app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     const allowed = ['title', 'description', 'status', 'priority', 'type', 'username', 'console_logs', 'software_info', 'system_id', 'assigned_to', 'location', 'contact_email', 'urgency'];
     const updates = {};
     for (const key of allowed) {
@@ -1166,6 +1331,13 @@ app.patch('/api/tickets/:id', requireAuth, (req, res) => {
             );
         }
 
+        if (updates.status === 'geschlossen' && oldTicket.status !== 'geschlossen') {
+            updates.closed_at = new Date().toISOString();
+        } else if (updates.status && updates.status !== 'geschlossen' && oldTicket.status === 'geschlossen') {
+            updates.closed_at = null;
+            updates.feedback_requested = 0;
+        }
+
         if (updates.software_info && typeof updates.software_info === 'object') {
             updates.software_info = JSON.stringify(updates.software_info);
         }
@@ -1182,7 +1354,10 @@ app.patch('/api/tickets/:id', requireAuth, (req, res) => {
             logAction(req.params.id, getActor(req), 'updated', auditDetails);
 
             db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
-                if (updates.status && oldTicket && oldTicket.status !== updates.status) mailStatusChange(ticket, oldTicket.status);
+                if (updates.status && oldTicket && oldTicket.status !== updates.status) {
+                    mailStatusChange(ticket, oldTicket.status);
+                    if (updates.status === 'geschlossen') updateSLAResolution(req.params.id);
+                }
                 if (updates.assigned_to && (!oldTicket || oldTicket.assigned_to !== updates.assigned_to)) {
                     db.get('SELECT * FROM staff WHERE id = ?', [updates.assigned_to], (err, staff) => {
                         if (!err && staff) mailAssigned(ticket, staff);
@@ -1194,7 +1369,7 @@ app.patch('/api/tickets/:id', requireAuth, (req, res) => {
     });
 });
 
-app.delete('/api/tickets/:id', requireAuth, (req, res) => {
+app.delete('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     logAction(req.params.id, getActor(req), 'deleted', `Ticket gelöscht`);
     db.run('DELETE FROM tickets WHERE id = ?', [req.params.id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
@@ -1205,7 +1380,7 @@ app.delete('/api/tickets/:id', requireAuth, (req, res) => {
 
 // --- Web UI: Systems ---
 
-app.get('/admin/systems', requireAuth, (req, res) => {
+app.get('/admin/systems', requireAuth, requireAdmin, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).send('DB Error');
         res.render('systems', {
@@ -1216,7 +1391,7 @@ app.get('/admin/systems', requireAuth, (req, res) => {
     });
 });
 
-app.post('/admin/systems', requireAuth, (req, res) => {
+app.post('/admin/systems', requireAuth, requireAdmin, (req, res) => {
     const { name, description } = req.body;
     db.run('INSERT INTO systems (name, description) VALUES (?, ?)', [name, description], (err) => {
         if (err) return res.status(500).send('DB Error');
@@ -1224,7 +1399,7 @@ app.post('/admin/systems', requireAuth, (req, res) => {
     });
 });
 
-app.post('/admin/systems/:id/delete', requireAuth, (req, res) => {
+app.post('/admin/systems/:id/delete', requireAuth, requireAdmin, (req, res) => {
     db.run('UPDATE systems SET active = 0 WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).send('DB Error');
         res.redirect('/admin/systems');
@@ -1620,15 +1795,42 @@ app.get('/', requireAuth, (req, res) => {
     const role = req.session.role || 'user';
     const staffId = req.session.staff_id;
     const myTickets = req.query.my_tickets === '1' && staffId;
+    const view = ['unassigned', 'overdue', 'critical', 'waiting'].includes(req.query.view) ? req.query.view : null;
+    const now = new Date().toISOString();
 
     let ticketQuery = `SELECT t.*, s.name as system_name, st.name as assigned_name 
         FROM tickets t 
         LEFT JOIN systems s ON t.system_id = s.id 
         LEFT JOIN staff st ON t.assigned_to = st.id`;
     const ticketParams = [];
+    const visibility = ticketVisibilityClause(req, 't');
+    let hasWhere = false;
+    if (visibility.clause) {
+        ticketQuery += ' WHERE ' + visibility.clause.replace(/^ AND /, '');
+        ticketParams.push(...visibility.params);
+        hasWhere = true;
+    }
     if (myTickets) {
-        ticketQuery += ' WHERE t.assigned_to = ?';
+        ticketQuery += hasWhere ? ' AND t.assigned_to = ?' : ' WHERE t.assigned_to = ?';
         ticketParams.push(staffId);
+        hasWhere = true;
+    }
+    if (view === 'unassigned') {
+        ticketQuery += hasWhere ? ' AND t.assigned_to IS NULL AND t.status != ?' : ' WHERE t.assigned_to IS NULL AND t.status != ?';
+        ticketParams.push('geschlossen');
+        hasWhere = true;
+    } else if (view === 'overdue') {
+        ticketQuery += hasWhere ? ' AND t.status != ? AND t.deadline < ?' : ' WHERE t.status != ? AND t.deadline < ?';
+        ticketParams.push('geschlossen', now);
+        hasWhere = true;
+    } else if (view === 'critical') {
+        ticketQuery += hasWhere ? ' AND t.priority = ? AND t.status != ?' : ' WHERE t.priority = ? AND t.status != ?';
+        ticketParams.push('kritisch', 'geschlossen');
+        hasWhere = true;
+    } else if (view === 'waiting') {
+        ticketQuery += hasWhere ? ' AND t.status = ?' : ' WHERE t.status = ?';
+        ticketParams.push('wartend');
+        hasWhere = true;
     }
     ticketQuery += ' ORDER BY t.updated_at DESC';
 
@@ -1641,36 +1843,45 @@ app.get('/', requireAuth, (req, res) => {
         if (!tickets) tickets = [];
 
         // Stats
-        db.all(`SELECT status, COUNT(*) as count FROM tickets GROUP BY status`, [], (err, stats) => {
+        const statsVisibility = ticketVisibilityClause(req, 't');
+        db.all(`SELECT status, COUNT(*) as count FROM tickets t WHERE 1=1${statsVisibility.clause} GROUP BY status`, statsVisibility.params, (err, stats) => {
             if (err) stats = [];
 
             // Overdue tickets
-            const now = new Date().toISOString();
             db.all(`SELECT t.*, s.name as system_name FROM tickets t 
                 LEFT JOIN systems s ON t.system_id = s.id 
-                WHERE t.status != 'geschlossen' AND t.deadline < ? ORDER BY t.deadline ASC`, [now], (err, overdue) => {
+                WHERE t.status != 'geschlossen' AND t.deadline < ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, ...statsVisibility.params], (err, overdue) => {
                 if (err) overdue = [];
 
                 // Due soon (next 2 hours)
                 const soon = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
                 db.all(`SELECT t.*, s.name as system_name FROM tickets t 
                     LEFT JOIN systems s ON t.system_id = s.id 
-                    WHERE t.status != 'geschlossen' AND t.deadline BETWEEN ? AND ? ORDER BY t.deadline ASC`, [now, soon], (err, dueSoon) => {
+                    WHERE t.status != 'geschlossen' AND t.deadline BETWEEN ? AND ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, soon, ...statsVisibility.params], (err, dueSoon) => {
                     if (err) dueSoon = [];
 
                     // SLA Stats
                     db.get(`SELECT 
                         COUNT(CASE WHEN first_response_breached = 1 THEN 1 END) as fr_breached,
                         COUNT(CASE WHEN resolution_breached = 1 THEN 1 END) as res_breached,
-                        COUNT(*) as total FROM ticket_sla`, [], (err, slaStats) => {
+                        COUNT(*) as total FROM ticket_sla ts
+                        INNER JOIN tickets t ON t.id = ts.ticket_id
+                        WHERE 1=1${statsVisibility.clause}`, statsVisibility.params, (err, slaStats) => {
                         
                         // Feedback Stats
                         getAverageFeedback((err, feedbackStats) => {
                             
                             // Recent activity
-                            db.all(`SELECT a.*, t.title as ticket_title FROM activity_stream a 
+                            const activitySql = canManageTickets(req)
+                                ? `SELECT a.*, t.title as ticket_title FROM activity_stream a 
                                 LEFT JOIN tickets t ON a.ticket_id = t.id 
-                                ORDER BY a.created_at DESC LIMIT 10`, [], (err, recentActivity) => {
+                                ORDER BY a.created_at DESC LIMIT 10`
+                                : `SELECT a.*, t.title as ticket_title FROM activity_stream a 
+                                LEFT JOIN tickets t ON a.ticket_id = t.id 
+                                WHERE 1=1${statsVisibility.clause}
+                                ORDER BY a.created_at DESC LIMIT 10`;
+                            const activityParams = canManageTickets(req) ? [] : statsVisibility.params;
+                            db.all(activitySql, activityParams, (err, recentActivity) => {
                                 if (err) recentActivity = [];
 
                                 res.render('dashboard', { 
@@ -1678,6 +1889,7 @@ app.get('/', requireAuth, (req, res) => {
                                     role,
                                     staffId,
                                     myTickets: !!myTickets,
+                                    view,
                                     tickets: tickets.map(enrichTicket),
                                     stats, 
                                     overdue: overdue.map(enrichTicket), 
@@ -1702,9 +1914,10 @@ app.get('/ticket/new', requireAuth, (req, res) => {
                 res.render('new', {
                     systems: systems || [],
                     templates: templates || [],
-                    staffList: staff || [],
+                    staffList: canManageTickets(req) ? (staff || []) : [],
                     user: req.session.user,
-                    role: req.session.role || 'user'
+                    role: req.session.role || 'user',
+                    canManageTickets: canManageTickets(req)
                 });
             });
         });
@@ -1722,28 +1935,37 @@ app.get('/ticket/:id', requireAuth, (req, res) => {
         LEFT JOIN staff st ON t.assigned_to = st.id 
         WHERE t.id = ?`, [ticketId], (err, ticket) => {
         if (err || !ticket) return res.status(404).send('Ticket nicht gefunden');
+        if (!canViewTicket(req, ticket)) return res.status(403).send('Keine Berechtigung.');
 
-        db.all('SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at DESC', [ticketId], (err, notes) => {
-            db.all('SELECT * FROM audit_log WHERE ticket_id = ? ORDER BY created_at DESC', [ticketId], (err, logs) => {
+        const canManage = canManageTickets(req);
+        const noteQuery = canManage
+            ? 'SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at DESC'
+            : 'SELECT * FROM ticket_notes WHERE ticket_id = ? AND is_internal = 0 ORDER BY created_at DESC';
+
+        db.all(noteQuery, [ticketId], (err, notes) => {
+            db.all(canManage ? 'SELECT * FROM audit_log WHERE ticket_id = ? ORDER BY created_at DESC' : 'SELECT * FROM audit_log WHERE 1=0', [ticketId], (err, logs) => {
                 db.all('SELECT * FROM systems WHERE active = 1', [], (err, systems) => {
                     db.all('SELECT * FROM staff WHERE active = 1', [], (err, staffList) => {
                         getSLAStatus(ticketId, (sla) => {
-                            getActivities(ticketId, (activities) => {
+                            const renderDetail = (activities) => {
                                 getFeedback(ticketId, (err, feedback) => {
                                     res.render('detail', { 
                                         ticket: enrichTicket(ticket), 
                                         notes: notes || [], 
                                         logs: logs || [], 
                                         systems: systems || [], 
-                                        staffList: staffList || [],
+                                        staffList: canManage ? (staffList || []) : [],
                                         sla: sla || {},
-                                        activities: activities || [],
+                                        activities: canManage ? (activities || []) : [],
                                         feedback: feedback || null,
                                         user,
-                                        role
+                                        role,
+                                        canManageTickets: canManage
                                     });
                                 });
-                            });
+                            };
+                            if (canManage) getActivities(ticketId, renderDetail);
+                            else renderDetail([]);
                         });
                     });
                 });
@@ -1762,7 +1984,7 @@ app.post('/ticket/:id/delete', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
-app.post('/ticket/:id/status', requireAuth, (req, res) => {
+app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
     const { status } = req.body;
     const ticketId = req.params.id;
     const actor = getActor(req);
@@ -1777,6 +1999,9 @@ app.post('/ticket/:id/status', requireAuth, (req, res) => {
         const updates = { status };
         if (status === 'geschlossen') {
             updates.closed_at = new Date().toISOString();
+        } else if (oldTicket.status === 'geschlossen') {
+            updates.closed_at = null;
+            updates.feedback_requested = 0;
         }
 
         const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -1804,7 +2029,7 @@ app.post('/ticket/:id/status', requireAuth, (req, res) => {
     });
 });
 
-app.post('/ticket/:id/assign', requireAuth, (req, res) => {
+app.post('/ticket/:id/assign', requireAuth, requireAdmin, (req, res) => {
     const assignedTo = req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : null;
     const systemId = req.body.system_id ? parseInt(req.body.system_id, 10) : null;
     const ticketId = req.params.id;
@@ -1847,22 +2072,29 @@ app.post('/ticket/:id/notes', requireAuth, (req, res) => {
     const ticketId = req.params.id;
     const actor = getActor(req);
 
-    db.run('INSERT INTO ticket_notes (ticket_id, author, text, is_internal) VALUES (?, ?, ?, ?)',
-        [ticketId, actor, text, is_internal], function(err) {
+    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (ticketErr, ticket) => {
+        if (ticketErr) return res.status(500).send('DB Error');
+        if (!ticket) return res.status(404).send('Ticket nicht gefunden');
+        if (!canViewTicket(req, ticket)) return res.status(403).send('Keine Berechtigung.');
+
+        const noteIsInternal = canManageTickets(req) ? parseCheckbox(is_internal) : 0;
+
+        db.run('INSERT INTO ticket_notes (ticket_id, author, text, is_internal) VALUES (?, ?, ?, ?)',
+        [ticketId, actor, normalizeText(text, 5000), noteIsInternal], function(err) {
             if (err) return res.status(500).send('DB Error');
             
             const noteId = this.lastID;
-            logAction(ticketId, actor, 'note_added', `${is_internal ? 'Interne' : 'Öffentliche'} Notiz hinzugefügt`);
-            addActivity(ticketId, actor, 'comment', `Kommentar hinzugefügt`, { text: text.substring(0, 100), is_internal });
+            logAction(ticketId, actor, 'note_added', `${noteIsInternal ? 'Interne' : 'Öffentliche'} Notiz hinzugefügt`);
+            addActivity(ticketId, actor, 'comment', `Kommentar hinzugefügt`, { text: normalizeText(text, 100), is_internal: noteIsInternal });
 
             io.to(`ticket-${ticketId}`).emit('new-note', {
                 ticketId,
-                note: { id: noteId, author: actor, text, is_internal, created_at: new Date().toISOString() }
+                note: { id: noteId, author: actor, text: normalizeText(text, 5000), is_internal: noteIsInternal, created_at: new Date().toISOString() }
             });
 
             // First Response
             db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
-                if (ticket && !ticket.first_responded_at) {
+                if (canManageTickets(req) && ticket && !ticket.first_responded_at) {
                     db.run('UPDATE tickets SET first_responded_at = CURRENT_TIMESTAMP WHERE id = ?', [ticketId]);
                     updateSLAFirstResponse(ticketId);
                 }
@@ -1870,10 +2102,17 @@ app.post('/ticket/:id/notes', requireAuth, (req, res) => {
 
             res.redirect('/ticket/' + ticketId);
         });
+    });
 });
 
 app.post('/ticket/new', requireAuth, (req, res) => {
     const d = req.body;
+    d.title = normalizeText(d.title || 'Unbenannt', 200) || 'Unbenannt';
+    d.description = normalizeText(d.description || '', 5000);
+    d.username = normalizeText(d.username || req.session.user, 120) || req.session.user;
+    d.location = normalizeText(d.location || '', 200) || null;
+    d.contact_email = normalizeText(d.contact_email || '', 254) || null;
+    if (!canManageTickets(req)) d.assigned_to = null;
     let swInfo = d.software_info;
     if (swInfo && typeof swInfo === 'object') swInfo = JSON.stringify(swInfo);
 
@@ -1914,7 +2153,7 @@ app.post('/ticket/new', requireAuth, (req, res) => {
     });
 });
 
-app.post('/ticket/:id/deadline', requireAuth, (req, res) => {
+app.post('/ticket/:id/deadline', requireAuth, requireAdmin, (req, res) => {
     const { deadline } = req.body;
     const ticketId = req.params.id;
     const actor = getActor(req);

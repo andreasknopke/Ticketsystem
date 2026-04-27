@@ -26,8 +26,10 @@
                         <a href="/stats" class="nav-link">Statistiken</a>
                         <% } %>
                         <a href="/ticket/new" class="nav-link active">Neues Ticket</a>
+                        <% if (role === 'admin' || role === 'root') { %>
                         <a href="/admin/systems" class="nav-link">Systeme</a>
                         <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% } %>
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
@@ -57,6 +59,7 @@
             
             <div class="card-body">
                 <form method="post" action="/ticket/new" class="space-y-6">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Typ</label>
@@ -90,7 +93,12 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">User</label>
+                            <% if (canManageTickets) { %>
                             <input type="text" name="username" class="form-input" placeholder="Name des Meldenden">
+                            <% } else { %>
+                            <input type="text" value="<%= user %>" class="form-input bg-gray-100 text-gray-500" disabled>
+                            <input type="hidden" name="username" value="<%= user %>">
+                            <% } %>
                         </div>
                         
                         <div>
@@ -116,6 +124,7 @@
                         </div>
                     </div>
 
+                    <% if (canManageTickets) { %>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Dringlichkeit</label>
@@ -136,6 +145,16 @@
                             </select>
                         </div>
                     </div>
+                    <% } else { %>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Dringlichkeit</label>
+                        <select name="urgency" class="form-select">
+                            <option value="normal" selected>Normal</option>
+                            <option value="safety">Sicherheitsrelevant</option>
+                            <option value="emergency">Notfall</option>
+                        </select>
+                    </div>
+                    <% } %>
 
                     <div class="flex gap-4 pt-4">
                         <button type="submit" class="btn-primary">Ticket erstellen</button>
