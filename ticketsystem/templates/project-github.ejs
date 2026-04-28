@@ -89,7 +89,7 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Webhook URL</label>
-                            <input class="form-input bg-gray-50" readonly value="<%= baseUrl %>/api/github/webhook">
+                            <input class="form-input bg-gray-50" readonly value="<%= process.env.BASE_URL || 'http://localhost:'+(process.env.PORT||8010) %>/api/github/webhook">
                         </div>
                     </div>
                     <div class="flex gap-4">

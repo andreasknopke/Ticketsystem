@@ -1872,15 +1872,16 @@ async function syncGitHubIssues(projectId, integration) {
         if (issues.length < 100) break;
         page++;
     }
+    const stmt = db.prepare(`INSERT OR REPLACE INTO github_issues
+        (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`);
     for (const issue of allIssues) {
         if (issue.pull_request) continue;
-        db.run(`INSERT OR REPLACE INTO github_issues
-            (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-            [projectId, issue.number, issue.title, issue.state, issue.html_url,
-             JSON.stringify(issue.labels.map(l => l.name)), issue.created_at, issue.updated_at, issue.user?.login]);
+        stmt.run(projectId, issue.number, issue.title, issue.state, issue.html_url,
+            JSON.stringify(issue.labels.map(l => l.name)), issue.created_at, issue.updated_at, issue.user?.login);
     }
-    return allIssues.filter(i => !i.pull_request).length;
+    stmt.finalize();
+    return allIssues.length;
 }
 
 async function syncGitHubWiki(projectId, integration) {
@@ -1908,19 +1909,8 @@ async function syncGitHubWiki(projectId, integration) {
 app.post('/api/projects/:projectId/github/sync', requireAuth, requireAdmin, (req, res) => {
     db.get('SELECT * FROM github_integration WHERE project_id = ?', [req.params.projectId], async (err, integration) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (!integration) return res.status(400).json({ error: 'GitHub-Integration nicht konfiguriert. Bitte zuerst Repository hinterlegen.' });
-        if (!integration.access_token) return res.status(400).json({ error: 'Kein Access Token konfiguriert. Bitte Personal Access Token hinterlegen.' });
+        if (!integration || !integration.access_token) return res.status(400).json({ error: 'GitHub-Integration nicht konfiguriert' });
         try {
-            const octokit = new Octokit({ auth: integration.access_token });
-            // Connectivity test
-            try {
-                await octokit.rest.repos.get({ owner: integration.repo_owner, repo: integration.repo_name });
-            } catch (repoErr) {
-                if (repoErr.status === 404) return res.status(400).json({ error: 'Repository nicht gefunden: ' + integration.repo_owner + '/' + integration.repo_name + '. Prüfe Owner und Repo-Name.' });
-                if (repoErr.status === 401) return res.status(400).json({ error: 'Access Token ungültig oder abgelaufen. Bitte neuen Token erstellen.' });
-                if (repoErr.status === 403) return res.status(400).json({ error: 'Zugriff verweigert. Token benötigt repo-Scope oder Repository ist privat.' });
-                return res.status(500).json({ error: 'Verbindungstest fehlgeschlagen: ' + repoErr.message });
-            }
             let issuesCount = 0, wikiPages = 0;
             if (integration.sync_issues) {
                 issuesCount = await syncGitHubIssues(req.params.projectId, integration);
@@ -1959,13 +1949,14 @@ app.get('/api/projects/:projectId/github/issues', requireAuth, (req, res) => {
                 user: i.user?.login
             }));
             // Cache in local DB
+            const stmt = db.prepare(`INSERT OR REPLACE INTO github_issues
+                (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`);
             for (const issue of result) {
-                db.run(`INSERT OR REPLACE INTO github_issues
-                    (project_id, issue_number, title, state, html_url, labels, github_created_at, github_updated_at, github_user, synced_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                    [req.params.projectId, issue.number, issue.title, issue.state, issue.html_url,
-                     JSON.stringify(issue.labels), issue.created_at, issue.updated_at, issue.user]);
+                stmt.run(req.params.projectId, issue.number, issue.title, issue.state, issue.html_url,
+                    JSON.stringify(issue.labels), issue.created_at, issue.updated_at, issue.user);
             }
+            stmt.finalize();
             res.json(result);
         } catch (e) {
             // Fallback: return cached issues
@@ -2995,7 +2986,6 @@ app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
                 res.render('project-github', {
                     project,
                     github: github || null,
-                    baseUrl: process.env.BASE_URL || ('http://localhost:' + (process.env.PORT || 8010)),
                     user: req.session.user,
                     role: req.session.role || 'user',
                     canManage: isAdminRole(req.session.role)
