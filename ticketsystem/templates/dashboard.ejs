@@ -293,13 +293,31 @@
         <% if (tickets && tickets.length > 0) { %>
         <div class="card mb-8">
             <div class="card-header">
-                <h3 class="text-lg font-semibold text-gray-900"><%= view ? 'Queue' : myTickets ? 'Meine Tickets' : 'Alle Tickets' %> (<%= tickets.length %>)</h3>
+                <div class="flex items-center justify-between flex-wrap gap-4">
+                    <h3 class="text-lg font-semibold text-gray-900"><%= view ? 'Queue' : myTickets ? 'Meine Tickets' : 'Alle Tickets' %> (<%= tickets.length %>)</h3>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="text-xs text-gray-500 mr-1">Filter:</span>
+                        <label class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs cursor-pointer transition-colors border" id="lbl-offen" style="background:#fef3c7;border-color:#fcd34d;color:#92400e">
+                            <input type="checkbox" class="status-filter" value="offen" checked onchange="filterTable()"> Offen
+                        </label>
+                        <label class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs cursor-pointer transition-colors border" id="lbl-in_bearbeitung" style="background:#dbeafe;border-color:#93c5fd;color:#1e40af">
+                            <input type="checkbox" class="status-filter" value="in_bearbeitung" checked onchange="filterTable()"> In Bearbeitung
+                        </label>
+                        <label class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs cursor-pointer transition-colors border" id="lbl-wartend" style="background:#e9d5ff;border-color:#c4b5fd;color:#6b21a8">
+                            <input type="checkbox" class="status-filter" value="wartend" checked onchange="filterTable()"> Wartend
+                        </label>
+                        <label class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs cursor-pointer transition-colors border" id="lbl-geschlossen" style="background:#d1fae5;border-color:#6ee7b7;color:#065f46">
+                            <input type="checkbox" class="status-filter" value="geschlossen" onchange="filterTable()"> Geschlossen
+                        </label>
+                    </div>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
+                                <th class="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-8"></th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Typ</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Titel</th>
@@ -309,9 +327,12 @@
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Erstellt</th>
                             </tr>
                         </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
+                        <tbody class="bg-white divide-y divide-gray-200" id="ticketTableBody">
                             <% tickets.forEach(t => { %>
-                            <tr class="hover:bg-gray-50">
+                            <tr class="hover:bg-gray-50" data-status="<%= t.status %>" data-id="<%= t.id %>" <%= pinnedIds.includes(t.id) ? 'style="background:#fff7ed"' : '' %>>
+                                <td class="px-2 py-4 whitespace-nowrap text-center">
+                                    <button onclick="togglePin(event, <%= t.id %>)" class="text-lg leading-none <%= pinnedIds.includes(t.id) ? 'text-orange-500' : 'text-gray-300 hover:text-orange-400' %>" title="<%= pinnedIds.includes(t.id) ? 'Angepinnt – klicken zum Lösen' : 'Anpinnen' %>"><%= pinnedIds.includes(t.id) ? '📌' : '📍' %></button>
+                                </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-primary-600">
                                     <a href="/ticket/<%= t.id %>">#<%= t.id %></a>
                                 </td>
@@ -384,9 +405,34 @@
         const socket = io();
         
         socket.on('activity', (data) => {
-            // Seite neu laden bei neuer Aktivität
             location.reload();
         });
+
+        // Status-Filter
+        function filterTable() {
+            const checked = Array.from(document.querySelectorAll('.status-filter:checked')).map(cb => cb.value);
+            document.querySelectorAll('#ticketTableBody tr').forEach(row => {
+                row.style.display = checked.includes(row.dataset.status) ? '' : 'none';
+            });
+        }
+        filterTable(); // initial aufrufen (geschlossen standardmäßig ausgeblendet)
+
+        // Pin-Toggle
+        async function togglePin(event, ticketId) {
+            event.preventDefault();
+            event.stopPropagation();
+            const btn = event.target.closest('button');
+            const isPinned = btn.textContent.trim() === '📌';
+            const method = isPinned ? 'DELETE' : 'POST';
+            const resp = await fetch('/api/tickets/' + ticketId + '/pin', { method, headers: { 'X-CSRF-Token': '<%= csrfToken %>' } });
+            if (resp.ok) {
+                btn.textContent = isPinned ? '📍' : '📌';
+                btn.className = isPinned ? 'text-lg leading-none text-gray-300 hover:text-orange-400' : 'text-lg leading-none text-orange-500';
+                btn.title = isPinned ? 'Anpinnen' : 'Angepinnt – klicken zum Lösen';
+                const row = btn.closest('tr');
+                row.style.background = isPinned ? '' : '#fff7ed';
+            }
+        }
     </script>
 </body>
 </html>

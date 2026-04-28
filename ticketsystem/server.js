@@ -563,6 +563,15 @@ function initDb() {
         UNIQUE(project_id, issue_number)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS ticket_pins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        ticket_id INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        UNIQUE(username, ticket_id)
+    )`);
+
     // Bestehende Tabellen-Spalten aktualisieren (Migrationen)
     // Users table
     db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -1620,6 +1629,33 @@ app.delete('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// --- API: Ticket Pins ---
+
+app.post('/api/tickets/:id/pin', requireAuth, (req, res) => {
+    const username = req.session.user;
+    db.run('INSERT OR IGNORE INTO ticket_pins (username, ticket_id) VALUES (?, ?)',
+        [username, req.params.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ pinned: true });
+        });
+});
+
+app.delete('/api/tickets/:id/pin', requireAuth, (req, res) => {
+    const username = req.session.user;
+    db.run('DELETE FROM ticket_pins WHERE username = ? AND ticket_id = ?',
+        [username, req.params.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ pinned: false });
+        });
+});
+
+app.get('/api/pins', requireAuth, (req, res) => {
+    db.all('SELECT ticket_id FROM ticket_pins WHERE username = ?', [req.session.user], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows.map(r => r.ticket_id));
+    });
+});
+
 // --- API: Projects ---
 
 app.get('/api/projects', requireAuth, (req, res) => {
@@ -2538,6 +2574,9 @@ app.get('/', requireAuth, (req, res) => {
                             db.all(activitySql, activityParams, (err, recentActivity) => {
                                 if (err) recentActivity = [];
 
+                                db.all('SELECT ticket_id FROM ticket_pins WHERE username = ?', [user], (err, pins) => {
+                                    const pinnedIds = pins ? pins.map(p => p.ticket_id) : [];
+
                                 res.render('dashboard', { 
                                     user, 
                                     role,
@@ -2550,7 +2589,8 @@ app.get('/', requireAuth, (req, res) => {
                                     dueSoon: dueSoon.map(enrichTicket),
                                     slaStats: slaStats || { fr_breached: 0, res_breached: 0, total: 0 },
                                     feedbackStats: feedbackStats || { avg_rating: 0, count: 0 },
-                                    recentActivity: recentActivity.map(a => ({ ...a, metadata: a.metadata ? JSON.parse(a.metadata) : {} }))
+                                    recentActivity: recentActivity.map(a => ({ ...a, metadata: a.metadata ? JSON.parse(a.metadata) : {} })),
+                                    pinnedIds
                                 });
                             });
                         });
@@ -2559,6 +2599,7 @@ app.get('/', requireAuth, (req, res) => {
             });
         });
     });
+});
 });
 
 app.get('/ticket/new', requireAuth, (req, res) => {
