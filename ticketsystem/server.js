@@ -1828,7 +1828,24 @@ app.get('/api/projects/:projectId/github', requireAuth, requireAdmin, (req, res)
 });
 
 app.post('/api/projects/:projectId/github', requireAuth, requireAdmin, (req, res) => {
-    const { repo_owner, repo_name, access_token, webhook_secret, sync_issues, sync_wiki } = req.body;
+    let { repo_owner, repo_name, access_token, webhook_secret, sync_issues, sync_wiki } = req.body;
+
+    // Parse GitHub URL if user entered full URL in repo_name or repo_owner
+    const urlMatch = (repo_owner || '').match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?$/);
+    if (urlMatch) {
+        repo_owner = urlMatch[1];
+        repo_name = repo_name || urlMatch[2];
+    }
+    const urlMatch2 = (repo_name || '').match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?$/);
+    if (urlMatch2) {
+        repo_owner = urlMatch2[1];
+        repo_name = urlMatch2[2];
+    }
+
+    if (!repo_owner || !repo_name) {
+        return res.status(400).json({ error: 'Repository Owner und Name sind erforderlich.' });
+    }
+
     db.get('SELECT id FROM github_integration WHERE project_id = ?', [req.params.projectId], (err, existing) => {
         if (existing) {
             const fields = [];

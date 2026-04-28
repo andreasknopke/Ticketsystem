@@ -69,14 +69,21 @@
             <div class="card-body">
                 <form id="githubForm" onsubmit="saveGithub(event)" class="space-y-4">
                     <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Repo Owner *</label>
-                            <input name="repo_owner" value="<%= github ? github.repo_owner : '' %>" required class="form-input" placeholder="z.B. mein-krankenhaus">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Repository URL *</label>
+                            <input name="repo_owner" value="<%= github ? ('https://github.com/' + github.repo_owner + '/' + github.repo_name) : '' %>" required class="form-input" placeholder="https://github.com/username/repository">
+                            <p class="text-xs text-gray-500 mt-1">Gib die vollständige Repository-URL ein oder Owner/Repo-Name einzeln.</p>
                         </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Repo Name *</label>
-                            <input name="repo_name" value="<%= github ? github.repo_name : '' %>" required class="form-input" placeholder="z.B. curaflow">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Oder: Owner</label>
+                                <input name="repo_owner_alt" class="form-input" placeholder="z.B. andreasknopke">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Oder: Repo-Name</label>
+                                <input name="repo_name" class="form-input" placeholder="z.B. CuraFlow">
+                            </div>
                         </div>
                         <div class="col-span-2">
                             <label class="block text-sm font-medium text-gray-700 mb-1">Personal Access Token</label>
@@ -111,7 +118,7 @@
             </div>
             <div class="card-body">
                 <div class="grid grid-cols-2 gap-4 text-sm">
-                    <div><span class="text-gray-500">Repository:</span> <a href="https://github.com/<%= github.repo_owner %>/<%= github.repo_name %>" target="_blank" class="text-primary-600"><%= github.repo_owner %>/<%= github.repo_name %></a></div>
+                    <div><span class="text-gray-500">Repository:</span> <a href="https://github.com/<%= github.repo_owner %>/<%= github.repo_name.replace(/^https?:\/\/github\.com\/[^\/]+\//, '') %>" target="_blank" class="text-primary-600"><%= github.repo_owner %>/<%= github.repo_name.replace(/^https?:\/\/github\.com\/[^\/]+\//, '') %></a></div>
                     <div><span class="text-gray-500">Letzter Sync:</span> <%= github.last_synced_at || 'Nie' %></div>
                     <div><span class="text-gray-500">Issue Sync:</span> <span class="badge <%= github.sync_issues ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600' %>"><%= github.sync_issues ? 'Aktiv' : 'Inaktiv' %></span></div>
                     <div><span class="text-gray-500">Wiki Sync:</span> <span class="badge <%= github.sync_wiki ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600' %>"><%= github.sync_wiki ? 'Aktiv' : 'Inaktiv' %></span></div>
@@ -130,6 +137,8 @@
             e.preventDefault();
             const fd = new FormData(e.target);
             const body = Object.fromEntries(fd);
+            if (!body.repo_owner && body.repo_owner_alt) body.repo_owner = body.repo_owner_alt;
+            delete body.repo_owner_alt;
             body.sync_issues = fd.get('sync_issues') === '1' ? 1 : 0;
             body.sync_wiki = fd.get('sync_wiki') === '1' ? 1 : 0;
             if (!body.access_token) delete body.access_token;
