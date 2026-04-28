@@ -325,7 +325,11 @@
                             </div>
                             <div>
                                 <dt class="text-sm font-medium text-gray-500">Kontakt</dt>
-                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.contact_email || '-' %></dd>
+                                <dd class="mt-1 text-sm text-gray-900">
+                                    <% if (ticket.contact_email) { %>
+                                    <a href="mailto:<%= ticket.contact_email %>?subject=Ticket%20%23<%= ticket.id %>%20-%20<%= encodeURIComponent(ticket.title) %>" class="text-primary-600 hover:text-primary-800"><%= ticket.contact_email %></a>
+                                    <% } else { %>-<% } %>
+                                </dd>
                             </div>
                             <div>
                                 <dt class="text-sm font-medium text-gray-500">Erstellt von</dt>

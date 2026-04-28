@@ -1442,11 +1442,38 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
     const d = req.body;
     d.title = normalizeText(d.title || 'Unbenannt', 200) || 'Unbenannt';
     d.description = normalizeText(d.description || '', 5000);
-    d.username = normalizeText(d.username || '', 120) || null;
-    d.location = normalizeText(d.location || '', 200) || null;
-    d.contact_email = normalizeText(d.contact_email || '', 254) || null;
+    d.username = normalizeText(d.username || d.reporterName || d.userName || '', 120) || null;
+    d.contact_email = normalizeText(d.contact_email || d.reporterEmail || d.userEmail || '', 254) || null;
+    d.location = normalizeText(d.location || d.url || '', 200) || null;
+
+    // System-Name in system_id auflösen
+    if (!d.system_id && d.system) {
+        const sysName = normalizeText(d.system, 100);
+        db.get('SELECT id FROM systems WHERE name = ? AND active = 1', [sysName], (err, sys) => {
+            if (!err && sys) d.system_id = sys.id;
+            insertTicket();
+        });
+    } else {
+        insertTicket();
+    }
+
+    function insertTicket() {
     let swInfo = d.software_info;
     if (swInfo && typeof swInfo === 'object') swInfo = JSON.stringify(swInfo);
+    if (!swInfo) {
+        const extraInfo = {};
+        if (d.url) extraInfo.url = d.url;
+        if (d.userAgent) extraInfo.userAgent = d.userAgent;
+        if (d.platform) extraInfo.platform = d.platform;
+        if (d.language) extraInfo.language = d.language;
+        if (d.screen) extraInfo.screen = d.screen;
+        if (d.appVersion) extraInfo.appVersion = d.appVersion;
+        if (d.userId) extraInfo.userId = d.userId;
+        if (d.tenant) extraInfo.tenant = d.tenant;
+        if (d.timestamp) extraInfo.timestamp = d.timestamp;
+        if (d.referrer) extraInfo.referrer = d.referrer;
+        if (Object.keys(extraInfo).length > 0) swInfo = JSON.stringify(extraInfo);
+    }
     
     let deadline = d.deadline ? new Date(d.deadline).toISOString() : null;
     if (!deadline) {
@@ -1488,6 +1515,7 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
             apiUrl: `${BASE_URL}/api/tickets/${ticketId}`
         });
     });
+    } // end insertTicket
 });
 
 app.get('/api/tickets', requireAuth, (req, res) => {
