@@ -239,54 +239,43 @@
             </div>
 
             <!-- Right Column: Sidebar -->
-            <div class="space-y-6">
+            <div class="space-y-4">
                 <% if (canManageTickets) { %>
                 <!-- Actions -->
                 <div class="card">
-                    <div class="card-header">
-                        <h3 class="text-lg font-semibold text-gray-900">Aktionen</h3>
+                    <div class="card-header py-3 px-5">
+                        <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wide">Aktionen</h3>
                     </div>
-                    <div class="card-body space-y-3">
-                        <form method="post" action="/ticket/<%= ticket.id %>/status" class="space-y-2">
-                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                            <label class="block text-sm font-medium text-gray-700">Status ändern</label>
-                            <select name="status" class="form-select" onchange="this.form.submit()">
-                                <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
-                                <option value="in_bearbeitung" <%= ticket.status === 'in_bearbeitung' ? 'selected' : '' %>>In Bearbeitung</option>
-                                <option value="wartend" <%= ticket.status === 'wartend' ? 'selected' : '' %>>Wartend</option>
-                                <option value="geschlossen" <%= ticket.status === 'geschlossen' ? 'selected' : '' %>>Geschlossen</option>
-                            </select>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Assignment -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="text-lg font-semibold text-gray-900">Zuweisung</h3>
-                    </div>
-                    <div class="card-body">
-                        <form method="post" action="/ticket/<%= ticket.id %>/assign" class="space-y-4">
+                    <div class="card-body py-3 px-5 space-y-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-1.5">Status</label>
+                            <form method="post" action="/ticket/<%= ticket.id %>/status">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <select name="status" class="form-select text-sm" onchange="this.form.submit()">
+                                    <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
+                                    <option value="in_bearbeitung" <%= ticket.status === 'in_bearbeitung' ? 'selected' : '' %>>In Bearbeitung</option>
+                                    <option value="wartend" <%= ticket.status === 'wartend' ? 'selected' : '' %>>Wartend</option>
+                                    <option value="geschlossen" <%= ticket.status === 'geschlossen' ? 'selected' : '' %>>Geschlossen</option>
+                                </select>
+                            </form>
+                        </div>
+                        <form method="post" action="/ticket/<%= ticket.id %>/assign" class="space-y-3">
                             <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">System</label>
-                                <select name="system_id" class="form-select">
+                                <label class="block text-xs font-medium text-gray-500 mb-1">System</label>
+                                <select name="system_id" class="form-select text-sm">
                                     <option value="">Kein System</option>
-                                    <% systems.forEach(sys => { %>
-                                    <option value="<%= sys.id %>" <%= ticket.system_id == sys.id ? 'selected' : '' %>><%= sys.name %></option>
-                                    <% }); %>
+                                    <% systems.forEach(sys => { %><option value="<%= sys.id %>" <%= ticket.system_id == sys.id ? 'selected' : '' %>><%= sys.name %></option><% }); %>
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Zugewiesen an</label>
-                                <select name="assigned_to" class="form-select">
+                                <label class="block text-xs font-medium text-gray-500 mb-1">Zugewiesen an</label>
+                                <select name="assigned_to" class="form-select text-sm">
                                     <option value="">Nicht zugewiesen</option>
-                                    <% staffList.forEach(s => { %>
-                                    <option value="<%= s.id %>" <%= ticket.assigned_to == s.id ? 'selected' : '' %>><%= s.name %></option>
-                                    <% }); %>
+                                    <% staffList.forEach(s => { %><option value="<%= s.id %>" <%= ticket.assigned_to == s.id ? 'selected' : '' %>><%= s.name %></option><% }); %>
                                 </select>
                             </div>
-                            <button type="submit" class="btn-primary w-full">Speichern</button>
+                            <button type="submit" class="btn-primary w-full text-sm">Zuweisung speichern</button>
                         </form>
                     </div>
                 </div>
