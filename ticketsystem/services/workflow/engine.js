@@ -116,6 +116,16 @@ async function skipStep(runId, stage, sortOrder, reason) {
         [runId, stage, sortOrder, JSON.stringify({ reason })]);
 }
 
+async function saveArtifact({ ticketId, runId, stepId, stage, kind, filename, mimeType, content }) {
+    if (!content) return null;
+    const buf = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf-8');
+    const r = await run(`INSERT INTO workflow_artifacts
+        (ticket_id, run_id, step_id, stage, kind, filename, mime_type, size, content)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ticketId, runId || null, stepId || null, stage || null, kind, filename, mimeType || 'text/markdown', buf.length, buf]);
+    return r.lastID;
+}
+
 // --- Stage-Executors ---
 
 async function execTriage(ctx) {
@@ -138,10 +148,17 @@ async function execSecurity(ctx) {
     });
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.SECURITY.system, userPrompt });
     const out = r.parsed || { redacted_text: pre.redacted, findings: pre.hits, coding_prompt: pre.redacted };
+    const redacted = out.redacted_text || pre.redacted;
+    const codingPrompt = out.coding_prompt || '';
     await run(`UPDATE tickets SET redacted_description = ?, coding_prompt = ? WHERE id = ?`,
-        [out.redacted_text || pre.redacted, out.coding_prompt || '', ctx.ticket.id]);
-    ctx.redacted_description = out.redacted_text || pre.redacted;
-    ctx.coding_prompt = out.coding_prompt || '';
+        [redacted, codingPrompt, ctx.ticket.id]);
+    ctx.redacted_description = redacted;
+    ctx.coding_prompt = codingPrompt;
+    out.markdown = `### Coding-Prompt\n\n${codingPrompt || '(leer)'}\n\n### Redigierte Beschreibung\n\n${redacted || '(leer)'}`;
+    ctx._artifacts = [
+        { kind: 'redacted_description', filename: 'redacted_description.md', content: redacted },
+        { kind: 'coding_prompt', filename: 'coding_prompt.md', content: codingPrompt }
+    ];
     return { output: out, ai: r };
 }
 
@@ -162,6 +179,10 @@ async function execPlanning(ctx) {
     const planMd = renderPlanMarkdown(out, repoCtx.source);
     await run(`UPDATE tickets SET implementation_plan = ? WHERE id = ?`, [planMd, ctx.ticket.id]);
     ctx.implementation_plan = planMd;
+    out.markdown = planMd;
+    ctx._artifacts = [
+        { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
+    ];
     return { output: out, ai: r };
 }
 
@@ -182,6 +203,10 @@ async function execIntegration(ctx) {
     const md = renderIntegrationMarkdown(out);
     await run(`UPDATE tickets SET integration_assessment = ? WHERE id = ?`, [md, ctx.ticket.id]);
     ctx.integration_assessment = md;
+    out.markdown = md;
+    ctx._artifacts = [
+        { kind: 'integration_assessment', filename: 'integration_assessment.md', content: md }
+    ];
     return { output: out, ai: r };
 }
 
@@ -333,6 +358,26 @@ async function runStages(runId, initialTicket, stages) {
                 throw new Error(`Unbekannte Stage-Rolle: ${stage.role}`);
             }
             await finishStep(stepId, { status: 'done', output: result.output, ai: result.ai });
+            // Artefakte aus ctx persistieren
+            if (Array.isArray(ctx._artifacts) && ctx._artifacts.length) {
+                for (const a of ctx._artifacts) {
+                    try {
+                        await saveArtifact({
+                            ticketId: ctx.ticket.id,
+                            runId,
+                            stepId,
+                            stage: stage.role,
+                            kind: a.kind,
+                            filename: a.filename,
+                            mimeType: a.mimeType || 'text/markdown',
+                            content: a.content
+                        });
+                    } catch (e) {
+                        console.error('Artifact save failed:', e.message);
+                    }
+                }
+                ctx._artifacts = [];
+            }
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
 
             if (stage.role === 'triage' && result.output?.decision === 'unclear') {

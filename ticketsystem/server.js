@@ -792,6 +792,24 @@ function initDb() {
         FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
         FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL
     )`);
+
+    // Persistente Artefakte (z.B. Plan, Integration-Bericht, Coding-Prompt)
+    db.run(`CREATE TABLE IF NOT EXISTS workflow_artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        run_id INTEGER,
+        step_id INTEGER,
+        stage TEXT,
+        kind TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        mime_type TEXT DEFAULT 'text/markdown',
+        size INTEGER,
+        content BLOB,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
+    )`);
 }
 
 function seedDefaultWorkflow() {
@@ -1526,19 +1544,59 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
         if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung' });
         db.get('SELECT * FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', [ticketId], (err2, run) => {
             if (err2) return res.status(500).json({ error: err2.message });
-            if (!run) return res.json({ run: null, steps: [] });
+            if (!run) return res.json({ run: null, steps: [], artifacts: [], ticket_briefing: null });
             db.all(`SELECT s.*, st.name AS staff_name, st.kind AS staff_kind
                 FROM ticket_workflow_steps s
                 LEFT JOIN staff st ON st.id = s.staff_id
                 WHERE s.run_id = ? ORDER BY s.sort_order, s.id`, [run.id], (err3, steps) => {
                 if (err3) return res.status(500).json({ error: err3.message });
                 steps = steps.map(s => {
-                    if (s.output_payload) { try { s.output = JSON.parse(s.output_payload); } catch (_) {} }
+                    if (s.output_payload) {
+                        try { s.output = JSON.parse(s.output_payload); } catch (_) {}
+                    }
                     delete s.output_payload;
+                    if (s.output && s.output.markdown) {
+                        try { s.output_html = marked.parse(s.output.markdown); } catch (_) {}
+                    }
                     return s;
                 });
-                res.json({ run, steps });
+                db.all(`SELECT id, stage, kind, filename, mime_type, size, created_at
+                    FROM workflow_artifacts WHERE ticket_id = ? ORDER BY id ASC`, [ticketId], (err4, artifacts) => {
+                    if (err4) artifacts = [];
+                    const briefing = {
+                        coding_prompt: ticket.coding_prompt || '',
+                        implementation_plan: ticket.implementation_plan || '',
+                        integration_assessment: ticket.integration_assessment || '',
+                        redacted_description: ticket.redacted_description || '',
+                        final_decision: ticket.final_decision || null
+                    };
+                    try {
+                        briefing.implementation_plan_html = ticket.implementation_plan ? marked.parse(ticket.implementation_plan) : '';
+                        briefing.integration_assessment_html = ticket.integration_assessment ? marked.parse(ticket.integration_assessment) : '';
+                    } catch (_) {}
+                    res.json({ run, steps, artifacts, ticket_briefing: briefing });
+                });
             });
+        });
+    });
+});
+
+app.get('/api/tickets/:id/workflow/artifacts/:artId', requireAuth, (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const artId = parseInt(req.params.artId, 10);
+    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung' });
+        db.get('SELECT * FROM workflow_artifacts WHERE id = ? AND ticket_id = ?', [artId, ticketId], (err2, art) => {
+            if (err2) return res.status(500).json({ error: err2.message });
+            if (!art) return res.status(404).json({ error: 'Artefakt nicht gefunden' });
+            const inline = req.query.inline === '1';
+            res.setHeader('Content-Type', art.mime_type || 'application/octet-stream');
+            const safeName = String(art.filename || ('artifact-' + art.id)).replace(/["\r\n]/g, '_');
+            res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${safeName}"`);
+            res.setHeader('Content-Length', art.content ? art.content.length : 0);
+            res.send(art.content);
         });
     });
 });
