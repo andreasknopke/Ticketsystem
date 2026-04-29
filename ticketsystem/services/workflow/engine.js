@@ -486,7 +486,9 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
             emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
             wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel} note="${(note || '').slice(0, 100)}"`);
-            runCodingStage(runId, ticket, codingLevel, step).catch(err => {
+            // Step-Objekt mit aktuellem output_payload anreichern (nach finishStep, sonst ist output_payload null)
+            const enrichedStep = { ...step, output_payload: JSON.stringify(output) };
+            runCodingStage(runId, ticket, codingLevel, enrichedStep).catch(err => {
                 wfError(`Coding-Stage Fehler run=${runId}`, err.message);
             });
             return { status: 'coding_dispatched', coding_level: codingLevel };
