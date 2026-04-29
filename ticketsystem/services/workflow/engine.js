@@ -6,7 +6,7 @@ const aiClient = require('../ai/client');
 const prompts = require('../ai/prompts');
 const { redact } = require('../ai/redact');
 const { pickStaffForRole } = require('./assignment');
-const { fetchRepoContext } = require('./githubContext');
+const { fetchRepoContext, commitFilesAsPR } = require('./githubContext');
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 
@@ -45,9 +45,9 @@ function emit(event, payload) {
     }
 }
 
-async function pickStaff(role, executorKind) {
+async function pickStaff(role, executorKind, options) {
     return new Promise((resolve, reject) => {
-        pickStaffForRole(dbRef, role, executorKind, (err, staff) => err ? reject(err) : resolve(staff));
+        pickStaffForRole(dbRef, role, executorKind, (err, staff) => err ? reject(err) : resolve(staff), options || {});
     });
 }
 
@@ -200,9 +200,13 @@ async function execIntegration(ctx) {
     });
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
     const out = r.parsed || { verdict: 'approve_with_changes', rationale: r.text?.slice(0, 500) || '' };
+    if (!['medium', 'high'].includes(out.recommended_complexity)) {
+        out.recommended_complexity = 'medium';
+    }
     const md = renderIntegrationMarkdown(out);
     await run(`UPDATE tickets SET integration_assessment = ? WHERE id = ?`, [md, ctx.ticket.id]);
     ctx.integration_assessment = md;
+    ctx.recommended_complexity = out.recommended_complexity;
     out.markdown = md;
     ctx._artifacts = [
         { kind: 'integration_assessment', filename: 'integration_assessment.md', content: md }
@@ -243,6 +247,8 @@ function renderIntegrationMarkdown(asm) {
     if (!asm || typeof asm !== 'object') return String(asm || '');
     const lines = [];
     if (asm.verdict) lines.push(`**Verdikt:** \`${asm.verdict}\``);
+    if (asm.recommended_complexity) lines.push(`**Empfohlener Coding-Level:** \`${asm.recommended_complexity}\``);
+    if (asm.complexity_rationale) lines.push(`_${asm.complexity_rationale}_`);
     if (asm.rationale) lines.push(`\n${asm.rationale}`);
     if (Array.isArray(asm.rule_violations) && asm.rule_violations.length) {
         lines.push(`\n**Regelverletzungen:**`);
@@ -399,19 +405,61 @@ async function runStages(runId, initialTicket, stages) {
 
 // Vom Approver aufgerufen, um den wartenden Step zu entscheiden und ggf. zur naechsten Stage weiterzugehen.
 async function decideHumanStep(runId, stepId, decision, note, actor) {
-    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff'];
+    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
     if (step.status !== 'waiting_human') throw new Error('Step erwartet keine menschliche Entscheidung');
 
-    const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
-    await finishStep(stepId, { status: 'done', output, ai: null });
-
     const run_ = await getRow('SELECT * FROM ticket_workflow_runs WHERE id = ?', [runId]);
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
 
     if (step.stage === 'approval') {
+        // Phase ermitteln: Dispatch (vor Coding) oder Final (nach Coding)
+        const codingDone = await getRow(
+            `SELECT COUNT(*) AS c FROM ticket_workflow_steps
+             WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
+        const isDispatchPhase = (codingDone?.c || 0) === 0;
+
+        // Dispatch -> Coding-Bot starten
+        if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
+            const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
+            const output = {
+                decision, coding_level: codingLevel, note: note || null,
+                decided_by: actor || null, decided_at: new Date().toISOString()
+            };
+            await finishStep(stepId, { status: 'done', output, ai: null });
+            await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
+            emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
+            runCodingStage(runId, ticket, codingLevel, step).catch(err => {
+                console.error('Coding-Stage Fehler:', err);
+            });
+            return { status: 'coding_dispatched', coding_level: codingLevel };
+        }
+
+        // Final-Phase: Re-Dispatch (rework) -> alte Coding-Steps "verwerfen", neuen Approval-Step (Dispatch) anlegen
+        if (!isDispatchPhase && decision === 'rework') {
+            const output = { decision: 'rework', note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
+            await finishStep(stepId, { status: 'done', output, ai: null });
+            // Vorherige Coding-Done-Steps als 'skipped' markieren -> isDispatchPhase wird wieder true
+            await run(`UPDATE ticket_workflow_steps SET status='skipped'
+                       WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
+            const approverStaff = await pickStaff('approval', 'human');
+            const newSort = (step.sort_order || 5) + 1;
+            const newStepId = await startStep(runId, 'approval', newSort, approverStaff);
+            await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [newStepId]);
+            await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
+            emit('workflow:waiting_human', { runId, ticketId: ticket.id, stepId: newStepId, stage: 'approval', phase: 'rework' });
+            return { status: 'rework_started' };
+        }
+
+        // Standard-Beendigung (approved / rejected / unclear / handoff)
+        const finalDecisions = ['approved', 'rejected', 'unclear', 'handoff'];
+        if (!finalDecisions.includes(decision)) {
+            throw new Error('Entscheidung in dieser Phase nicht erlaubt');
+        }
+        const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
+        await finishStep(stepId, { status: 'done', output, ai: null });
         await dbRef.run('UPDATE tickets SET final_decision = ? WHERE id = ?', [decision, ticket.id]);
         await run(`UPDATE ticket_workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
             [decision, runId]);
@@ -419,7 +467,9 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
         return { status: 'completed', result: decision };
     }
 
-    // Andere Stages: Workflow nach diesem Step fortsetzen
+    // Andere Stages (z.B. menschliche Triage): standard finish + weiterlaufen
+    const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
+    await finishStep(stepId, { status: 'done', output, ai: null });
     const wf = await loadDefaultWorkflow();
     const remaining = wf.stages.filter(s => s.sort_order > step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status='running' WHERE id = ?`, [runId]);
@@ -427,6 +477,164 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
         console.error('Workflow Resume Fehler:', err);
     });
     return { status: 'resumed' };
+}
+
+// --- Coding-Stage (dynamisch nach Dispatch-Approval angelegt) ---
+
+function renderCodingMarkdown(out, level) {
+    const lines = [`### Coding-Bot Ergebnis (Level: \`${level}\`)`];
+    if (out.summary) lines.push(`\n${out.summary}`);
+    if (out.commit_message) {
+        lines.push(`\n**Commit-Message:**\n\n\`\`\`\n${out.commit_message}\n\`\`\``);
+    }
+    if (Array.isArray(out.files) && out.files.length) {
+        lines.push(`\n**Dateien (${out.files.length}):**`);
+        out.files.forEach(f => lines.push(`- \`${f.action || 'update'}\` ${f.path}`));
+    }
+    if (Array.isArray(out.test_plan) && out.test_plan.length) {
+        lines.push(`\n**Test-Plan:**`);
+        out.test_plan.forEach((t, i) => lines.push(`${i + 1}. ${t.step || ''} → _${t.expected || ''}_`));
+    }
+    if (out.manual_verification) lines.push(`\n**Manuelle Pruefung:** ${out.manual_verification}`);
+    if (Array.isArray(out.risks) && out.risks.length) {
+        lines.push(`\n**Risiken:**`);
+        out.risks.forEach(r => lines.push(`- ${r}`));
+    }
+    return lines.join('\n');
+}
+
+async function execCoding(ctx, codingLevel) {
+    const integration = await getRow(`SELECT gi.* FROM github_integration gi
+        INNER JOIN projects p ON p.id = gi.project_id
+        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const repoCtx = await fetchRepoContext(integration);
+
+    const userPrompt = prompts.CODING.buildUser({
+        ticket: ctx.ticket,
+        codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
+        plan: ctx.ticket.implementation_plan,
+        integrationAssessment: ctx.ticket.integration_assessment,
+        repoContext: repoCtx.repoContext,
+        level: codingLevel
+    });
+    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
+    const out = r.parsed || {
+        commit_message: 'WIP: ticket #' + ctx.ticket.id,
+        summary: r.text?.slice(0, 500) || '(keine strukturierte Antwort)',
+        files: [],
+        test_plan: [],
+        risks: ['AI-Antwort nicht parsebar']
+    };
+    out.coding_level = codingLevel;
+    out.markdown = renderCodingMarkdown(out, codingLevel);
+
+    ctx._artifacts = [];
+    if (out.commit_message) {
+        ctx._artifacts.push({ kind: 'commit_message', filename: 'COMMIT_MSG.md', content: out.commit_message });
+    }
+    if (Array.isArray(out.test_plan) && out.test_plan.length) {
+        const tp = out.test_plan
+            .map((t, i) => `${i + 1}. ${t.step || ''}\n   Erwartet: ${t.expected || ''}`)
+            .join('\n\n');
+        ctx._artifacts.push({ kind: 'test_plan', filename: 'TEST_PLAN.md', content: tp });
+    }
+    if (out.patch) {
+        ctx._artifacts.push({ kind: 'patch', filename: 'changes.patch', mimeType: 'text/x-diff', content: out.patch });
+    }
+    if (Array.isArray(out.files)) {
+        out.files.forEach(f => {
+            if (f.path && (f.content || f.action === 'delete')) {
+                const safe = String(f.path).replace(/[^a-zA-Z0-9._/\-]/g, '_').slice(0, 200);
+                ctx._artifacts.push({
+                    kind: 'code_file',
+                    filename: 'files/' + safe,
+                    mimeType: 'text/plain',
+                    content: f.content || `(deleted: ${f.path})`
+                });
+            }
+        });
+    }
+
+    // Optional: echter Pull Request
+    const autoPrEnabled = (process.env.AI_CODING_AUTO_PR || 'true').toLowerCase() !== 'false';
+    if (autoPrEnabled && integration && ctx.staff.auto_commit_enabled && Array.isArray(out.files) && out.files.length) {
+        try {
+            const slug = String(ctx.ticket.title || 'change').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+            const pr = await commitFilesAsPR(integration, {
+                branchName: out.branch_name || `bot/ticket-${ctx.ticket.id}-${slug}`,
+                commitMessage: out.commit_message,
+                prTitle: `[Ticket #${ctx.ticket.id}] ${ctx.ticket.title || 'Coding-Bot Changes'}`.slice(0, 200),
+                prBody: `Automatisch erstellt vom Coding-Bot (Level: \`${codingLevel}\`).\n\n${out.summary || ''}\n\n---\nManuelle Pruefung: ${out.manual_verification || '-'}`,
+                files: out.files
+            });
+            out.pr_url = pr.prUrl;
+            out.pr_number = pr.prNumber;
+            out.branch = pr.branch;
+            out.markdown += `\n\n**Pull Request:** [#${pr.prNumber}](${pr.prUrl}) — Branch \`${pr.branch}\``;
+        } catch (e) {
+            out.pr_error = e.message;
+            out.markdown += `\n\n_⚠️ PR-Erstellung fehlgeschlagen: ${e.message}_`;
+        }
+    } else if (Array.isArray(out.files) && out.files.length && !ctx.staff.auto_commit_enabled) {
+        out.markdown += `\n\n_ℹ️ Auto-Commit für diesen Bot deaktiviert. Dateien stehen als Artefakte zum Download bereit._`;
+    }
+
+    return { output: out, ai: r };
+}
+
+async function runCodingStage(runId, ticket, codingLevel, afterStep) {
+    const ctx = { ticket };
+    const staff = await pickStaff('coding', 'ai', { codingLevel });
+    const sortOrder = (afterStep?.sort_order || 5) + 1;
+
+    if (!staff) {
+        const stepId = await startStep(runId, 'coding', sortOrder, null);
+        await failStep(stepId, `Kein Coding-Bot mit Level "${codingLevel}" verfuegbar`);
+        await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
+            ['no_coding_bot:' + codingLevel, runId]);
+        emit('workflow:no_staff', { runId, ticketId: ticket.id, role: 'coding', level: codingLevel });
+        return;
+    }
+
+    ctx.staff = staff;
+    const stepId = await startStep(runId, 'coding', sortOrder, staff);
+    emit('workflow:step', { runId, stage: 'coding', status: 'in_progress', staff_id: staff.id, level: codingLevel });
+
+    try {
+        const result = await execCoding(ctx, codingLevel);
+        await finishStep(stepId, { status: 'done', output: result.output, ai: result.ai });
+        if (Array.isArray(ctx._artifacts) && ctx._artifacts.length) {
+            for (const a of ctx._artifacts) {
+                try {
+                    await saveArtifact({
+                        ticketId: ctx.ticket.id, runId, stepId, stage: 'coding',
+                        kind: a.kind, filename: a.filename,
+                        mimeType: a.mimeType || 'text/markdown', content: a.content
+                    });
+                } catch (e) {
+                    console.error('Artifact save failed:', e.message);
+                }
+            }
+            ctx._artifacts = [];
+        }
+        emit('workflow:step', { runId, stage: 'coding', status: 'done' });
+
+        // Final-Approval-Step anlegen (waiting_human)
+        const approverStaff = await pickStaff('approval', 'human');
+        const finalSort = sortOrder + 1;
+        const finalStepId = await startStep(runId, 'approval', finalSort, approverStaff);
+        await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [finalStepId]);
+        await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
+        if (approverStaff) {
+            await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ctx.ticket.id]);
+        }
+        emit('workflow:waiting_human', { runId, ticketId: ctx.ticket.id, stepId: finalStepId, stage: 'approval', phase: 'final' });
+    } catch (e) {
+        await failStep(stepId, e.message || String(e));
+        await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
+            ['coding_failed', runId]);
+        emit('workflow:failed', { runId, ticketId: ctx.ticket.id, stage: 'coding', error: e.message });
+    }
 }
 
 module.exports = { init, startForTicket, decideHumanStep };

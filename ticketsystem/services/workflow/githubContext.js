@@ -74,4 +74,97 @@ async function fetchRepoContext(integration) {
     };
 }
 
-module.exports = { fetchRepoContext };
+module.exports = { fetchRepoContext, commitFilesAsPR };
+
+/**
+ * Erstellt einen Branch im Repo, committet eine Liste von Dateien und oeffnet
+ * einen Pull Request. Benoetigt einen Token mit Schreibrechten (repo).
+ *
+ * @param {object} integration - github_integration row (repo_owner, repo_name, access_token, default_branch?)
+ * @param {object} payload - { branchName, commitMessage, prTitle, prBody, files: [{path, action, content}] }
+ * @returns {Promise<{prUrl, prNumber, branch, commitSha}>}
+ */
+async function commitFilesAsPR(integration, payload) {
+    if (!integration || !integration.repo_owner || !integration.repo_name) {
+        throw new Error('Kein Repository verknuepft');
+    }
+    const token = integration.access_token || process.env.GITHUB_DEFAULT_TOKEN;
+    if (!token) throw new Error('Kein GitHub-Token mit Schreibrechten verfuegbar');
+
+    const client = new Octokit({ auth: token });
+    const owner = integration.repo_owner;
+    const repo = integration.repo_name;
+
+    // Default-Branch ermitteln
+    let baseBranch = integration.default_branch || null;
+    if (!baseBranch) {
+        const repoInfo = await client.repos.get({ owner, repo });
+        baseBranch = repoInfo.data.default_branch || 'main';
+    }
+
+    // SHA des Default-Branch holen
+    const baseRef = await client.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
+    const baseSha = baseRef.data.object.sha;
+
+    // Branch anlegen (eindeutigen Namen sichern)
+    let branch = (payload.branchName || `bot/coding-${Date.now()}`).replace(/[^a-zA-Z0-9._\-/]/g, '-').slice(0, 200);
+    try {
+        await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+    } catch (e) {
+        // Wenn Branch existiert -> Suffix anhaengen
+        branch = `${branch}-${Date.now()}`;
+        await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+    }
+
+    // Files committen (eine Datei pro API-Call - simpel, ausreichend fuer kleine Patches)
+    let lastCommitSha = baseSha;
+    for (const f of payload.files || []) {
+        if (!f.path) continue;
+        const action = f.action || 'update';
+        if (action === 'delete') {
+            // SHA der existierenden Datei holen
+            try {
+                const existing = await client.repos.getContent({ owner, repo, path: f.path, ref: branch });
+                if (!Array.isArray(existing.data) && existing.data.sha) {
+                    const r = await client.repos.deleteFile({
+                        owner, repo, path: f.path, branch,
+                        message: `${payload.commitMessage || 'bot: changes'} (delete ${f.path})`,
+                        sha: existing.data.sha
+                    });
+                    lastCommitSha = r.data.commit?.sha || lastCommitSha;
+                }
+            } catch (_) { /* nicht vorhanden -> ignorieren */ }
+            continue;
+        }
+        // create / update
+        let existingSha = undefined;
+        try {
+            const existing = await client.repos.getContent({ owner, repo, path: f.path, ref: branch });
+            if (!Array.isArray(existing.data) && existing.data.sha) existingSha = existing.data.sha;
+        } catch (_) { /* neu */ }
+        const r = await client.repos.createOrUpdateFileContents({
+            owner, repo, path: f.path, branch,
+            message: `${payload.commitMessage?.split('\n')[0] || 'bot: changes'} (${f.path})`,
+            content: Buffer.from(String(f.content ?? ''), 'utf-8').toString('base64'),
+            sha: existingSha
+        });
+        lastCommitSha = r.data.commit?.sha || lastCommitSha;
+    }
+
+    // Pull Request anlegen
+    const pr = await client.pulls.create({
+        owner, repo,
+        title: payload.prTitle || (payload.commitMessage?.split('\n')[0] || 'Coding-Bot Changes'),
+        head: branch,
+        base: baseBranch,
+        body: payload.prBody || ''
+    });
+
+    return {
+        prUrl: pr.data.html_url,
+        prNumber: pr.data.number,
+        branch,
+        baseBranch,
+        commitSha: lastCommitSha
+    };
+}

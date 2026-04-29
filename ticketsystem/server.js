@@ -667,7 +667,9 @@ function initDb() {
             { col: 'ai_temperature', sql: 'ALTER TABLE staff ADD COLUMN ai_temperature REAL DEFAULT 0.2' },
             { col: 'ai_system_prompt', sql: 'ALTER TABLE staff ADD COLUMN ai_system_prompt TEXT' },
             { col: 'ai_max_tokens', sql: 'ALTER TABLE staff ADD COLUMN ai_max_tokens INTEGER' },
-            { col: 'ai_extra_config', sql: 'ALTER TABLE staff ADD COLUMN ai_extra_config TEXT' }
+            { col: 'ai_extra_config', sql: 'ALTER TABLE staff ADD COLUMN ai_extra_config TEXT' },
+            { col: 'coding_level', sql: "ALTER TABLE staff ADD COLUMN coding_level TEXT" },
+            { col: 'auto_commit_enabled', sql: 'ALTER TABLE staff ADD COLUMN auto_commit_enabled INTEGER DEFAULT 0' }
         ];
         staffMigrations.forEach(m => {
             if (!cols.includes(m.col)) {
@@ -703,7 +705,7 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS staff_roles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         staff_id INTEGER NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval')),
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
         priority INTEGER DEFAULT 100,
         active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -737,7 +739,7 @@ function initDb() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id INTEGER NOT NULL,
         sort_order INTEGER NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval')),
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
         executor_kind TEXT CHECK(executor_kind IN ('ai','human','any')) DEFAULT 'any',
         auto_assign_strategy TEXT CHECK(auto_assign_strategy IN ('round_robin','least_loaded','fixed')) DEFAULT 'round_robin',
         fixed_staff_id INTEGER,
@@ -777,7 +779,7 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS ticket_workflow_steps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id INTEGER NOT NULL,
-        stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval')),
+        stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding')),
         sort_order INTEGER NOT NULL,
         staff_id INTEGER,
         executor_kind TEXT,
@@ -814,6 +816,101 @@ function initDb() {
         FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
         FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
     )`);
+
+    // Migration fuer bestehende DBs: CHECK-Constraint um 'coding' erweitern
+    migrateCheckConstraintForCoding();
+}
+
+// Bei aelteren DBs enthalten die CHECK-Constraints von staff_roles/workflow_stages/
+// ticket_workflow_steps den Wert 'coding' nicht. SQLite erlaubt CHECK-Aenderung nur
+// per Tabellen-Rebuild. Wir pruefen das DDL in sqlite_master und bauen bei Bedarf um.
+function migrateCheckConstraintForCoding() {
+    const targets = [
+        {
+            table: 'staff_roles',
+            create: `CREATE TABLE staff_roles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+                priority INTEGER DEFAULT 100,
+                active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(staff_id, role),
+                FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+            )`,
+            cols: 'id, staff_id, role, priority, active, created_at'
+        },
+        {
+            table: 'workflow_stages',
+            create: `CREATE TABLE workflow_stages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id INTEGER NOT NULL,
+                sort_order INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+                executor_kind TEXT CHECK(executor_kind IN ('ai','human','any')) DEFAULT 'any',
+                auto_assign_strategy TEXT CHECK(auto_assign_strategy IN ('round_robin','least_loaded','fixed')) DEFAULT 'round_robin',
+                fixed_staff_id INTEGER,
+                FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+                FOREIGN KEY (fixed_staff_id) REFERENCES staff(id) ON DELETE SET NULL,
+                UNIQUE(workflow_id, sort_order)
+            )`,
+            cols: 'id, workflow_id, sort_order, role, executor_kind, auto_assign_strategy, fixed_staff_id'
+        },
+        {
+            table: 'ticket_workflow_steps',
+            create: `CREATE TABLE ticket_workflow_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding')),
+                sort_order INTEGER NOT NULL,
+                staff_id INTEGER,
+                executor_kind TEXT,
+                status TEXT CHECK(status IN ('pending','in_progress','done','skipped','failed','rejected','waiting_human')) DEFAULT 'pending',
+                input_payload TEXT,
+                output_payload TEXT,
+                provider TEXT,
+                model TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                cost_estimate REAL,
+                duration_ms INTEGER,
+                error TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME,
+                FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL
+            )`,
+            cols: 'id, run_id, stage, sort_order, staff_id, executor_kind, status, input_payload, output_payload, provider, model, prompt_tokens, completion_tokens, cost_estimate, duration_ms, error, created_at, finished_at'
+        }
+    ];
+
+    targets.forEach(t => {
+        db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", [t.table], (err, row) => {
+            if (err || !row || !row.sql) return;
+            if (row.sql.includes("'coding'")) return; // schon migriert
+            console.log(`Migration: ${t.table} -> CHECK um 'coding' erweitern`);
+            // Sequentielle Ausfuehrung ohne Transaktion (SQLite Auto-Commit pro Statement).
+            // Mehrere parallele BEGIN ueber verschiedene serialize()-Bloecke wuerden konfligieren.
+            db.serialize(() => {
+                db.run('PRAGMA foreign_keys = OFF');
+                db.run(`DROP TABLE IF EXISTS _new_${t.table}`);
+                db.run(t.create.replace(t.table, '_new_' + t.table), (e1) => {
+                    if (e1) { console.error(`Migration ${t.table} CREATE fehlgeschlagen:`, e1.message); return; }
+                    db.run(`INSERT INTO _new_${t.table} (${t.cols}) SELECT ${t.cols} FROM ${t.table}`, (e2) => {
+                        if (e2) { console.error(`Migration ${t.table} INSERT fehlgeschlagen:`, e2.message); return; }
+                        db.run(`DROP TABLE ${t.table}`, (e3) => {
+                            if (e3) { console.error(`Migration ${t.table} DROP fehlgeschlagen:`, e3.message); return; }
+                            db.run(`ALTER TABLE _new_${t.table} RENAME TO ${t.table}`, (e4) => {
+                                if (e4) { console.error(`Migration ${t.table} RENAME fehlgeschlagen:`, e4.message); return; }
+                                db.run('PRAGMA foreign_keys = ON');
+                                console.log(`Migration ${t.table} abgeschlossen.`);
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    });
 }
 
 function seedDefaultWorkflow() {
@@ -2471,13 +2568,19 @@ app.post('/admin/systems/:id/delete', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
-const WORKFLOW_ROLES = ['triage', 'security', 'planning', 'integration', 'approval'];
+const WORKFLOW_ROLES = ['triage', 'security', 'planning', 'integration', 'approval', 'coding'];
 const WORKFLOW_ROLE_LABELS = {
     triage: 'Triage Reviewer',
     security: 'Security & Privacy Reviewer',
     planning: 'Solution Architect (Planner)',
     integration: 'Integration / Architecture Reviewer',
-    approval: 'Final Approver'
+    approval: 'Final Approver',
+    coding: 'Coding Bot'
+};
+const CODING_LEVELS = ['medium', 'high'];
+const CODING_LEVEL_LABELS = {
+    medium: 'Medium (GPT-5.4 / DeepSeek V4 / Kimi 2.6 Niveau)',
+    high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
 const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local'];
 
@@ -2507,7 +2610,9 @@ function parseStaffPayload(body) {
         ai_temperature: kind === 'ai' ? temp : null,
         ai_max_tokens,
         ai_system_prompt,
-        ai_extra_config
+        ai_extra_config,
+        coding_level: kind === 'ai' && CODING_LEVELS.includes(body.coding_level) ? body.coding_level : null,
+        auto_commit_enabled: body.auto_commit_enabled ? 1 : 0
     };
 }
 
@@ -2551,6 +2656,8 @@ app.get('/admin/staff', requireAuth, requireAdmin, (req, res) => {
             role: req.session.role || 'user',
             workflowRoles: WORKFLOW_ROLES,
             workflowRoleLabels: WORKFLOW_ROLE_LABELS,
+            codingLevels: CODING_LEVELS,
+            codingLevelLabels: CODING_LEVEL_LABELS,
             aiProviders: AI_PROVIDERS
         });
     });
@@ -2580,10 +2687,12 @@ app.post('/admin/staff/:id/update', requireAuth, requireAdmin, (req, res) => {
     const roles = normalizeRolesInput(req.body);
     db.run(`UPDATE staff SET
             name = ?, email = ?, phone = ?, kind = ?, ai_provider = ?, ai_model = ?,
-            ai_temperature = ?, ai_system_prompt = ?, ai_max_tokens = ?, ai_extra_config = ?
+            ai_temperature = ?, ai_system_prompt = ?, ai_max_tokens = ?, ai_extra_config = ?,
+            coding_level = ?, auto_commit_enabled = ?
             WHERE id = ?`,
         [data.name, data.email, data.phone, data.kind, data.ai_provider, data.ai_model,
-         data.ai_temperature, data.ai_system_prompt, data.ai_max_tokens, data.ai_extra_config, req.params.id],
+         data.ai_temperature, data.ai_system_prompt, data.ai_max_tokens, data.ai_extra_config,
+         data.coding_level, data.auto_commit_enabled, req.params.id],
         (err) => {
             if (err) return res.status(500).send('DB Error');
             replaceStaffRoles(req.params.id, roles, (rolesErr) => {

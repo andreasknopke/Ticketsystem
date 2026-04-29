@@ -211,6 +211,22 @@
                             <label class="mb-1 block text-sm font-medium text-slate-700">Extra-Config (JSON, optional)</label>
                             <textarea id="staff_ai_extra_config" name="ai_extra_config" rows="2" class="form-input w-full font-mono text-xs" placeholder='{"top_p": 0.9}'></textarea>
                         </div>
+                        <div>
+                            <label class="mb-1 block text-sm font-medium text-slate-700">Coding-Level (nur fuer Coding Bot)</label>
+                            <select id="staff_coding_level" name="coding_level" class="form-input w-full">
+                                <option value="">– kein Coding Bot –</option>
+                                <% codingLevels.forEach(l => { %>
+                                    <option value="<%= l %>"><%= codingLevelLabels[l] %></option>
+                                <% }); %>
+                            </select>
+                            <p class="text-xs text-slate-500 mt-1">Approver wählt anhand der Empfehlung aus dem Integration-Review.</p>
+                        </div>
+                        <div class="flex items-center pt-6">
+                            <label class="inline-flex items-center gap-2">
+                                <input type="checkbox" id="staff_auto_commit_enabled" name="auto_commit_enabled" value="1">
+                                <span class="text-sm text-slate-700">Auto-Commit / PR im verknüpften Repository erlauben</span>
+                            </label>
+                        </div>
                     </div>
                 </fieldset>
 
@@ -265,6 +281,8 @@
         document.getElementById('staff_ai_max_tokens').value = isNew ? '' : (staff.ai_max_tokens ?? '');
         document.getElementById('staff_ai_system_prompt').value = isNew ? '' : (staff.ai_system_prompt || '');
         document.getElementById('staff_ai_extra_config').value = isNew ? '' : (staff.ai_extra_config || '');
+        document.getElementById('staff_coding_level').value = isNew ? '' : (staff.coding_level || '');
+        document.getElementById('staff_auto_commit_enabled').checked = isNew ? false : !!staff.auto_commit_enabled;
         const kind = isNew ? 'human' : (staff.kind || 'human');
         document.getElementById('staff_kind_human').checked = kind === 'human';
         document.getElementById('staff_kind_ai').checked = kind === 'ai';

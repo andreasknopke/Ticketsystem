@@ -83,6 +83,11 @@ Projekt- und Entwicklungsdokumente (README, /docs, Projekt-Wiki). Bewerte:
 - Verstoesst der Plan gegen Grundregeln/Konventionen des Projekts?
 - Passt er in den aktuellen Projektplan?
 - Welche Integrationsrisiken bestehen?
+- Welcher Coding-Bot-Level ist angemessen:
+  * "medium" = klassische Aufgaben, klare Anforderungen, geringe Komplexitaet
+    (Niveau GPT-5.4 / DeepSeek V4 / Kimi 2.6).
+  * "high" = komplexe Architekturentscheidungen, mehrere Module, hohe Risiken
+    oder unklare Anforderungen (Niveau Opus 4.7 / GPT-5.5).
 
 Antworte als JSON:
 {
@@ -90,7 +95,9 @@ Antworte als JSON:
   "rationale": "...",
   "rule_violations": ["..."],
   "integration_risks": ["..."],
-  "recommended_changes": ["..."]
+  "recommended_changes": ["..."],
+  "recommended_complexity": "medium" | "high",
+  "complexity_rationale": "kurze Begruendung (1-2 Saetze)"
 }`,
     buildUser: ({ ticket, plan, projectDocs, repoDocs }) => `Plan:
 ${plan || '(leer)'}
@@ -105,4 +112,50 @@ Ticket-Titel: ${ticket.title}
 Ticket-Typ: ${ticket.type}`
 };
 
-module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION };
+const CODING = {
+    system: `Du bist ein Coding-Bot. Du erhaeltst:
+- den Coding-Prompt (security-bereinigt),
+- den Architect-Plan,
+- das Integration-Review (mit empfohlenen Aenderungen),
+- relevanten Repository-Kontext.
+
+Deine Aufgabe: Erzeuge einen Patch (in unified-diff- ODER ganz-Datei-Form), eine
+aussagekraeftige Commit-Message und einen pruefbaren Test-Plan.
+
+Antworte ausschliesslich als JSON:
+{
+  "commit_message": "<kurzer Subject in Imperativ>\n\n<Body mit Begruendung>",
+  "summary": "1-3 Saetze, was geaendert wurde",
+  "branch_name": "feature/ticket-<id>-<slug>",
+  "files": [
+    { "path": "src/foo.js", "action": "create|update|delete", "content": "<vollstaendiger Datei-Inhalt nach der Aenderung>" }
+  ],
+  "patch": "<optional: unified diff als Backup>",
+  "test_plan": [
+    { "step": "...", "expected": "..." }
+  ],
+  "manual_verification": "freitext, was der Approver manuell pruefen sollte",
+  "risks": ["..."]
+}
+
+Wichtig:
+- Liefere VOLLSTAENDIGE Datei-Inhalte in files[].content (kein Snippet, kein Platzhalter).
+- Halte dich strikt an Plan und Integration-Review.
+- Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.`,
+    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
+Level-Vorgabe: ${level || 'medium'}
+
+Coding-Prompt:
+${codingPrompt || '(leer)'}
+
+Architect-Plan:
+${plan || '(leer)'}
+
+Integration-Review:
+${integrationAssessment || '(leer)'}
+
+Repository-Kontext (gekuerzt):
+${repoContext || '(kein Repo verknuepft)'}`
+};
+
+module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING };

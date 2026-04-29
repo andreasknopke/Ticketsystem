@@ -137,16 +137,35 @@ OPENAI_LOCAL_MODEL=local-model
 # Optionaler Fallback-GitHub-Token fuer Planning-Stage
 # (Vorrang: github_integration.access_token des Projekts)
 GITHUB_DEFAULT_TOKEN=
+
+# Coding-Bots: Auto-PR (Schreibzugriff ins Repo)
+# - true (Default): Bots mit auto_commit_enabled=1 und Repo-Token oeffnen automatisch einen PR
+# - false: nur Artefakte (commit_message, test_plan, geaenderte Dateien) als Download
+AI_CODING_AUTO_PR=true
 ```
 
 #### Neue API-Endpunkte (KI-Workflow)
 
 - `GET  /api/ai/providers/health` — Live-Test aller konfigurierten KI-Provider (Admin).
-- `GET  /api/staff` / `POST /api/staff` — erweitert um `kind`, `ai_provider`, `ai_model`, `ai_temperature`, `ai_max_tokens`, `ai_system_prompt`, `ai_extra_config`, `roles[]`.
-- `POST /api/staff/:id/roles` — setzt die Workflow-Rollen eines Mitarbeiters (`triage` | `security` | `planning` | `integration` | `approval`).
-- `GET  /api/tickets/:id/workflow` — Run + alle Stage-Steps.
+- `GET  /api/staff` / `POST /api/staff` — erweitert um `kind`, `ai_provider`, `ai_model`, `ai_temperature`, `ai_max_tokens`, `ai_system_prompt`, `ai_extra_config`, `coding_level`, `auto_commit_enabled`, `roles[]`.
+- `POST /api/staff/:id/roles` — setzt die Workflow-Rollen eines Mitarbeiters (`triage` | `security` | `planning` | `integration` | `approval` | `coding`).
+- `GET  /api/tickets/:id/workflow` — Run + alle Stage-Steps + Artefakte + Approver-Briefing.
+- `GET  /api/tickets/:id/workflow/artifacts/:artId` — Artefakt-Download (z.B. Plan, Commit-Message, Test-Plan, geänderte Dateien).
 - `POST /api/tickets/:id/workflow/restart` — Workflow neu starten (Admin).
-- `POST /api/tickets/:id/workflow/steps/:stepId/decision` — Entscheidung des menschlichen Approvers (`approved` | `rejected` | `unclear` | `handoff`).
+- `POST /api/tickets/:id/workflow/steps/:stepId/decision` — Entscheidung des Approvers.
+  - **Dispatch-Phase** (vor Coding): `dispatch_medium` | `dispatch_high` | `rejected` | `unclear` | `handoff`
+  - **Final-Phase** (nach Coding): `approved` | `rework` | `rejected`
+
+### Coding-Bots (Medium / High Level)
+
+Nach dem Integration-Review empfiehlt der Reviewer einen Komplexitäts-Level:
+- **medium** — klassische Aufgaben, klare Anforderungen (Niveau GPT-5.4 / DeepSeek V4 / Kimi 2.6)
+- **high** — komplexe Architektur, mehrere Module, hohe Risiken (Niveau Opus 4.7 / GPT-5.5)
+
+Der Approver dispatcht das Ticket an einen Coding-Bot mit passendem `coding_level`. Der Bot:
+1. Erzeugt vollständige Datei-Inhalte, eine Commit-Message und einen Test-Plan.
+2. Wenn `auto_commit_enabled=1` und ein Repo-Token vorhanden ist: legt einen Branch an, committet die Dateien und öffnet einen Pull Request.
+3. Übergibt anschließend zurück an den Approver (Final-Phase) mit allen Artefakten + PR-Link zur abschließenden Freigabe.
 
 ### 5. Datenbank initialisieren (optional)
 
