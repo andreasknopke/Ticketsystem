@@ -43,7 +43,7 @@ const CONFIG = {
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
-const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 8192;
+const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 16384;
 
 // Allowlist der erlaubten Outbound-Hosts
 const ALLOWED_HOSTS = new Set();
@@ -101,14 +101,21 @@ async function callOpenAICompatible(provider, opts) {
     }
     const data = await resp.json();
     let text = data.choices?.[0]?.message?.content || '';
-    // DeepSeek v4: reasoning_content enthält die eigentliche Antwort wenn content leer ist
+    // DeepSeek v4: wenn content leer ist aber reasoning_content existiert,
+    // versuche JSON aus den letzten Zeilen des reasoning_content zu extrahieren
     if (!text) {
         const reasoning = data.choices?.[0]?.message?.reasoning_content;
         if (reasoning) {
-            text = reasoning;
-            console.log(`[AI:DEBUG] Using reasoning_content instead of content from ${provider} | len=${text.length}`);
+            // Versuche erst nur den JSON-Block (letzte {..}) zu nehmen
+            const jsonBlock = extractFirstJsonObject(reasoning);
+            if (jsonBlock) {
+                text = jsonBlock;
+                console.log(`[AI:DEBUG] Extracted JSON from reasoning_content | len=${text.length}`);
+            } else {
+                console.log(`[AI:DEBUG] reasoning_content has no JSON | preview=${reasoning.slice(-300)}`);
+            }
         } else {
-            console.log(`[AI:DEBUG] Empty response from ${provider} | model=${body.model} finish_reason=${data.choices[0]?.finish_reason} keys=${Object.keys(data.choices[0]?.message || {}).join(',')}`);
+            console.log(`[AI:DEBUG] Empty response | finish_reason=${data.choices[0]?.finish_reason} keys=${Object.keys(data.choices[0]?.message || {}).join(',')}`);
         }
     }
     return {
