@@ -714,9 +714,13 @@ function initDb() {
             console.error('Fehler beim Erstellen staff_roles:', err.message);
             return;
         }
-        // Bestehende Mitarbeiter automatisch der Rolle 'approval' zuordnen
+        // Einmalige Migration: Nur Mitarbeiter, die NOCH GAR KEINE Rolle besitzen,
+        // bekommen 'approval' als Default. Sonst würden manuell entfernte Rollen
+        // bei jedem Serverstart wieder angelegt.
         db.run(`INSERT OR IGNORE INTO staff_roles (staff_id, role, priority, active)
-                SELECT id, 'approval', 100, 1 FROM staff WHERE active = 1`);
+                SELECT s.id, 'approval', 100, 1 FROM staff s
+                WHERE s.active = 1
+                  AND NOT EXISTS (SELECT 1 FROM staff_roles r WHERE r.staff_id = s.id)`);
     });
 
     // Workflow-Definitionen
