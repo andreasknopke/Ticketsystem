@@ -74,7 +74,39 @@ async function fetchRepoContext(integration) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR };
+module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo };
+
+/**
+ * Laedt den aktuellen Inhalt einer Liste von Dateien aus dem verknuepften Repo.
+ * Read-only. Gibt fuer jede Pfad-Eingabe ein Objekt { path, exists, content, truncated } zurueck.
+ * Existierende Dateien > MAX_FILE_BYTES werden gekuerzt und mit truncated=true markiert.
+ */
+async function fetchFilesFromRepo(integration, paths) {
+    const safePaths = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p && !p.includes('..')) : [];
+    if (!integration || !integration.repo_owner || !integration.repo_name || !safePaths.length) {
+        return safePaths.map(p => ({ path: p, exists: false, content: '', truncated: false }));
+    }
+    const client = getOctokit(integration.access_token);
+    const owner = integration.repo_owner;
+    const repo = integration.repo_name;
+    const out = [];
+    for (const path of safePaths.slice(0, 25)) {
+        const data = await safeGetContent(client, owner, repo, path);
+        if (!data || Array.isArray(data) || data.type !== 'file') {
+            out.push({ path, exists: false, content: '', truncated: false });
+            continue;
+        }
+        let content = '';
+        let truncated = false;
+        if (data.content && data.encoding === 'base64') {
+            const full = Buffer.from(data.content, 'base64').toString('utf-8');
+            if (full.length > MAX_FILE_BYTES) { content = full.slice(0, MAX_FILE_BYTES); truncated = true; }
+            else content = full;
+        }
+        out.push({ path, exists: true, content, truncated });
+    }
+    return out;
+}
 
 /**
  * Erstellt einen Branch, committet Dateien und oeffnet einen Pull Request.
@@ -156,14 +188,39 @@ async function commitFilesAsPR(integration, payload) {
             lastCommitSha = r.data.commit?.sha || lastCommitSha;
         }
 
-        const pr = await client.pulls.create({
-            owner, repo,
-            title: payload.prTitle || 'Coding-Bot Changes',
-            head: branch, base: baseBranch,
-            body: payload.prBody || ''
-        });
-        log(`PR ERSTELLT | #${pr.data.number} ${pr.data.html_url}`);
-        return { prUrl: pr.data.html_url, prNumber: pr.data.number, branch, baseBranch, commitSha: lastCommitSha };
+        const wantDraft = payload.draft !== false;
+        let pr;
+        try {
+            pr = await client.pulls.create({
+                owner, repo,
+                title: payload.prTitle || 'Coding-Bot Changes',
+                head: branch, base: baseBranch,
+                body: payload.prBody || '',
+                draft: wantDraft
+            });
+        } catch (e) {
+            if (wantDraft && (e.status === 422 || /draft/i.test(e.message || ''))) {
+                log(`Draft-PR nicht unterstuetzt, fallback auf normalen PR`);
+                pr = await client.pulls.create({
+                    owner, repo,
+                    title: payload.prTitle || 'Coding-Bot Changes',
+                    head: branch, base: baseBranch,
+                    body: payload.prBody || ''
+                });
+            } else {
+                throw e;
+            }
+        }
+        log(`PR ERSTELLT | #${pr.data.number} ${pr.data.html_url} draft=${pr.data.draft}`);
+        const labels = Array.isArray(payload.labels) && payload.labels.length
+            ? payload.labels
+            : ['bot-generated', 'needs-human-review'];
+        try {
+            await client.issues.addLabels({ owner, repo, issue_number: pr.data.number, labels });
+        } catch (e) {
+            log(`Label-Vergabe fehlgeschlagen (nicht fatal): ${e.message}`);
+        }
+        return { prUrl: pr.data.html_url, prNumber: pr.data.number, branch, baseBranch, commitSha: lastCommitSha, draft: pr.data.draft };
     }
 
     if (primaryToken) {

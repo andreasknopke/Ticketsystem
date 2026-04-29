@@ -58,10 +58,21 @@ const PLANNING = {
 und die README. Erstelle einen ausfuehrlichen, schrittweisen Umsetzungsplan fuer die noetigen
 Code-Aenderungen. Beruecksichtige bestehende Module/Dateien, falls erkennbar.
 
+WICHTIG fuer den nachgelagerten Coding-Bot:
+- "allowed_files" ist der EINZIGE Whitelist-Pfad-Satz, den der Coding-Bot anfassen darf.
+  Halte ihn so klein wie moeglich (idealerweise 1-5 Dateien). Niemals "**" oder ganze Verzeichnisse.
+- "change_kind" steuert die erlaubte Aenderungstiefe:
+  * "extend"   = bestehende Datei punktuell erweitern, oeffentliche Exports/Signaturen unveraendert
+  * "new"      = nur neue Dateien anlegen (Pfade in allowed_files duerfen heute NICHT existieren)
+  * "refactor" = groessere Umbauten erlaubt (nur waehlen, wenn das Ticket explizit Refactoring fordert)
+  Im Zweifel "extend" waehlen. "refactor" ist die Ausnahme.
+
 Antworte als JSON:
 {
   "summary": "1-2 Saetze",
   "affected_areas": ["pfad/oder/modul", ...],
+  "allowed_files": ["exakter/relativer/pfad.ext", ...],
+  "change_kind": "extend" | "new" | "refactor",
   "steps": [{"title":"...","details":"...","files":["..."]}],
   "risks": ["..."],
   "estimated_effort": "S|M|L|XL",
@@ -118,10 +129,26 @@ const CODING = {
 - den Architect-Plan,
 - das Integration-Review (mit empfohlenen Aenderungen),
 - relevanten Repository-Kontext,
+- den AKTUELLEN Inhalt der Zieldateien (Block "CURRENT FILE: <pfad>"),
 - ggf. Feedback vom Approver (MENSCHLICHE ANWEISUNGEN – hoechste Prioritaet!).
 
 Deine Aufgabe: Erzeuge einen Patch (in unified-diff- ODER ganz-Datei-Form), eine
 aussagekraeftige Commit-Message und einen pruefbaren Test-Plan.
+
+HARTE REGELN (werden serverseitig erzwungen, Verstoss => kein PR):
+1. Du darfst AUSSCHLIESSLICH Dateien aus der Whitelist "allowed_files" anfassen.
+   Jeder andere Pfad fuehrt zum Abbruch der Stage.
+2. Wenn ein "CURRENT FILE: <pfad>"-Block geliefert ist, ERWEITERE diese Datei.
+   - Liefere VOLLSTAENDIGE Datei-Inhalte zurueck, die den CURRENT-Inhalt enthalten.
+   - Entferne KEINE bestehenden \`export\`s, Funktionen, Klassen oder Routen,
+     ohne sie in "removed_symbols[]" mit Begruendung zu listen.
+   - Aendere keine oeffentlichen Funktionssignaturen, ausser change_kind="refactor".
+3. change_kind="new" => die in allowed_files genannten Pfade sind neu;
+   liefere fuer sie action="create".
+4. Erfinde keine Imports. Verwende nur Module/Exports, die im Repository-Kontext
+   oder in CURRENT FILES nachweisbar existieren. Im Zweifel: lokal implementieren
+   und in risks notieren.
+5. Halte die Aenderung minimal. Was nicht zur Ticketloesung noetig ist, bleibt unveraendert.
 
 Antworte ausschliesslich als JSON:
 {
@@ -130,6 +157,9 @@ Antworte ausschliesslich als JSON:
   "branch_name": "feature/ticket-<id>-<slug>",
   "files": [
     { "path": "src/foo.js", "action": "create|update|delete", "content": "<vollstaendiger Datei-Inhalt nach der Aenderung>" }
+  ],
+  "removed_symbols": [
+    { "path": "src/foo.js", "symbol": "oldFn", "reason": "..." }
   ],
   "patch": "<optional: unified diff als Backup>",
   "test_plan": [
@@ -141,12 +171,17 @@ Antworte ausschliesslich als JSON:
 
 Wichtig:
 - Liefere VOLLSTAENDIGE Datei-Inhalte in files[].content (kein Snippet, kein Platzhalter).
-- Halte dich strikt an Plan und Integration-Review.
+- Halte dich strikt an Plan, Integration-Review und allowed_files-Whitelist.
 - **Approver-Feedback hat HOECHSTE PRIORITAET.** Wenn der Approver konkrete Aenderungen, 
   Richtungswechsel oder spezifische Anforderungen nennt, setze diese VOR allen anderen Vorgaben um.
 - Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.`,
-    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
+    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
 Level-Vorgabe: ${level || 'medium'}
+
+Scope-Contract (vom Architect-Plan, HART):
+- change_kind: ${changeKind || 'extend'}
+- allowed_files (Whitelist, ausschliesslich diese Pfade duerfen geaendert werden):
+${(allowedFiles && allowedFiles.length ? allowedFiles.map(p => `  - ${p}`).join('\n') : '  (leer – Coding-Bot MUSS abbrechen)')}
 
 Coding-Prompt:
 ${codingPrompt || '(leer)'}
@@ -159,7 +194,11 @@ ${integrationAssessment || '(leer)'}
 
 Repository-Kontext (gekuerzt):
 ${repoContext || '(kein Repo verknuepft)'}
-${extraInfo ? `
+
+${currentFiles && currentFiles.length ? `--- AKTUELLE INHALTE DER ZIELDATEIEN (Source of Truth) ---
+${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (NEU – existiert noch nicht)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+--- ENDE AKTUELLE INHALTE ---
+` : ''}${extraInfo ? `
 
 --- Zusatzinformation vom menschlichen Reviewer ---
 ${extraInfo}

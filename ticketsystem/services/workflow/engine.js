@@ -6,7 +6,8 @@ const aiClient = require('../ai/client');
 const prompts = require('../ai/prompts');
 const { redact } = require('../ai/redact');
 const { pickStaffForRole } = require('./assignment');
-const { fetchRepoContext, commitFilesAsPR } = require('./githubContext');
+const { fetchRepoContext, fetchFilesFromRepo, commitFilesAsPR } = require('./githubContext');
+const { runCodeChecks } = require('./codeChecks');
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 
@@ -221,14 +222,25 @@ async function execPlanning(ctx) {
     }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
     const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
+    // Scope-Contract normalisieren
+    if (!Array.isArray(out.allowed_files)) out.allowed_files = [];
+    out.allowed_files = out.allowed_files
+        .filter(p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/'))
+        .map(p => p.trim())
+        .slice(0, 25);
+    if (!['extend', 'new', 'refactor'].includes(out.change_kind)) {
+        out.change_kind = 'extend';
+    }
     const planMd = renderPlanMarkdown(out, repoCtx.source);
     await run(`UPDATE tickets SET implementation_plan = ? WHERE id = ?`, [planMd, ctx.ticket.id]);
     ctx.implementation_plan = planMd;
+    ctx.allowed_files = out.allowed_files;
+    ctx.change_kind = out.change_kind;
     out.markdown = planMd;
     ctx._artifacts = [
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
     ];
-    wfInfo(`Stage:PLANNING done | steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'}`);
+    wfInfo(`Stage:PLANNING done | steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
     return { output: out, ai: r };
 }
 
@@ -271,6 +283,11 @@ function renderPlanMarkdown(plan, repoSource) {
     if (Array.isArray(plan.affected_areas) && plan.affected_areas.length) {
         lines.push(`\n**Betroffene Bereiche:**`);
         plan.affected_areas.forEach(a => lines.push(`- ${a}`));
+    }
+    if (plan.change_kind) lines.push(`\n**Change-Kind:** \`${plan.change_kind}\``);
+    if (Array.isArray(plan.allowed_files) && plan.allowed_files.length) {
+        lines.push(`\n**Allowed Files (Whitelist fuer Coding-Bot):**`);
+        plan.allowed_files.forEach(f => lines.push(`- \`${f}\``));
     }
     if (Array.isArray(plan.steps) && plan.steps.length) {
         lines.push(`\n**Schritte:**`);
@@ -557,6 +574,74 @@ function renderCodingMarkdown(out, level) {
     return lines.join('\n');
 }
 
+// Prueft Coding-Output gegen Scope-Contract aus PLANNING.
+// Liefert Liste von Verstoessen (leer = ok). Verstoss => kein PR.
+function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
+    const violations = [];
+    const allowSet = new Set(allowedFiles || []);
+    const currentMap = new Map((currentFiles || []).map(f => [f.path, f]));
+    const files = Array.isArray(out.files) ? out.files : [];
+
+    if (!allowSet.size) {
+        violations.push('Kein allowed_files-Whitelist aus PLANNING vorhanden – Coding-Stage erfordert Scope-Contract.');
+        return violations;
+    }
+
+    for (const f of files) {
+        if (!f || !f.path) { violations.push('files[] enthaelt Eintrag ohne path'); continue; }
+        if (!allowSet.has(f.path)) {
+            violations.push(`Pfad nicht in allowed_files: ${f.path}`);
+            continue;
+        }
+        const action = f.action || 'update';
+        const cur = currentMap.get(f.path);
+        if (changeKind === 'new' && cur && cur.exists) {
+            violations.push(`change_kind=new, aber Datei existiert bereits: ${f.path}`);
+        }
+        if (changeKind === 'extend' && cur && cur.exists && action === 'update' && typeof f.content === 'string' && cur.content) {
+            // Symbol-Erhalt: jede in CURRENT exportierte Top-Level-Definition muss erhalten bleiben,
+            // ausser sie ist explizit in removed_symbols[] gelistet.
+            const removed = new Set(
+                (Array.isArray(out.removed_symbols) ? out.removed_symbols : [])
+                    .filter(r => r && r.path === f.path && r.symbol)
+                    .map(r => r.symbol)
+            );
+            const symRe = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)|\bmodule\.exports\.([A-Za-z_$][\w$]*)\s*=|\bexports\.([A-Za-z_$][\w$]*)\s*=/g;
+            const oldSymbols = new Set();
+            let m;
+            while ((m = symRe.exec(cur.content)) !== null) {
+                const name = m[1] || m[2] || m[3];
+                if (name) oldSymbols.add(name);
+            }
+            symRe.lastIndex = 0;
+            const newSymbols = new Set();
+            while ((m = symRe.exec(f.content)) !== null) {
+                const name = m[1] || m[2] || m[3];
+                if (name) newSymbols.add(name);
+            }
+            for (const sym of oldSymbols) {
+                if (!newSymbols.has(sym) && !removed.has(sym)) {
+                    violations.push(`Symbol entfernt ohne Begruendung: ${sym} in ${f.path} (change_kind=extend)`);
+                }
+            }
+            // Diff-Groesse: bei "extend" nicht mehr als 70% Zeilen anders
+            const oldLines = cur.content.split('\n');
+            const newLines = f.content.split('\n');
+            const minLen = Math.min(oldLines.length, newLines.length);
+            let same = 0;
+            for (let i = 0; i < minLen; i++) if (oldLines[i] === newLines[i]) same++;
+            const ratio = oldLines.length ? same / oldLines.length : 1;
+            if (oldLines.length > 20 && ratio < 0.3) {
+                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% Zeilen erhalten) bei change_kind=extend: ${f.path}`);
+            }
+        }
+        if (action === 'delete' && changeKind !== 'refactor') {
+            violations.push(`Datei-Delete erlaubt nur bei change_kind=refactor: ${f.path}`);
+        }
+    }
+    return violations;
+}
+
 async function execCoding(ctx, codingLevel) {
     wfInfo(`Stage:CODING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'} level=${codingLevel} hasApproverNote=${!!ctx.approverNote} hasExtraInfo=${!!ctx.extra_info}`);
     const integration = await getRow(`SELECT gi.* FROM github_integration gi
@@ -567,6 +652,20 @@ async function execCoding(ctx, codingLevel) {
     const repoCtx = await fetchRepoContext(integration);
     wfInfo(`Stage:CODING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
 
+    const allowedFiles = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
+    const changeKind = ctx.change_kind || 'extend';
+    let currentFiles = [];
+    if (integration && allowedFiles.length) {
+        try {
+            currentFiles = await fetchFilesFromRepo(integration, allowedFiles);
+            wfInfo(`Stage:CODING currentFiles | requested=${allowedFiles.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
+        } catch (e) {
+            wfWarn(`Stage:CODING currentFiles fetch failed`, e.message);
+        }
+    } else {
+        wfWarn(`Stage:CODING currentFiles SKIP | hasIntegration=${!!integration} allowedFiles=${allowedFiles.length}`);
+    }
+
     const userPrompt = prompts.CODING.buildUser({
         ticket: ctx.ticket,
         codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
@@ -576,7 +675,10 @@ async function execCoding(ctx, codingLevel) {
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
-        extraInfo: ctx.extra_info || null
+        extraInfo: ctx.extra_info || null,
+        allowedFiles,
+        changeKind,
+        currentFiles
     });
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
@@ -624,7 +726,42 @@ async function execCoding(ctx, codingLevel) {
     const autoPrEnabled = (process.env.AI_CODING_AUTO_PR || 'true').toLowerCase() !== 'false';
     wfInfo(`Stage:CODING PR-CHECK | autoPrEnabled=${autoPrEnabled} integration=${!!integration} auto_commit=${!!ctx.staff?.auto_commit_enabled} hasFiles=${Array.isArray(out.files) && out.files.length > 0} tokenSource=${tokenSource}`);
 
-    if (autoPrEnabled && integration && ctx.staff.auto_commit_enabled && Array.isArray(out.files) && out.files.length) {
+    // Scope-Contract validieren (Whitelist + change_kind)
+    const scopeViolations = validateCodingScope(out, allowedFiles, changeKind, currentFiles);
+    if (scopeViolations.length) {
+        out.scope_violations = scopeViolations;
+        out.markdown += `\n\n_⚠️ Scope-Verletzungen erkannt – PR wird NICHT erstellt:_\n` +
+            scopeViolations.map(v => `- ${v}`).join('\n');
+        wfError(`Stage:CODING SCOPE-VIOLATION | count=${scopeViolations.length}`, scopeViolations.join(' | '));
+    }
+
+    // Code-Checks (Syntax immer; Lint/Build per ENV opt-in)
+    let checkViolations = [];
+    if (!scopeViolations.length && Array.isArray(out.files) && out.files.length) {
+        const wantLint = (process.env.AI_CODING_VERIFY_LINT || 'false').toLowerCase() === 'true';
+        const wantBuild = (process.env.AI_CODING_VERIFY_BUILD || 'false').toLowerCase() === 'true';
+        wfInfo(`Stage:CODING CHECKS | syntax=true lint=${wantLint} build=${wantBuild} files=${out.files.length}`);
+        try {
+            const checkResult = await runCodeChecks(out.files, integration, { syntax: true, lint: wantLint, build: wantBuild });
+            out.code_checks = checkResult;
+            wfInfo(`Stage:CODING CHECKS DONE | ok=${checkResult.ok} violations=${checkResult.violations.length} ran=${checkResult.ran.map(r => `${r.name}:${r.status}`).join(',')}`);
+            if (!checkResult.ok) {
+                checkViolations = checkResult.violations.map(v => `[${v.type}]${v.file ? ' ' + v.file : ''}: ${v.message}`);
+                out.markdown += `\n\n_⚠️ Code-Checks fehlgeschlagen – PR wird NICHT erstellt:_\n` +
+                    checkViolations.map(v => `- ${v}`).join('\n');
+                wfError(`Stage:CODING CHECKS-FAILED | count=${checkViolations.length}`);
+            } else {
+                const ranSummary = checkResult.ran.map(r => `${r.name}=${r.status}`).join(', ');
+                out.markdown += `\n\n_✅ Code-Checks ok: ${ranSummary}_`;
+            }
+        } catch (e) {
+            wfError(`Stage:CODING CHECKS-ERROR`, e.message);
+            out.markdown += `\n\n_⚠️ Code-Checks-Fehler: ${e.message}_`;
+            checkViolations = [`code_checks_error: ${e.message}`];
+        }
+    }
+
+    if (!scopeViolations.length && !checkViolations.length && autoPrEnabled && integration && ctx.staff.auto_commit_enabled && Array.isArray(out.files) && out.files.length) {
         wfInfo(`Stage:CODING PR-CREATE | branch=${out.branch_name || 'auto'} files=${out.files.length}`);
         try {
             const slug = String(ctx.ticket.title || 'change').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
@@ -632,14 +769,17 @@ async function execCoding(ctx, codingLevel) {
                 branchName: out.branch_name || `bot/ticket-${ctx.ticket.id}-${slug}`,
                 commitMessage: out.commit_message,
                 prTitle: `[Ticket #${ctx.ticket.id}] ${ctx.ticket.title || 'Coding-Bot Changes'}`.slice(0, 200),
-                prBody: `Automatisch erstellt vom Coding-Bot (Level: \`${codingLevel}\`).\n\n${out.summary || ''}\n\n---\nManuelle Pruefung: ${out.manual_verification || '-'}`,
-                files: out.files
+                prBody: `Automatisch erstellt vom Coding-Bot (Level: \`${codingLevel}\`).\n\n${out.summary || ''}\n\n---\nManuelle Pruefung: ${out.manual_verification || '-'}\n\nScope: change_kind=\`${changeKind}\`, allowed_files=${allowedFiles.length}`,
+                files: out.files,
+                draft: true,
+                labels: ['bot-generated', 'needs-human-review', `coding-${codingLevel}`]
             });
             out.pr_url = pr.prUrl;
             out.pr_number = pr.prNumber;
             out.branch = pr.branch;
-            out.markdown += `\n\n**Pull Request:** [#${pr.prNumber}](${pr.prUrl}) — Branch \`${pr.branch}\``;
-            wfInfo(`Stage:CODING PR-CREATED | pr=${pr.prNumber} url=${pr.prUrl} branch=${pr.branch}`);
+            out.pr_draft = pr.draft;
+            out.markdown += `\n\n**Pull Request:** [#${pr.prNumber}](${pr.prUrl})${pr.draft ? ' _(Draft)_' : ''} — Branch \`${pr.branch}\``;
+            wfInfo(`Stage:CODING PR-CREATED | pr=${pr.prNumber} url=${pr.prUrl} branch=${pr.branch} draft=${pr.draft}`);
         } catch (e) {
             out.pr_error = e.message;
             out.markdown += `\n\n_⚠️ PR-Erstellung fehlgeschlagen: ${e.message}_`;
@@ -647,6 +787,8 @@ async function execCoding(ctx, codingLevel) {
         }
     } else {
         const reasons = [];
+        if (scopeViolations.length) reasons.push(`scope_violations=${scopeViolations.length}`);
+        if (checkViolations.length) reasons.push(`code_check_violations=${checkViolations.length}`);
         if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR=false');
         if (!integration) reasons.push('Keine github_integration für project.system_id=' + (ctx.ticket.system_id || 'null'));
         if (!ctx.staff?.auto_commit_enabled) reasons.push('auto_commit_enabled=0 für Bot "' + (ctx.staff?.name || '?') + '" (id=' + (ctx.staff?.id || '?') + ')');
@@ -674,6 +816,22 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     } else {
         wfWarn(`runCodingStage | Kein output_payload im afterStep – Approver-Notiz geht verloren!`);
     }
+
+    // Scope-Contract aus PLANNING-Step laden (allowed_files, change_kind)
+    try {
+        const planStep = await getRow(
+            `SELECT output_payload FROM ticket_workflow_steps
+             WHERE run_id = ? AND stage = 'planning' AND status = 'done'
+             ORDER BY id DESC LIMIT 1`, [runId]);
+        if (planStep?.output_payload) {
+            const planOut = JSON.parse(planStep.output_payload);
+            if (Array.isArray(planOut.allowed_files)) ctx.allowed_files = planOut.allowed_files;
+            if (planOut.change_kind) ctx.change_kind = planOut.change_kind;
+            wfInfo(`runCodingStage SCOPE | allowed_files=${ctx.allowed_files?.length || 0} change_kind=${ctx.change_kind || '-'}`);
+        } else {
+            wfWarn(`runCodingStage | Kein PLANNING-Output gefunden – Scope-Contract leer, PR wird blockiert.`);
+        }
+    } catch (e) { wfWarn(`runCodingStage planning load error`, e.message); }
     const staff = await pickStaff('coding', 'ai', { codingLevel });
     const sortOrder = (afterStep?.sort_order || 5) + 1;
 
