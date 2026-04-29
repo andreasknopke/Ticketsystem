@@ -121,9 +121,19 @@ async function commitFilesAsPR(integration, payload) {
     try {
         await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
     } catch (e) {
-        log(`Branch existiert bereits, verwende Suffix: ${e.status} ${e.message?.slice(0, 100)}`);
-        branch = `${branch}-${Date.now()}`;
-        await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+        // Nur bei "Reference already exists" (422) einen neuen Namen versuchen.
+        // Bei 401/403 Permission-Fehlern sofort durchwerfen.
+        if (e.status === 422) {
+            log(`Branch existiert bereits, neuer Name mit Timestamp`);
+            branch = `${branch}-${Date.now()}`;
+            await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+        } else if (e.status === 403) {
+            throw new Error(`GitHub 403: Token hat keine Schreibrechte auf ${owner}/${repo}. Prüfe: 1) Token hat "Contents"-Scope (Read & Write) 2) Token ist für dieses Repository authorisiert. ${e.message?.slice(0, 100)}`);
+        } else if (e.status === 401) {
+            throw new Error(`GitHub 401: Token ungültig oder abgelaufen. Bitte neuen Token erstellen.`);
+        } else {
+            throw e;
+        }
     }
     log(`Branch erstellt: ${branch}`);
 
