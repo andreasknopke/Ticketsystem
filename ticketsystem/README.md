@@ -114,7 +114,7 @@ EMAIL_NOTIFY_COMMENT=true
 
 # --- KI-Workflow ---
 AI_WORKFLOW_ENABLED=true
-AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai_local
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai_local | anthropic | copilot
 AI_WORKFLOW_MAX_RETRIES=2
 AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
 AI_WORKFLOW_MAX_TOKENS=2048
@@ -134,6 +134,25 @@ OPENAI_LOCAL_BASE_URL=http://localhost:8000/v1
 OPENAI_LOCAL_API_KEY=
 OPENAI_LOCAL_MODEL=local-model
 
+# Anthropic (Claude)
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+ANTHROPIC_MODEL=claude-sonnet-4-5
+ANTHROPIC_VERSION=2023-06-01
+
+# GitHub Copilot (INOFFIZIELL! erfordert Copilot Pro/Pro+/Business/Enterprise)
+# Funktioniert ueber den Copilot-Chat-Backend, den auch Editoren wie VS Code nutzen.
+# Auth-Flow: COPILOT_GITHUB_TOKEN -> kurzlebiger Copilot-Token -> Chat
+# Hinweis: Diese API ist nicht oeffentlich dokumentiert und kann jederzeit
+# gebrochen werden. Ein offizieller "Copilot for Business API"-Endpoint waere
+# vorzuziehen, sobald GitHub diesen freigibt.
+COPILOT_GITHUB_TOKEN=                   # GitHub-PAT eines Copilot-Accounts (oder Re-Use von GITHUB_DEFAULT_TOKEN)
+COPILOT_BASE_URL=https://api.githubcopilot.com
+COPILOT_TOKEN_URL=https://api.github.com/copilot_internal/v2/token
+COPILOT_MODEL=gpt-4o                    # z.B. gpt-4o, gpt-5, claude-3.7-sonnet, claude-sonnet-4 (je nach Subscription)
+COPILOT_EDITOR_VERSION=vscode/1.95.0
+COPILOT_EDITOR_PLUGIN_VERSION=copilot-chat/0.22.0
+
 # Optionaler Fallback-GitHub-Token fuer Planning-Stage
 # (Vorrang: github_integration.access_token des Projekts)
 GITHUB_DEFAULT_TOKEN=
@@ -143,6 +162,19 @@ GITHUB_DEFAULT_TOKEN=
 # - false: nur Artefakte (commit_message, test_plan, geaenderte Dateien) als Download
 AI_CODING_AUTO_PR=true
 ```
+
+#### Bot erneut auspruefen lassen
+
+Im Workflow-Tab eines Tickets findet sich unter jedem abgeschlossenen Bot-Step
+(Triage / Security / Planning / Integration) ein aufklappbares Feld
+„🔄 Erneut prüfen mit Zusatzinfo". Dort kann der Approver eine
+Hinweistextbox füllen (z. B. „Bot hat Datenbank-Logs als sensibles Datum
+nicht erkannt"). Beim Re-Run wird:
+
+1. der bisherige Step als `superseded` markiert (bleibt zur Historie sichtbar),
+2. alle nachfolgenden Steps werden als `skipped` zurückgesetzt,
+3. der Workflow läuft ab der gewählten Stage neu, und der Bot bekommt die
+   Zusatzinfo als Suffix in seinem User-Prompt.
 
 #### Neue API-Endpunkte (KI-Workflow)
 

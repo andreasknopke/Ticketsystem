@@ -1736,6 +1736,33 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
     });
 });
 
+// Re-Run einer abgeschlossenen Stage (Triage/Security/Planning/Integration) mit Zusatzinfo
+app.post('/api/tickets/:id/workflow/steps/:stepId/rerun', requireAuth, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    const extraInfo = req.body.extra_info ? String(req.body.extra_info).slice(0, 8000) : '';
+    if (!extraInfo.trim()) return res.status(400).json({ error: 'extra_info darf nicht leer sein' });
+    if (!isAdminRole(req.session.role)) {
+        return res.status(403).json({ error: 'Nur Admin/Approver darf Stages neu ausfuehren' });
+    }
+    db.get('SELECT s.run_id FROM ticket_workflow_steps s WHERE s.id = ?', [stepId], async (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Step nicht gefunden' });
+        // Prueft per Ticket-Zugehoerigkeit
+        db.get(`SELECT 1 FROM ticket_workflow_runs WHERE id = ? AND ticket_id = ?`,
+            [row.run_id, ticketId], async (e2, owns) => {
+            if (e2) return res.status(500).json({ error: e2.message });
+            if (!owns) return res.status(404).json({ error: 'Step gehoert nicht zu diesem Ticket' });
+            try {
+                const result = await workflowEngine.rerunStage(row.run_id, stepId, extraInfo, getActor(req));
+                res.json(result);
+            } catch (e) {
+                res.status(400).json({ error: e.message });
+            }
+        });
+    });
+});
+
 app.delete('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
     db.run('UPDATE staff SET active = 0 WHERE id = ?', [req.params.id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
@@ -2582,7 +2609,7 @@ const CODING_LEVEL_LABELS = {
     medium: 'Medium (GPT-5.4 / DeepSeek V4 / Kimi 2.6 Niveau)',
     high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
-const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local'];
+const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local', 'anthropic', 'copilot'];
 
 function parseStaffPayload(body) {
     const kind = body.kind === 'ai' ? 'ai' : 'human';

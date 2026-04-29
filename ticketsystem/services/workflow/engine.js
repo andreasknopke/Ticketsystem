@@ -128,9 +128,14 @@ async function saveArtifact({ ticketId, runId, stepId, stage, kind, filename, mi
 
 // --- Stage-Executors ---
 
+function extraInfoSuffix(ctx) {
+    if (!ctx || !ctx.extra_info) return '';
+    return `\n\n--- Zusatzinformation vom menschlichen Reviewer (bitte beruecksichtigen) ---\n${ctx.extra_info}\n--- Ende Zusatzinformation ---`;
+}
+
 async function execTriage(ctx) {
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
-    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems });
+    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
     const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '' };
     if (out.system_id) {
@@ -145,7 +150,7 @@ async function execSecurity(ctx) {
     const userPrompt = prompts.SECURITY.buildUser({
         ticket: { ...ctx.ticket, triage_summary: ctx.triage?.summary, triage_action: ctx.triage?.suggested_action },
         preRedacted: pre.redacted
-    });
+    }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.SECURITY.system, userPrompt });
     const out = r.parsed || { redacted_text: pre.redacted, findings: pre.hits, coding_prompt: pre.redacted };
     const redacted = out.redacted_text || pre.redacted;
@@ -173,7 +178,7 @@ async function execPlanning(ctx) {
     const userPrompt = prompts.PLANNING.buildUser({
         ticket: { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt },
         repoContext: repoCtx.repoContext
-    });
+    }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
     const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
     const planMd = renderPlanMarkdown(out, repoCtx.source);
@@ -197,7 +202,7 @@ async function execIntegration(ctx) {
         plan: ctx.implementation_plan,
         projectDocs,
         repoDocs: ctx.repo_context || ''
-    });
+    }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
     const out = r.parsed || { verdict: 'approve_with_changes', rationale: r.text?.slice(0, 500) || '' };
     if (!['medium', 'high'].includes(out.recommended_complexity)) {
@@ -308,8 +313,8 @@ async function startForTicket(ticketId) {
     return runId;
 }
 
-async function runStages(runId, initialTicket, stages) {
-    const ctx = { ticket: { ...initialTicket } };
+async function runStages(runId, initialTicket, stages, ctxExtras) {
+    const ctx = { ticket: { ...initialTicket }, ...(ctxExtras || {}) };
     let triageDecision = null;
 
     for (const stage of stages) {
@@ -385,6 +390,9 @@ async function runStages(runId, initialTicket, stages) {
                 ctx._artifacts = [];
             }
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
+
+            // extra_info nur fuer die erste Stage anwenden (z.B. Re-Run mit Zusatzinfo)
+            if (ctx.extra_info) delete ctx.extra_info;
 
             if (stage.role === 'triage' && result.output?.decision === 'unclear') {
                 triageDecision = 'unclear';
@@ -637,4 +645,73 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     }
 }
 
-module.exports = { init, startForTicket, decideHumanStep };
+module.exports = { init, startForTicket, decideHumanStep, rerunStage };
+
+/**
+ * Re-Run einer abgeschlossenen Stage mit Zusatzinformation.
+ * - markiert den vorhandenen Step als 'superseded' (status 'skipped' + Vermerk im output)
+ * - markiert alle nachfolgenden Steps (sort_order > step.sort_order, ausser 'coding' done)
+ *   als 'skipped'
+ * - setzt run.status auf 'running' und ruft runStages mit allen folgenden Stages
+ *   ab inkl. der re-run-Stage selbst auf, mit ctx.extra_info als Zusatztext
+ */
+async function rerunStage(runId, stepId, extraInfo, actor) {
+    const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
+    if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
+    const allowedStages = ['triage', 'security', 'planning', 'integration'];
+    if (!allowedStages.includes(step.stage)) {
+        throw new Error('Re-Run nur fuer Triage/Security/Planning/Integration moeglich');
+    }
+    if (step.status !== 'done') {
+        throw new Error('Nur abgeschlossene Steps koennen erneut ausgefuehrt werden');
+    }
+    const info = String(extraInfo || '').trim();
+    if (!info) throw new Error('Zusatzinformation darf nicht leer sein');
+
+    const run_ = await getRow('SELECT * FROM ticket_workflow_runs WHERE id = ?', [runId]);
+    const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
+
+    // Alten Step inkl. Output bekommen, dann als superseded markieren
+    let prevOutput = null;
+    if (step.output_payload) {
+        try { prevOutput = JSON.parse(step.output_payload); } catch (_) {}
+    }
+    const supersededOutput = {
+        ...(prevOutput || {}),
+        _superseded: true,
+        _superseded_by_actor: actor || null,
+        _superseded_extra_info: info,
+        _superseded_at: new Date().toISOString()
+    };
+    await dbRef.run(
+        `UPDATE ticket_workflow_steps SET status = 'skipped', output_payload = ? WHERE id = ?`,
+        [JSON.stringify(supersededOutput), stepId]
+    );
+
+    // Nachfolgende Steps "verwerfen" (skipped). Coding-done bleibt erhalten,
+    // wird aber durch Re-Run der Stages 1-4 i.d.R. ohnehin durch erneuten
+    // Approver-Dispatch ersetzt; wir setzen es auf skipped, damit die
+    // Phase-Erkennung in decideHumanStep wieder Dispatch-Phase signalisiert.
+    await run(
+        `UPDATE ticket_workflow_steps SET status = 'skipped'
+         WHERE run_id = ? AND sort_order > ?
+           AND status IN ('done','waiting_human','failed','in_progress','pending')`,
+        [runId, step.sort_order]
+    );
+
+    emit('workflow:rerun', { runId, ticketId: ticket.id, stage: step.stage, stepId });
+
+    // Workflow-Definition laden und ab dieser Stage durchlaufen
+    const wf = await loadDefaultWorkflow();
+    if (!wf) throw new Error('Kein Default-Workflow gefunden');
+    const remaining = wf.stages.filter(s => s.sort_order >= step.sort_order);
+    await run(`UPDATE ticket_workflow_runs SET status = 'running', current_stage = ?, finished_at = NULL, result = NULL WHERE id = ?`,
+        [step.stage, runId]);
+
+    // Asynchron weiterlaufen
+    runStages(runId, ticket, remaining, { extra_info: info }).catch(err => {
+        console.error('Workflow Re-Run Fehler:', err);
+    });
+
+    return { status: 'rerun_started', stage: step.stage };
+}

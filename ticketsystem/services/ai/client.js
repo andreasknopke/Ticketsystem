@@ -1,7 +1,7 @@
 'use strict';
 
 // Einheitlicher AI-Client mit Provider-Abstraktion.
-// Provider: deepseek, ollama, openai_local
+// Provider: deepseek, ollama, openai_local, anthropic, copilot
 // Methode: chat({ provider, model, system, user, temperature, maxTokens, json, timeoutMs })
 //   -> { text, raw, prompt_tokens, completion_tokens, provider, model, duration_ms }
 
@@ -21,6 +21,23 @@ const CONFIG = {
         baseUrl: (env.OPENAI_LOCAL_BASE_URL || 'http://localhost:8000/v1').replace(/\/$/, ''),
         apiKey: env.OPENAI_LOCAL_API_KEY || '',
         defaultModel: env.OPENAI_LOCAL_MODEL || 'local-model'
+    },
+    anthropic: {
+        baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, ''),
+        apiKey: env.ANTHROPIC_API_KEY || '',
+        defaultModel: env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
+        version: env.ANTHROPIC_VERSION || '2023-06-01'
+    },
+    copilot: {
+        // Inoffizielle Copilot-Chat-API (von Tools wie aider, opencode u.ä. genutzt).
+        // Funktioniert nur mit GitHub Copilot Pro/Pro+/Business/Enterprise-Subscription.
+        // Auth-Flow: GitHub OAuth-Token (PAT) -> Copilot-Token (kurzlebig) -> Chat.
+        baseUrl: (env.COPILOT_BASE_URL || 'https://api.githubcopilot.com').replace(/\/$/, ''),
+        tokenUrl: env.COPILOT_TOKEN_URL || 'https://api.github.com/copilot_internal/v2/token',
+        githubToken: env.COPILOT_GITHUB_TOKEN || env.GITHUB_DEFAULT_TOKEN || '',
+        defaultModel: env.COPILOT_MODEL || 'gpt-4o',
+        editorVersion: env.COPILOT_EDITOR_VERSION || 'vscode/1.95.0',
+        editorPluginVersion: env.COPILOT_EDITOR_PLUGIN_VERSION || 'copilot-chat/0.22.0'
     }
 };
 
@@ -31,7 +48,8 @@ const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 2048;
 // Allowlist der erlaubten Outbound-Hosts
 const ALLOWED_HOSTS = new Set();
 Object.values(CONFIG).forEach(c => {
-    try { ALLOWED_HOSTS.add(new URL(c.baseUrl).host); } catch (_) {}
+    try { if (c.baseUrl) ALLOWED_HOSTS.add(new URL(c.baseUrl).host); } catch (_) {}
+    try { if (c.tokenUrl) ALLOWED_HOSTS.add(new URL(c.tokenUrl).host); } catch (_) {}
 });
 
 function assertAllowed(url) {
@@ -140,10 +158,150 @@ async function chat(opts) {
     const provider = opts.provider || DEFAULT_PROVIDER;
     if (!CONFIG[provider]) throw new Error(`AI: Unbekannter Provider "${provider}"`);
     if (provider === 'ollama') return callOllama(opts);
+    if (provider === 'anthropic') return callAnthropic(opts);
+    if (provider === 'copilot') return callCopilot(opts);
     if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) {
         throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
     }
     return callOpenAICompatible(provider, opts);
+}
+
+// --- Anthropic (Claude) ---
+async function callAnthropic(opts) {
+    const cfg = CONFIG.anthropic;
+    if (!cfg.apiKey) throw new Error('AI anthropic: ANTHROPIC_API_KEY ist nicht gesetzt');
+    const url = `${cfg.baseUrl}/v1/messages`;
+    assertAllowed(url);
+    let userContent = opts.user || '';
+    if (opts.json) {
+        userContent += '\n\nWichtig: Antworte ausschliesslich mit gueltigem JSON, ohne Markdown-Codeblock und ohne erklaerenden Text davor oder danach.';
+    }
+    const body = {
+        model: opts.model || cfg.defaultModel,
+        max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS,
+        temperature: opts.temperature ?? 0.2,
+        system: opts.system || undefined,
+        messages: [{ role: 'user', content: userContent }]
+    };
+    if (opts.extra) Object.assign(body, opts.extra);
+
+    const started = Date.now();
+    const resp = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': cfg.apiKey,
+            'anthropic-version': cfg.version
+        },
+        body: JSON.stringify(body)
+    }, opts.timeoutMs || DEFAULT_TIMEOUT);
+    const duration_ms = Date.now() - started;
+
+    if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(`AI anthropic HTTP ${resp.status}: ${errText.slice(0, 500)}`);
+    }
+    const data = await resp.json();
+    const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    return {
+        text,
+        raw: data,
+        provider: 'anthropic',
+        model: body.model,
+        prompt_tokens: data.usage?.input_tokens || null,
+        completion_tokens: data.usage?.output_tokens || null,
+        duration_ms
+    };
+}
+
+// --- GitHub Copilot (inoffiziell, Best-Effort) ---
+// Erfordert COPILOT_GITHUB_TOKEN (GitHub-Token mit Copilot-Subscription).
+// Kann brechen, wenn GitHub die internen Endpoints aendert.
+let _copilotTokenCache = { token: '', expiresAt: 0 };
+
+async function getCopilotToken() {
+    const cfg = CONFIG.copilot;
+    if (!cfg.githubToken) {
+        throw new Error('AI copilot: COPILOT_GITHUB_TOKEN (oder GITHUB_DEFAULT_TOKEN) ist nicht gesetzt');
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (_copilotTokenCache.token && _copilotTokenCache.expiresAt - 30 > now) {
+        return _copilotTokenCache.token;
+    }
+    assertAllowed(cfg.tokenUrl);
+    const resp = await fetchWithTimeout(cfg.tokenUrl, {
+        method: 'GET',
+        headers: {
+            'Authorization': `token ${cfg.githubToken}`,
+            'Accept': 'application/json',
+            'Editor-Version': cfg.editorVersion,
+            'Editor-Plugin-Version': cfg.editorPluginVersion,
+            'User-Agent': 'GithubCopilot/1.0'
+        }
+    }, 15000);
+    if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(`AI copilot Token-Holen HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+    }
+    const data = await resp.json();
+    if (!data.token) throw new Error('AI copilot: Token-Antwort enthaelt kein "token"-Feld');
+    _copilotTokenCache = { token: data.token, expiresAt: data.expires_at || (now + 1500) };
+    return data.token;
+}
+
+async function callCopilot(opts) {
+    const cfg = CONFIG.copilot;
+    const token = await getCopilotToken();
+    const url = `${cfg.baseUrl}/chat/completions`;
+    assertAllowed(url);
+    const body = {
+        model: opts.model || cfg.defaultModel,
+        messages: [
+            { role: 'system', content: opts.system || '' },
+            { role: 'user', content: opts.user || '' }
+        ],
+        temperature: opts.temperature ?? 0.2,
+        max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS,
+        stream: false
+    };
+    if (opts.json) body.response_format = { type: 'json_object' };
+    if (opts.extra) Object.assign(body, opts.extra);
+
+    const started = Date.now();
+    const resp = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'Editor-Version': cfg.editorVersion,
+            'Editor-Plugin-Version': cfg.editorPluginVersion,
+            'Copilot-Integration-Id': 'vscode-chat',
+            'User-Agent': 'GithubCopilot/1.0',
+            'OpenAI-Intent': 'conversation-panel'
+        },
+        body: JSON.stringify(body)
+    }, opts.timeoutMs || DEFAULT_TIMEOUT);
+    const duration_ms = Date.now() - started;
+
+    if (resp.status === 401 || resp.status === 403) {
+        // Token evtl. abgelaufen -> Cache leeren und einmal wiederholen
+        _copilotTokenCache = { token: '', expiresAt: 0 };
+    }
+    if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(`AI copilot HTTP ${resp.status}: ${errText.slice(0, 500)}`);
+    }
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    return {
+        text,
+        raw: data,
+        provider: 'copilot',
+        model: body.model,
+        prompt_tokens: data.usage?.prompt_tokens || null,
+        completion_tokens: data.usage?.completion_tokens || null,
+        duration_ms
+    };
 }
 
 function tryParseJson(text) {
@@ -184,7 +342,9 @@ function getConfigSummary() {
         default_provider: DEFAULT_PROVIDER,
         deepseek: { base_url: CONFIG.deepseek.baseUrl, model: CONFIG.deepseek.defaultModel, configured: !!CONFIG.deepseek.apiKey },
         ollama: { base_url: CONFIG.ollama.baseUrl, model: CONFIG.ollama.defaultModel, configured: true },
-        openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true }
+        openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true },
+        anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
+        copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken }
     };
 }
 
