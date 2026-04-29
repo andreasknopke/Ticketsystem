@@ -101,6 +101,9 @@ async function callOpenAICompatible(provider, opts) {
     }
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content || '';
+    if (!text && data.choices?.length > 0) {
+        console.log(`[AI:DEBUG] Empty content from ${provider} | model=${body.model} finish_reason=${data.choices[0]?.finish_reason} index=${data.choices[0]?.index} keys=${Object.keys(data.choices[0]?.message || {}).join(',')}`);
+    }
     return {
         text,
         raw: data,

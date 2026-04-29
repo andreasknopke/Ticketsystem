@@ -94,7 +94,10 @@ async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, r
             const parsed = json ? aiClient.tryParseJson(r.text) : null;
             wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'}`);
             if (json && !parsed) {
-                wfWarn(`AI-Call JSON parse failed | raw_preview=${r.text?.slice(0, 300)}`);
+                wfWarn(`AI-Call JSON parse failed | raw_preview=${(r.text || '').slice(0, 500)}`);
+                if (r.raw?.choices?.[0]?.finish_reason) {
+                    wfWarn(`AI-Call finish_reason=${r.raw.choices[0].finish_reason}`);
+                }
             }
             return { ...r, parsed };
         } catch (e) {
