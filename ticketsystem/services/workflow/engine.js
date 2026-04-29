@@ -523,7 +523,10 @@ async function execCoding(ctx, codingLevel) {
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
         repoContext: repoCtx.repoContext,
-        level: codingLevel
+        level: codingLevel,
+        approverNote: ctx.approverNote || null,
+        approverDecision: ctx.approverDecision || null,
+        extraInfo: ctx.extra_info || null
     });
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {
@@ -592,6 +595,16 @@ async function execCoding(ctx, codingLevel) {
 
 async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     const ctx = { ticket };
+    // Approver-Notiz aus dem Dispatch-Step extrahieren (output_payload ist JSON-String)
+    if (afterStep?.output_payload) {
+        try {
+            const payload = typeof afterStep.output_payload === 'string'
+                ? JSON.parse(afterStep.output_payload)
+                : afterStep.output_payload;
+            if (payload.note) ctx.approverNote = payload.note;
+            if (payload.decision) ctx.approverDecision = payload.decision;
+        } catch (_) {}
+    }
     const staff = await pickStaff('coding', 'ai', { codingLevel });
     const sortOrder = (afterStep?.sort_order || 5) + 1;
 

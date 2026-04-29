@@ -117,7 +117,8 @@ const CODING = {
 - den Coding-Prompt (security-bereinigt),
 - den Architect-Plan,
 - das Integration-Review (mit empfohlenen Aenderungen),
-- relevanten Repository-Kontext.
+- relevanten Repository-Kontext,
+- ggf. Feedback vom Approver (MENSCHLICHE ANWEISUNGEN – hoechste Prioritaet!).
 
 Deine Aufgabe: Erzeuge einen Patch (in unified-diff- ODER ganz-Datei-Form), eine
 aussagekraeftige Commit-Message und einen pruefbaren Test-Plan.
@@ -141,8 +142,10 @@ Antworte ausschliesslich als JSON:
 Wichtig:
 - Liefere VOLLSTAENDIGE Datei-Inhalte in files[].content (kein Snippet, kein Platzhalter).
 - Halte dich strikt an Plan und Integration-Review.
+- **Approver-Feedback hat HOECHSTE PRIORITAET.** Wenn der Approver konkrete Aenderungen, 
+  Richtungswechsel oder spezifische Anforderungen nennt, setze diese VOR allen anderen Vorgaben um.
 - Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.`,
-    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
+    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
 Level-Vorgabe: ${level || 'medium'}
 
 Coding-Prompt:
@@ -155,7 +158,26 @@ Integration-Review:
 ${integrationAssessment || '(leer)'}
 
 Repository-Kontext (gekuerzt):
-${repoContext || '(kein Repo verknuepft)'}`
+${repoContext || '(kein Repo verknuepft)'}
+${extraInfo ? `
+
+--- Zusatzinformation vom menschlichen Reviewer ---
+${extraInfo}
+--- Ende Zusatzinformation ---
+` : ''}${approverNote ? `
+
+============================================================
+⚠️  APPROVER-FEEDBACK (MENSCHLICHE ANWEISUNGEN – HOECHSTE PRIORITAET!)
+============================================================
+Entscheidung: ${approverDecision || 'dispatch'}
+Kommentar des Approvers:
+${approverNote}
+
+BEACHTE: Diese Anweisungen stammen vom menschlichen Approver und muessen
+VOR allen anderen Vorgaben (Plan, Integration-Review, Coding-Prompt)
+umgesetzt werden. Der Approver hat das letzte Wort.
+============================================================
+` : ''}`
 };
 
 module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING };
