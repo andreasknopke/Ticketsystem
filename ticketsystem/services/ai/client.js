@@ -43,7 +43,7 @@ const CONFIG = {
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
-const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 2048;
+const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 4096;
 
 // Allowlist der erlaubten Outbound-Hosts
 const ALLOWED_HOSTS = new Set();
@@ -100,9 +100,16 @@ async function callOpenAICompatible(provider, opts) {
         throw new Error(`AI ${provider} HTTP ${resp.status}: ${errText.slice(0, 500)}`);
     }
     const data = await resp.json();
-    const text = data.choices?.[0]?.message?.content || '';
-    if (!text && data.choices?.length > 0) {
-        console.log(`[AI:DEBUG] Empty content from ${provider} | model=${body.model} finish_reason=${data.choices[0]?.finish_reason} index=${data.choices[0]?.index} keys=${Object.keys(data.choices[0]?.message || {}).join(',')}`);
+    let text = data.choices?.[0]?.message?.content || '';
+    // DeepSeek v4: reasoning_content enthält die eigentliche Antwort wenn content leer ist
+    if (!text) {
+        const reasoning = data.choices?.[0]?.message?.reasoning_content;
+        if (reasoning) {
+            text = reasoning;
+            console.log(`[AI:DEBUG] Using reasoning_content instead of content from ${provider} | len=${text.length}`);
+        } else {
+            console.log(`[AI:DEBUG] Empty response from ${provider} | model=${body.model} finish_reason=${data.choices[0]?.finish_reason} keys=${Object.keys(data.choices[0]?.message || {}).join(',')}`);
+        }
     }
     return {
         text,
