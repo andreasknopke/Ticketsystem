@@ -320,6 +320,8 @@ function tryParseJson(text) {
         try { return JSON.parse(braceMatch); } catch (_) {}
     }
 
+    // Log preview on failure
+    console.log(`[AI:JSON] Parse failed | text_len=${text.length} preview=${text.slice(0, 300).replace(/\n/g, '\\n')}`);
     return null;
 }
 

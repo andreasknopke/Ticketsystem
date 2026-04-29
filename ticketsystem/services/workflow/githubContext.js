@@ -85,11 +85,17 @@ module.exports = { fetchRepoContext, commitFilesAsPR };
  * @returns {Promise<{prUrl, prNumber, branch, commitSha}>}
  */
 async function commitFilesAsPR(integration, payload) {
+    const log = (msg, data) => console.log(`[GH:PR] ${msg}`, data !== undefined ? JSON.stringify(data).slice(0, 500) : '');
+    log(`Start | owner=${integration?.repo_owner} repo=${integration?.repo_name} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN} branch=${payload.branchName} files=${payload.files?.length}`);
     if (!integration || !integration.repo_owner || !integration.repo_name) {
         throw new Error('Kein Repository verknuepft');
     }
     const token = integration.access_token || process.env.GITHUB_DEFAULT_TOKEN;
-    if (!token) throw new Error('Kein GitHub-Token mit Schreibrechten verfuegbar');
+    if (!token) {
+        log('ERROR: Kein Token verfügbar (weder access_token noch GITHUB_DEFAULT_TOKEN)');
+        throw new Error('Kein GitHub-Token mit Schreibrechten verfuegbar');
+    }
+    log(`Token source: ${integration.access_token ? 'github_integration' : 'GITHUB_DEFAULT_TOKEN'} prefix=${token.slice(0, 8)}...`);
 
     const client = new Octokit({ auth: token });
     const owner = integration.repo_owner;
@@ -100,29 +106,34 @@ async function commitFilesAsPR(integration, payload) {
     if (!baseBranch) {
         const repoInfo = await client.repos.get({ owner, repo });
         baseBranch = repoInfo.data.default_branch || 'main';
+        log(`Base-Branch: ${baseBranch}`);
     }
 
     // SHA des Default-Branch holen
+    log(`Hole baseRef heads/${baseBranch}...`);
     const baseRef = await client.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
     const baseSha = baseRef.data.object.sha;
+    log(`Base SHA: ${baseSha.slice(0, 7)}`);
 
-    // Branch anlegen (eindeutigen Namen sichern)
+    // Branch anlegen
     let branch = (payload.branchName || `bot/coding-${Date.now()}`).replace(/[^a-zA-Z0-9._\-/]/g, '-').slice(0, 200);
+    log(`Erstelle Branch: ${branch}`);
     try {
         await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
     } catch (e) {
-        // Wenn Branch existiert -> Suffix anhaengen
+        log(`Branch existiert bereits, verwende Suffix: ${e.status} ${e.message?.slice(0, 100)}`);
         branch = `${branch}-${Date.now()}`;
         await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
     }
+    log(`Branch erstellt: ${branch}`);
 
-    // Files committen (eine Datei pro API-Call - simpel, ausreichend fuer kleine Patches)
+    // Files committen
     let lastCommitSha = baseSha;
     for (const f of payload.files || []) {
-        if (!f.path) continue;
+        if (!f.path) { log(`  SKIP file: kein path`, f.action); continue; }
         const action = f.action || 'update';
+        log(`  File: ${action} ${f.path} (${(f.content || '').length} bytes)`);
         if (action === 'delete') {
-            // SHA der existierenden Datei holen
             try {
                 const existing = await client.repos.getContent({ owner, repo, path: f.path, ref: branch });
                 if (!Array.isArray(existing.data) && existing.data.sha) {
@@ -132,16 +143,16 @@ async function commitFilesAsPR(integration, payload) {
                         sha: existing.data.sha
                     });
                     lastCommitSha = r.data.commit?.sha || lastCommitSha;
+                    log(`  DELETE ok: ${f.path}`);
                 }
-            } catch (_) { /* nicht vorhanden -> ignorieren */ }
+            } catch (_) { log(`  DELETE skip (nicht vorhanden): ${f.path}`); }
             continue;
         }
-        // create / update
         let existingSha = undefined;
         try {
             const existing = await client.repos.getContent({ owner, repo, path: f.path, ref: branch });
             if (!Array.isArray(existing.data) && existing.data.sha) existingSha = existing.data.sha;
-        } catch (_) { /* neu */ }
+        } catch (_) {}
         const r = await client.repos.createOrUpdateFileContents({
             owner, repo, path: f.path, branch,
             message: `${payload.commitMessage?.split('\n')[0] || 'bot: changes'} (${f.path})`,
@@ -149,9 +160,11 @@ async function commitFilesAsPR(integration, payload) {
             sha: existingSha
         });
         lastCommitSha = r.data.commit?.sha || lastCommitSha;
+        log(`  COMMIT ok: ${f.path} sha=${lastCommitSha?.slice(0, 7)}`);
     }
 
     // Pull Request anlegen
+    log(`Erstelle PR: "${(payload.prTitle || '').slice(0, 80)}"`);
     const pr = await client.pulls.create({
         owner, repo,
         title: payload.prTitle || (payload.commitMessage?.split('\n')[0] || 'Coding-Bot Changes'),
@@ -159,6 +172,7 @@ async function commitFilesAsPR(integration, payload) {
         base: baseBranch,
         body: payload.prBody || ''
     });
+    log(`PR ERSTELLT | #${pr.data.number} ${pr.data.html_url}`);
 
     return {
         prUrl: pr.data.html_url,

@@ -18,6 +18,22 @@ function init({ db, io }) {
     ioRef = io;
 }
 
+// ----- Logging -----
+function wfLog(level, msg, data) {
+    const ts = new Date().toISOString();
+    const prefix = `[WF:${level}] ${ts}`;
+    if (data !== undefined) {
+        const extra = typeof data === 'string' ? data : JSON.stringify(data).slice(0, 4000);
+        console.log(`${prefix} ${msg} | ${extra}`);
+    } else {
+        console.log(`${prefix} ${msg}`);
+    }
+}
+function wfInfo(msg, data) { wfLog('INFO', msg, data); }
+function wfWarn(msg, data) { wfLog('WARN', msg, data); }
+function wfError(msg, data) { wfLog('ERROR', msg, data); }
+function wfDebug(msg, data) { wfLog('DEBUG', msg, data); }
+
 function getRow(sql, params) {
     return new Promise((resolve, reject) => {
         dbRef.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
@@ -62,9 +78,12 @@ async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, r
         try { extra = JSON.parse(staff.ai_extra_config); } catch (_) {}
     }
 
+    wfInfo(`AI-Call start | provider=${provider} model=${model || 'default'} temp=${temperature} maxTokens=${maxTokens || 'default'} staff="${staff.name}" sysPrompt_len=${finalSystem.length} userPrompt_len=${userPrompt.length} retries=${retries}`);
+
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
+            if (attempt > 0) wfWarn(`AI-Call retry ${attempt}/${retries}`, lastErr?.message);
             const r = await aiClient.chat({
                 provider, model, temperature, maxTokens,
                 system: finalSystem,
@@ -73,12 +92,21 @@ async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, r
                 extra
             });
             const parsed = json ? aiClient.tryParseJson(r.text) : null;
+            wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'}`);
+            if (json && !parsed) {
+                wfWarn(`AI-Call JSON parse failed | raw_preview=${r.text?.slice(0, 300)}`);
+            }
             return { ...r, parsed };
         } catch (e) {
             lastErr = e;
-            await new Promise(res => setTimeout(res, 500 * Math.pow(2, attempt)));
+            wfWarn(`AI-Call attempt ${attempt} failed`, e.message);
+            if (attempt < retries) {
+                const delay = 500 * Math.pow(2, attempt);
+                await new Promise(res => setTimeout(res, delay));
+            }
         }
     }
+    wfError(`AI-Call all ${retries + 1} attempts failed`, lastErr?.message);
     throw lastErr;
 }
 
@@ -105,11 +133,13 @@ async function finishStep(stepId, { status, output, ai }) {
 }
 
 async function failStep(stepId, message) {
+    wfError(`Step fail stepId=${stepId}`, message);
     await run(`UPDATE ticket_workflow_steps SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP WHERE id = ?`,
         [String(message).slice(0, 2000), stepId]);
 }
 
 async function skipStep(runId, stage, sortOrder, reason) {
+    wfInfo(`Step skip | stage=${stage} reason=${reason}`);
     await run(`INSERT INTO ticket_workflow_steps
         (run_id, stage, sort_order, status, output_payload, created_at, finished_at)
         VALUES (?, ?, ?, 'skipped', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
@@ -134,6 +164,7 @@ function extraInfoSuffix(ctx) {
 }
 
 async function execTriage(ctx) {
+    wfInfo(`Stage:TRIAGE start | ticket=${ctx.ticket.id} title="${(ctx.ticket.title || '').slice(0, 80)}"`);
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
     const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
@@ -142,10 +173,12 @@ async function execTriage(ctx) {
         await run('UPDATE tickets SET system_id = ? WHERE id = ?', [out.system_id, ctx.ticket.id]);
     }
     ctx.triage = out;
+    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'}`, out.reason);
     return { output: out, ai: r };
 }
 
 async function execSecurity(ctx) {
+    wfInfo(`Stage:SECURITY start | ticket=${ctx.ticket.id}`);
     const pre = redact(ctx.ticket.description || '');
     const userPrompt = prompts.SECURITY.buildUser({
         ticket: { ...ctx.ticket, triage_summary: ctx.triage?.summary, triage_action: ctx.triage?.suggested_action },
@@ -164,16 +197,20 @@ async function execSecurity(ctx) {
         { kind: 'redacted_description', filename: 'redacted_description.md', content: redacted },
         { kind: 'coding_prompt', filename: 'coding_prompt.md', content: codingPrompt }
     ];
+    wfInfo(`Stage:SECURITY done | coding_prompt_len=${codingPrompt.length} redacted_len=${redacted.length}`);
     return { output: out, ai: r };
 }
 
 async function execPlanning(ctx) {
+    wfInfo(`Stage:PLANNING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'}`);
     const integration = await getRow(`SELECT gi.* FROM github_integration gi
         INNER JOIN projects p ON p.id = gi.project_id
         WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    wfInfo(`Stage:PLANNING integration lookup | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token}`);
     const repoCtx = await fetchRepoContext(integration);
     ctx.repo_context = repoCtx.repoContext;
     ctx.repo_source = repoCtx.source;
+    wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
 
     const userPrompt = prompts.PLANNING.buildUser({
         ticket: { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt },
@@ -188,14 +225,17 @@ async function execPlanning(ctx) {
     ctx._artifacts = [
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
     ];
+    wfInfo(`Stage:PLANNING done | steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'}`);
     return { output: out, ai: r };
 }
 
 async function execIntegration(ctx) {
+    wfInfo(`Stage:INTEGRATION start | ticket=${ctx.ticket.id}`);
     const projectDocsRows = await getAll(`SELECT pd.title, pd.content FROM project_documents pd
         INNER JOIN projects p ON p.id = pd.project_id
         WHERE p.system_id = ? LIMIT 20`, [ctx.ticket.system_id]);
     const projectDocs = projectDocsRows.map(d => `### ${d.title}\n\n${d.content || ''}`).join('\n---\n').slice(0, 60_000);
+    wfInfo(`Stage:INTEGRATION projectDocs | count=${projectDocsRows.length} combined_len=${projectDocs.length}`);
 
     const userPrompt = prompts.INTEGRATION.buildUser({
         ticket: ctx.ticket,
@@ -216,6 +256,7 @@ async function execIntegration(ctx) {
     ctx._artifacts = [
         { kind: 'integration_assessment', filename: 'integration_assessment.md', content: md }
     ];
+    wfInfo(`Stage:INTEGRATION done | verdict=${out.verdict} recommended_complexity=${out.recommended_complexity} rule_violations=${out.rule_violations?.length || 0} risks=${out.integration_risks?.length || 0}`);
     return { output: out, ai: r };
 }
 
@@ -274,35 +315,44 @@ function renderIntegrationMarkdown(asm) {
 
 async function loadDefaultWorkflow() {
     const wf = await getRow(`SELECT * FROM workflow_definitions WHERE is_default = 1 AND active = 1 LIMIT 1`, []);
-    if (!wf) return null;
+    if (!wf) { wfWarn('Kein Default-Workflow gefunden'); return null; }
     const stages = await getAll(`SELECT * FROM workflow_stages WHERE workflow_id = ? ORDER BY sort_order`, [wf.id]);
+    wfInfo(`Workflow geladen | id=${wf.id} stages=${stages.length} roles=${stages.map(s => s.role).join('→')}`);
     return { workflow: wf, stages };
 }
 
 async function startForTicket(ticketId) {
-    if ((process.env.AI_WORKFLOW_ENABLED || 'true').toLowerCase() !== 'true') return null;
+    if ((process.env.AI_WORKFLOW_ENABLED || 'true').toLowerCase() !== 'true') {
+        wfInfo(`startForTicket ticket=${ticketId} SKIP: AI_WORKFLOW_ENABLED=false`);
+        return null;
+    }
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [ticketId]);
-    if (!ticket) throw new Error('Ticket nicht gefunden');
-    if (ticket.workflow_run_id) return null; // bereits gestartet
+    if (!ticket) { wfError(`startForTicket ticket=${ticketId} NOT FOUND`); throw new Error('Ticket nicht gefunden'); }
+    if (ticket.workflow_run_id) {
+        wfInfo(`startForTicket ticket=${ticketId} SKIP: bereits run_id=${ticket.workflow_run_id}`);
+        return null;
+    }
 
-    // Pro System abschaltbar
     if (ticket.system_id) {
         const sys = await getRow('SELECT ai_workflow_enabled FROM systems WHERE id = ?', [ticket.system_id]);
-        if (sys && sys.ai_workflow_enabled === 0) return null;
+        if (sys && sys.ai_workflow_enabled === 0) {
+            wfInfo(`startForTicket ticket=${ticketId} SKIP: system_id=${ticket.system_id} hat ai_workflow_enabled=0`);
+            return null;
+        }
     }
 
     const wf = await loadDefaultWorkflow();
-    if (!wf) return null;
+    if (!wf) { wfWarn(`startForTicket ticket=${ticketId} SKIP: kein Workflow`); return null; }
 
     const runRes = await run(`INSERT INTO ticket_workflow_runs (ticket_id, workflow_id, status, current_stage)
         VALUES (?, ?, 'running', ?)`, [ticketId, wf.workflow.id, wf.stages[0].role]);
     const runId = runRes.lastID;
     await run('UPDATE tickets SET workflow_run_id = ? WHERE id = ?', [runId, ticketId]);
     emit('workflow:started', { ticketId, runId });
+    wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'}`);
 
-    // Asynchron weiterlaufen
     runStages(runId, ticket, wf.stages).catch(async (err) => {
-        console.error('Workflow-Engine Fehler:', err);
+        wfError(`Workflow-Engine FATAL ticket=${ticketId} run=${runId}`, err.message);
         try {
             await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
                 [String(err.message || err).slice(0, 500), runId]);
@@ -316,12 +366,11 @@ async function startForTicket(ticketId) {
 async function runStages(runId, initialTicket, stages, ctxExtras) {
     const ctx = { ticket: { ...initialTicket }, ...(ctxExtras || {}) };
     let triageDecision = null;
+    wfInfo(`runStages start | run=${runId} ticket=${initialTicket.id} stages=${stages.map(s => s.role).join('→')} extraInfo=${ctx.extra_info ? 'yes' : 'no'}`);
 
     for (const stage of stages) {
-        // Ticket nachladen, damit Updates aus vorigen Stages sichtbar sind
         ctx.ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [initialTicket.id]);
 
-        // Skip-Logik: wenn Triage = unclear -> Stage 2-4 ueberspringen
         if (triageDecision === 'unclear' && ['security', 'planning', 'integration'].includes(stage.role)) {
             await skipStep(runId, stage.role, stage.sort_order, 'triage_unclear');
             emit('workflow:step', { runId, stage: stage.role, status: 'skipped' });
@@ -330,9 +379,9 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
 
         await run('UPDATE ticket_workflow_runs SET current_stage = ? WHERE id = ?', [stage.role, runId]);
 
-        // Mitarbeiter waehlen
         const staff = await pickStaff(stage.role, stage.executor_kind);
         if (!staff) {
+            wfWarn(`runStages NO_STAFF | run=${runId} stage=${stage.role} kind=${stage.executor_kind}`);
             const stepId = await startStep(runId, stage.role, stage.sort_order, null);
             await failStep(stepId, `Kein Mitarbeiter mit Rolle "${stage.role}" verfuegbar`);
             await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
@@ -342,11 +391,12 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
         }
 
         ctx.staff = staff;
+        wfInfo(`runStages stage=${stage.role} | staff="${staff.name}" id=${staff.id} kind=${staff.kind} ${staff.kind === 'ai' ? 'provider=' + (staff.ai_provider || 'default') + ' auto_commit=' + (staff.auto_commit_enabled || 0) : ''}`);
         const stepId = await startStep(runId, stage.role, stage.sort_order, staff);
         emit('workflow:step', { runId, stage: stage.role, status: 'in_progress', staff_id: staff.id });
 
-        // Bei menschlichen Stages -> auf Entscheidung warten
         if (staff.kind === 'human') {
+            wfInfo(`runStages WAITING_HUMAN | run=${runId} stage=${stage.role} staff="${staff.name}"`);
             await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [stepId]);
             await run(`UPDATE ticket_workflow_runs SET status='waiting_human' WHERE id = ?`, [runId]);
             await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [staff.id, initialTicket.id]);
@@ -354,7 +404,6 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             return;
         }
 
-        // KI-Stage ausfuehren
         try {
             let result;
             if (stage.role === 'triage')         result = await execTriage(ctx);
@@ -362,42 +411,37 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             else if (stage.role === 'planning')  result = await execPlanning(ctx);
             else if (stage.role === 'integration') result = await execIntegration(ctx);
             else if (stage.role === 'approval') {
-                // Approval als KI ist erlaubt aber unueblich
                 result = { output: { verdict: 'approved', note: 'AI auto-approval' }, ai: null };
                 await run(`UPDATE tickets SET final_decision='approved' WHERE id = ?`, [initialTicket.id]);
+                wfInfo(`runStages AI-APPROVAL | ticket=${initialTicket.id}`);
             } else {
                 throw new Error(`Unbekannte Stage-Rolle: ${stage.role}`);
             }
             await finishStep(stepId, { status: 'done', output: result.output, ai: result.ai });
-            // Artefakte aus ctx persistieren
             if (Array.isArray(ctx._artifacts) && ctx._artifacts.length) {
+                wfInfo(`runStages artifacts | stage=${stage.role} count=${ctx._artifacts.length}`);
                 for (const a of ctx._artifacts) {
                     try {
                         await saveArtifact({
-                            ticketId: ctx.ticket.id,
-                            runId,
-                            stepId,
-                            stage: stage.role,
-                            kind: a.kind,
-                            filename: a.filename,
-                            mimeType: a.mimeType || 'text/markdown',
-                            content: a.content
+                            ticketId: ctx.ticket.id, runId, stepId, stage: stage.role,
+                            kind: a.kind, filename: a.filename,
+                            mimeType: a.mimeType || 'text/markdown', content: a.content
                         });
                     } catch (e) {
-                        console.error('Artifact save failed:', e.message);
+                        wfError('Artifact save failed', e.message);
                     }
                 }
                 ctx._artifacts = [];
             }
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
 
-            // extra_info nur fuer die erste Stage anwenden (z.B. Re-Run mit Zusatzinfo)
             if (ctx.extra_info) delete ctx.extra_info;
 
             if (stage.role === 'triage' && result.output?.decision === 'unclear') {
                 triageDecision = 'unclear';
             }
         } catch (e) {
+            wfError(`runStages STAGE_FAILED | run=${runId} stage=${stage.role}`, e.message);
             await failStep(stepId, e.message || String(e));
             await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
                 [`stage_failed:${stage.role}`, runId]);
@@ -406,13 +450,13 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
         }
     }
 
-    // Falls Approval-Stage durchgelaufen ist (KI), Run completen
     await run(`UPDATE ticket_workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, result=COALESCE(result,'completed') WHERE id = ?`, [runId]);
+    wfInfo(`WORKFLOW COMPLETED | run=${runId} ticket=${initialTicket.id}`);
     emit('workflow:completed', { runId, ticketId: initialTicket.id });
 }
 
-// Vom Approver aufgerufen, um den wartenden Step zu entscheiden und ggf. zur naechsten Stage weiterzugehen.
 async function decideHumanStep(runId, stepId, decision, note, actor) {
+    wfInfo(`decideHumanStep | run=${runId} step=${stepId} decision="${decision}" note="${(note || '').slice(0, 100)}" actor=${actor}`);
     const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
@@ -423,13 +467,12 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
 
     if (step.stage === 'approval') {
-        // Phase ermitteln: Dispatch (vor Coding) oder Final (nach Coding)
         const codingDone = await getRow(
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
         const isDispatchPhase = (codingDone?.c || 0) === 0;
+        wfInfo(`decideHumanStep APPROVAL | run=${runId} isDispatch=${isDispatchPhase} codingDone=${codingDone?.c || 0}`);
 
-        // Dispatch -> Coding-Bot starten
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
             const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
             const output = {
@@ -439,17 +482,17 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             await finishStep(stepId, { status: 'done', output, ai: null });
             await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
             emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
+            wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel} note="${(note || '').slice(0, 100)}"`);
             runCodingStage(runId, ticket, codingLevel, step).catch(err => {
-                console.error('Coding-Stage Fehler:', err);
+                wfError(`Coding-Stage Fehler run=${runId}`, err.message);
             });
             return { status: 'coding_dispatched', coding_level: codingLevel };
         }
 
-        // Final-Phase: Re-Dispatch (rework) -> alte Coding-Steps "verwerfen", neuen Approval-Step (Dispatch) anlegen
         if (!isDispatchPhase && decision === 'rework') {
+            wfInfo(`decideHumanStep REWORK | run=${runId} ticket=${ticket.id}`);
             const output = { decision: 'rework', note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
             await finishStep(stepId, { status: 'done', output, ai: null });
-            // Vorherige Coding-Done-Steps als 'skipped' markieren -> isDispatchPhase wird wieder true
             await run(`UPDATE ticket_workflow_steps SET status='skipped'
                        WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
             const approverStaff = await pickStaff('approval', 'human');
@@ -461,11 +504,9 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             return { status: 'rework_started' };
         }
 
-        // Standard-Beendigung (approved / rejected / unclear / handoff)
         const finalDecisions = ['approved', 'rejected', 'unclear', 'handoff'];
-        if (!finalDecisions.includes(decision)) {
-            throw new Error('Entscheidung in dieser Phase nicht erlaubt');
-        }
+        if (!finalDecisions.includes(decision)) throw new Error('Entscheidung in dieser Phase nicht erlaubt');
+        wfInfo(`decideHumanStep FINAL | run=${runId} decision=${decision}`);
         const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
         await finishStep(stepId, { status: 'done', output, ai: null });
         await dbRef.run('UPDATE tickets SET final_decision = ? WHERE id = ?', [decision, ticket.id]);
@@ -475,19 +516,19 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
         return { status: 'completed', result: decision };
     }
 
-    // Andere Stages (z.B. menschliche Triage): standard finish + weiterlaufen
+    wfInfo(`decideHumanStep OTHER | run=${runId} stage=${step.stage} decision=${decision}`);
     const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
     await finishStep(stepId, { status: 'done', output, ai: null });
     const wf = await loadDefaultWorkflow();
     const remaining = wf.stages.filter(s => s.sort_order > step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status='running' WHERE id = ?`, [runId]);
     runStages(runId, ticket, remaining).catch(err => {
-        console.error('Workflow Resume Fehler:', err);
+        wfError('Workflow Resume Fehler', err.message);
     });
     return { status: 'resumed' };
 }
 
-// --- Coding-Stage (dynamisch nach Dispatch-Approval angelegt) ---
+// --- Coding-Stage ---
 
 function renderCodingMarkdown(out, level) {
     const lines = [`### Coding-Bot Ergebnis (Level: \`${level}\`)`];
@@ -512,10 +553,14 @@ function renderCodingMarkdown(out, level) {
 }
 
 async function execCoding(ctx, codingLevel) {
+    wfInfo(`Stage:CODING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'} level=${codingLevel} hasApproverNote=${!!ctx.approverNote} hasExtraInfo=${!!ctx.extra_info}`);
     const integration = await getRow(`SELECT gi.* FROM github_integration gi
         INNER JOIN projects p ON p.id = gi.project_id
         WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
+
     const repoCtx = await fetchRepoContext(integration);
+    wfInfo(`Stage:CODING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
 
     const userPrompt = prompts.CODING.buildUser({
         ticket: ctx.ticket,
@@ -528,6 +573,7 @@ async function execCoding(ctx, codingLevel) {
         approverDecision: ctx.approverDecision || null,
         extraInfo: ctx.extra_info || null
     });
+    wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {
         commit_message: 'WIP: ticket #' + ctx.ticket.id,
@@ -536,6 +582,12 @@ async function execCoding(ctx, codingLevel) {
         test_plan: [],
         risks: ['AI-Antwort nicht parsebar']
     };
+    wfInfo(`Stage:CODING parsed | parsed=${!!r.parsed} files_count=${out.files?.length || 0} commit_msg_len=${(out.commit_message || '').length} summary_len=${(out.summary || '').length}`);
+    if (Array.isArray(out.files)) {
+        out.files.forEach((f, i) => {
+            wfDebug(`Stage:CODING file[${i}] | action=${f.action || '?'} path=${f.path} content_len=${f.content?.length || 0}`);
+        });
+    }
     out.coding_level = codingLevel;
     out.markdown = renderCodingMarkdown(out, codingLevel);
 
@@ -544,9 +596,7 @@ async function execCoding(ctx, codingLevel) {
         ctx._artifacts.push({ kind: 'commit_message', filename: 'COMMIT_MSG.md', content: out.commit_message });
     }
     if (Array.isArray(out.test_plan) && out.test_plan.length) {
-        const tp = out.test_plan
-            .map((t, i) => `${i + 1}. ${t.step || ''}\n   Erwartet: ${t.expected || ''}`)
-            .join('\n\n');
+        const tp = out.test_plan.map((t, i) => `${i + 1}. ${t.step || ''}\n   Erwartet: ${t.expected || ''}`).join('\n\n');
         ctx._artifacts.push({ kind: 'test_plan', filename: 'TEST_PLAN.md', content: tp });
     }
     if (out.patch) {
@@ -557,18 +607,20 @@ async function execCoding(ctx, codingLevel) {
             if (f.path && (f.content || f.action === 'delete')) {
                 const safe = String(f.path).replace(/[^a-zA-Z0-9._/\-]/g, '_').slice(0, 200);
                 ctx._artifacts.push({
-                    kind: 'code_file',
-                    filename: 'files/' + safe,
-                    mimeType: 'text/plain',
-                    content: f.content || `(deleted: ${f.path})`
+                    kind: 'code_file', filename: 'files/' + safe,
+                    mimeType: 'text/plain', content: f.content || `(deleted: ${f.path})`
                 });
             }
         });
     }
 
-    // Optional: echter Pull Request
+    // PR-Erstellung
+    const tokenSource = integration?.access_token ? 'github_integration.access_token' : (process.env.GITHUB_DEFAULT_TOKEN ? 'GITHUB_DEFAULT_TOKEN' : 'none');
     const autoPrEnabled = (process.env.AI_CODING_AUTO_PR || 'true').toLowerCase() !== 'false';
+    wfInfo(`Stage:CODING PR-CHECK | autoPrEnabled=${autoPrEnabled} integration=${!!integration} auto_commit=${!!ctx.staff?.auto_commit_enabled} hasFiles=${Array.isArray(out.files) && out.files.length > 0} tokenSource=${tokenSource}`);
+
     if (autoPrEnabled && integration && ctx.staff.auto_commit_enabled && Array.isArray(out.files) && out.files.length) {
+        wfInfo(`Stage:CODING PR-CREATE | branch=${out.branch_name || 'auto'} files=${out.files.length}`);
         try {
             const slug = String(ctx.ticket.title || 'change').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
             const pr = await commitFilesAsPR(integration, {
@@ -582,18 +634,21 @@ async function execCoding(ctx, codingLevel) {
             out.pr_number = pr.prNumber;
             out.branch = pr.branch;
             out.markdown += `\n\n**Pull Request:** [#${pr.prNumber}](${pr.prUrl}) — Branch \`${pr.branch}\``;
+            wfInfo(`Stage:CODING PR-CREATED | pr=${pr.prNumber} url=${pr.prUrl} branch=${pr.branch}`);
         } catch (e) {
             out.pr_error = e.message;
             out.markdown += `\n\n_⚠️ PR-Erstellung fehlgeschlagen: ${e.message}_`;
+            wfError(`Stage:CODING PR-FAILED`, e.message);
         }
     } else {
         const reasons = [];
-        if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR deaktiviert');
-        if (!integration) reasons.push('Keine GitHub-Integration für dieses Projekt konfiguriert');
-        if (!ctx.staff?.auto_commit_enabled) reasons.push('auto_commit_enabled=0 für Coding-Bot ' + (ctx.staff?.name || ''));
-        if (!Array.isArray(out.files) || !out.files.length) reasons.push('Coding-Antwort enthielt keine Dateien (parse fehlgeschlagen?)');
+        if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR=false');
+        if (!integration) reasons.push('Keine github_integration für project.system_id=' + (ctx.ticket.system_id || 'null'));
+        if (!ctx.staff?.auto_commit_enabled) reasons.push('auto_commit_enabled=0 für Bot "' + (ctx.staff?.name || '?') + '" (id=' + (ctx.staff?.id || '?') + ')');
+        if (!Array.isArray(out.files) || !out.files.length) reasons.push('Coding-Antwort enthielt keine Dateien (out.files leer)');
         if (reasons.length) {
             out.markdown += `\n\n_ℹ️ PR-Erstellung übersprungen: ${reasons.join('; ')}_`;
+            wfWarn(`Stage:CODING PR-SKIPPED`, reasons.join(' | '));
         }
     }
 
@@ -602,20 +657,23 @@ async function execCoding(ctx, codingLevel) {
 
 async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     const ctx = { ticket };
-    // Approver-Notiz aus dem Dispatch-Step extrahieren (output_payload ist JSON-String)
+    wfInfo(`runCodingStage | run=${runId} ticket=${ticket.id} level=${codingLevel} hasAfterStep=${!!afterStep} hasOutputPayload=${!!afterStep?.output_payload}`);
     if (afterStep?.output_payload) {
         try {
             const payload = typeof afterStep.output_payload === 'string'
                 ? JSON.parse(afterStep.output_payload)
                 : afterStep.output_payload;
-            if (payload.note) ctx.approverNote = payload.note;
-            if (payload.decision) ctx.approverDecision = payload.decision;
-        } catch (_) {}
+            if (payload.note) { ctx.approverNote = payload.note; wfInfo(`runCodingStage APPROVER NOTE | len=${payload.note.length}`); }
+            if (payload.decision) { ctx.approverDecision = payload.decision; wfInfo(`runCodingStage APPROVER DECISION | ${payload.decision}`); }
+        } catch (e) { wfWarn(`runCodingStage output_payload parse error`, e.message); }
+    } else {
+        wfWarn(`runCodingStage | Kein output_payload im afterStep – Approver-Notiz geht verloren!`);
     }
     const staff = await pickStaff('coding', 'ai', { codingLevel });
     const sortOrder = (afterStep?.sort_order || 5) + 1;
 
     if (!staff) {
+        wfWarn(`runCodingStage NO_STAFF | run=${runId} level=${codingLevel}`);
         const stepId = await startStep(runId, 'coding', sortOrder, null);
         await failStep(stepId, `Kein Coding-Bot mit Level "${codingLevel}" verfuegbar`);
         await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
@@ -625,6 +683,7 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     }
 
     ctx.staff = staff;
+    wfInfo(`runCodingStage BOT | "${staff.name}" id=${staff.id} provider=${staff.ai_provider || 'default'} auto_commit=${staff.auto_commit_enabled || 0}`);
     const stepId = await startStep(runId, 'coding', sortOrder, staff);
     emit('workflow:step', { runId, stage: 'coding', status: 'in_progress', staff_id: staff.id, level: codingLevel });
 
@@ -640,14 +699,13 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
                         mimeType: a.mimeType || 'text/markdown', content: a.content
                     });
                 } catch (e) {
-                    console.error('Artifact save failed:', e.message);
+                    wfError('Artifact save failed', e.message);
                 }
             }
             ctx._artifacts = [];
         }
         emit('workflow:step', { runId, stage: 'coding', status: 'done' });
 
-        // Final-Approval-Step anlegen (waiting_human)
         const approverStaff = await pickStaff('approval', 'human');
         const finalSort = sortOrder + 1;
         const finalStepId = await startStep(runId, 'approval', finalSort, approverStaff);
@@ -656,8 +714,10 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
         if (approverStaff) {
             await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ctx.ticket.id]);
         }
+        wfInfo(`runCodingStage FINAL-APPROVAL | run=${runId} approver="${approverStaff?.name || 'none'}"`);
         emit('workflow:waiting_human', { runId, ticketId: ctx.ticket.id, stepId: finalStepId, stage: 'approval', phase: 'final' });
     } catch (e) {
+        wfError(`runCodingStage FAILED | run=${runId}`, e.message);
         await failStep(stepId, e.message || String(e));
         await run(`UPDATE ticket_workflow_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
             ['coding_failed', runId]);
@@ -667,31 +727,19 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
 
 module.exports = { init, startForTicket, decideHumanStep, rerunStage };
 
-/**
- * Re-Run einer abgeschlossenen Stage mit Zusatzinformation.
- * - markiert den vorhandenen Step als 'superseded' (status 'skipped' + Vermerk im output)
- * - markiert alle nachfolgenden Steps (sort_order > step.sort_order, ausser 'coding' done)
- *   als 'skipped'
- * - setzt run.status auf 'running' und ruft runStages mit allen folgenden Stages
- *   ab inkl. der re-run-Stage selbst auf, mit ctx.extra_info als Zusatztext
- */
 async function rerunStage(runId, stepId, extraInfo, actor) {
+    wfInfo(`rerunStage | run=${runId} step=${stepId} extraInfo_len=${(extraInfo || '').length} actor=${actor}`);
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
     const allowedStages = ['triage', 'security', 'planning', 'integration'];
-    if (!allowedStages.includes(step.stage)) {
-        throw new Error('Re-Run nur fuer Triage/Security/Planning/Integration moeglich');
-    }
-    if (step.status !== 'done') {
-        throw new Error('Nur abgeschlossene Steps koennen erneut ausgefuehrt werden');
-    }
+    if (!allowedStages.includes(step.stage)) throw new Error('Re-Run nur fuer Triage/Security/Planning/Integration moeglich');
+    if (step.status !== 'done') throw new Error('Nur abgeschlossene Steps koennen erneut ausgefuehrt werden');
     const info = String(extraInfo || '').trim();
     if (!info) throw new Error('Zusatzinformation darf nicht leer sein');
 
     const run_ = await getRow('SELECT * FROM ticket_workflow_runs WHERE id = ?', [runId]);
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
 
-    // Alten Step inkl. Output bekommen, dann als superseded markieren
     let prevOutput = null;
     if (step.output_payload) {
         try { prevOutput = JSON.parse(step.output_payload); } catch (_) {}
@@ -703,34 +751,23 @@ async function rerunStage(runId, stepId, extraInfo, actor) {
         _superseded_extra_info: info,
         _superseded_at: new Date().toISOString()
     };
-    await dbRef.run(
-        `UPDATE ticket_workflow_steps SET status = 'skipped', output_payload = ? WHERE id = ?`,
-        [JSON.stringify(supersededOutput), stepId]
-    );
-
-    // Nachfolgende Steps "verwerfen" (skipped). Coding-done bleibt erhalten,
-    // wird aber durch Re-Run der Stages 1-4 i.d.R. ohnehin durch erneuten
-    // Approver-Dispatch ersetzt; wir setzen es auf skipped, damit die
-    // Phase-Erkennung in decideHumanStep wieder Dispatch-Phase signalisiert.
-    await run(
-        `UPDATE ticket_workflow_steps SET status = 'skipped'
+    await dbRef.run(`UPDATE ticket_workflow_steps SET status = 'skipped', output_payload = ? WHERE id = ?`,
+        [JSON.stringify(supersededOutput), stepId]);
+    await run(`UPDATE ticket_workflow_steps SET status = 'skipped'
          WHERE run_id = ? AND sort_order > ?
            AND status IN ('done','waiting_human','failed','in_progress','pending')`,
-        [runId, step.sort_order]
-    );
+        [runId, step.sort_order]);
 
     emit('workflow:rerun', { runId, ticketId: ticket.id, stage: step.stage, stepId });
 
-    // Workflow-Definition laden und ab dieser Stage durchlaufen
     const wf = await loadDefaultWorkflow();
     if (!wf) throw new Error('Kein Default-Workflow gefunden');
     const remaining = wf.stages.filter(s => s.sort_order >= step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status = 'running', current_stage = ?, finished_at = NULL, result = NULL WHERE id = ?`,
         [step.stage, runId]);
 
-    // Asynchron weiterlaufen
     runStages(runId, ticket, remaining, { extra_info: info }).catch(err => {
-        console.error('Workflow Re-Run Fehler:', err);
+        wfError('Workflow Re-Run Fehler', err.message);
     });
 
     return { status: 'rerun_started', stage: step.stage };
