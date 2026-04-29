@@ -50,6 +50,39 @@ async function seed() {
             }
         }
 
+        // 1b. AI-Coding-Bots anlegen
+        console.log('Erstelle AI-Coding-Bots...');
+        const aiBots = [
+            { name: 'Coding-Bot (DeepSeek)', email: 'bot-deepseek@ticketsystem.local',
+              kind: 'ai', ai_provider: 'deepseek', coding_level: 'medium', auto_commit_enabled: 1 },
+            { name: 'Coding-Bot (Ollama)', email: 'bot-ollama@ticketsystem.local',
+              kind: 'ai', ai_provider: 'ollama', ai_model: 'gemma3:12b', coding_level: 'high', auto_commit_enabled: 1 }
+        ];
+        for (const bot of aiBots) {
+            try {
+                await runQuery(`INSERT INTO staff (name, email, kind, ai_provider, ai_model, coding_level, auto_commit_enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    [bot.name, bot.email, bot.kind, bot.ai_provider, bot.ai_model, bot.coding_level, bot.auto_commit_enabled]);
+                console.log(`AI-Bot ${bot.name} hinzugefügt.`);
+            } catch (err) {
+                console.log(`AI-Bot ${bot.name} existiert bereits: ${err.message}`);
+            }
+        }
+
+        // Workflow-Rollen für AI-Bots zuweisen
+        const botRows = await getQuery("SELECT id, name, coding_level FROM staff WHERE kind = 'ai'");
+        const allRoles = ['triage', 'security', 'planning', 'integration', 'approval', 'coding'];
+        for (const bot of botRows) {
+            // Coding-Bots bekommen passende Rollen, aber NICHT approval (macht Mensch)
+            const roles = bot.coding_level === 'high' ? ['triage','security','planning','integration','coding'] : ['triage','coding'];
+            for (const role of roles) {
+                try {
+                    await runQuery(`INSERT OR IGNORE INTO staff_roles (staff_id, role) VALUES (?, ?)`, [bot.id, role]);
+                } catch (_) {}
+            }
+        }
+        console.log('Workflow-Rollen für AI-Bots zugewiesen.');
+
         // 2. Systeme einfügen
         for (const sys of systems) {
             try {
