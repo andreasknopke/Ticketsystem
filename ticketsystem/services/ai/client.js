@@ -306,14 +306,36 @@ async function callCopilot(opts) {
 
 function tryParseJson(text) {
     if (!text) return null;
-    // Strip code fences ```json ... ```
     let s = text.trim();
-    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    if (fence) s = fence[1];
+
+    // Strip code fences: ```json ... ``` with possible trailing text
+    const fenceMatch = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch) s = fenceMatch[1].trim();
+
     try { return JSON.parse(s); } catch (_) {}
-    // Versuche, ersten {...}-Block zu extrahieren
-    const m = s.match(/\{[\s\S]*\}/);
-    if (m) { try { return JSON.parse(m[0]); } catch (_) {} }
+
+    // Try to extract the first complete { ... } block (non-greedy nested extraction)
+    const braceMatch = extractFirstJsonObject(s);
+    if (braceMatch) {
+        try { return JSON.parse(braceMatch); } catch (_) {}
+    }
+
+    return null;
+}
+
+function extractFirstJsonObject(str) {
+    let depth = 0, start = -1;
+    for (let i = 0; i < str.length; i++) {
+        if (str[i] === '{') {
+            if (depth === 0) start = i;
+            depth++;
+        } else if (str[i] === '}') {
+            depth--;
+            if (depth === 0 && start >= 0) {
+                return str.substring(start, i + 1);
+            }
+        }
+    }
     return null;
 }
 

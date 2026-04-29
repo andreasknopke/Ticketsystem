@@ -586,8 +586,15 @@ async function execCoding(ctx, codingLevel) {
             out.pr_error = e.message;
             out.markdown += `\n\n_⚠️ PR-Erstellung fehlgeschlagen: ${e.message}_`;
         }
-    } else if (Array.isArray(out.files) && out.files.length && !ctx.staff.auto_commit_enabled) {
-        out.markdown += `\n\n_ℹ️ Auto-Commit für diesen Bot deaktiviert. Dateien stehen als Artefakte zum Download bereit._`;
+    } else {
+        const reasons = [];
+        if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR deaktiviert');
+        if (!integration) reasons.push('Keine GitHub-Integration für dieses Projekt konfiguriert');
+        if (!ctx.staff?.auto_commit_enabled) reasons.push('auto_commit_enabled=0 für Coding-Bot ' + (ctx.staff?.name || ''));
+        if (!Array.isArray(out.files) || !out.files.length) reasons.push('Coding-Antwort enthielt keine Dateien (parse fehlgeschlagen?)');
+        if (reasons.length) {
+            out.markdown += `\n\n_ℹ️ PR-Erstellung übersprungen: ${reasons.join('; ')}_`;
+        }
     }
 
     return { output: out, ai: r };
