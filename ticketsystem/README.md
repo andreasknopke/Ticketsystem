@@ -36,6 +36,16 @@ Ein leichtgewichtiges, webbasiertes Ticketsystem mit integriertem Projektmanagem
     - Webhook-Endpunkt mit HMAC-SHA256-Signaturprufung
     - Echtzeit-Benachrichtigungen bei Issue-Events via Socket.io
 
+### KI-gestuetzter Ticket-Workflow (NEU)
+- **Mensch oder KI-Bot:** Mitarbeiter koennen vom Typ `human` oder `ai` sein. KI-Bots werden pro Mitarbeiter mit Provider, Modell, Temperatur und optionalem System-Prompt-Override konfiguriert.
+- **Workflow-Profile (Rollen):** `triage` (Triage Reviewer), `security` (Security & Privacy Reviewer), `planning` (Solution Architect / Planner), `integration` (Integration / Architecture Reviewer), `approval` (Final Approver). Jeder Mitarbeiter kann mehrere Rollen uebernehmen.
+- **Round-Robin-Zuweisung:** Bei mehreren Kandidaten pro Rolle wird die naechste Stage automatisch round-robin verteilt.
+- **Auto-Trigger:** Neue Bug-/Feature-Tickets starten automatisch den Standard-Workflow `triage -> security -> planning -> integration -> approval`. Pro System abschaltbar (`systems.ai_workflow_enabled`).
+- **Triage "unklar":** Bei unklarem Ticket wird direkt zur Final-Approver-Stage gesprungen; ein menschlicher Approver entscheidet ueber Rueckfrage / Reject / Handoff.
+- **Security & Redaction:** Vor jedem KI-Aufruf werden PII/Secrets per Default-Regex (E-Mail, IBAN, Tokens, AWS-Keys, IPs, Telefon, Bearer, JWT, etc.) redigiert. Erweiterbar via `AI_REDACTION_PATTERNS_FILE` (JSON-Liste).
+- **GitHub-Read-Only:** Planning- und Integration-Stage lesen `README.md` und `docs/*.md` aus dem mit dem Ticket-System verknuepften Repository (read-only, max 200 KB).
+- **Provider-Allowlist:** Outbound-HTTP nur an konfigurierte Provider-Hosts. Token- und Timeout-Limits per ENV.
+
 ## Tech Stack
 
 - **Runtime:** [Node.js](https://nodejs.org/)
@@ -101,7 +111,42 @@ EMAIL_NOTIFY_NEW=true
 EMAIL_NOTIFY_STATUS=true
 EMAIL_NOTIFY_ASSIGN=true
 EMAIL_NOTIFY_COMMENT=true
+
+# --- KI-Workflow ---
+AI_WORKFLOW_ENABLED=true
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai_local
+AI_WORKFLOW_MAX_RETRIES=2
+AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
+AI_WORKFLOW_MAX_TOKENS=2048
+AI_REDACTION_PATTERNS_FILE=             # optional, Pfad zu JSON-Datei
+
+# DeepSeek
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+
+# Ollama (lokal)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1
+
+# Lokales OpenAI-kompatibles LLM (z. B. LM Studio, vLLM)
+OPENAI_LOCAL_BASE_URL=http://localhost:8000/v1
+OPENAI_LOCAL_API_KEY=
+OPENAI_LOCAL_MODEL=local-model
+
+# Optionaler Fallback-GitHub-Token fuer Planning-Stage
+# (Vorrang: github_integration.access_token des Projekts)
+GITHUB_DEFAULT_TOKEN=
 ```
+
+#### Neue API-Endpunkte (KI-Workflow)
+
+- `GET  /api/ai/providers/health` — Live-Test aller konfigurierten KI-Provider (Admin).
+- `GET  /api/staff` / `POST /api/staff` — erweitert um `kind`, `ai_provider`, `ai_model`, `ai_temperature`, `ai_max_tokens`, `ai_system_prompt`, `ai_extra_config`, `roles[]`.
+- `POST /api/staff/:id/roles` — setzt die Workflow-Rollen eines Mitarbeiters (`triage` | `security` | `planning` | `integration` | `approval`).
+- `GET  /api/tickets/:id/workflow` — Run + alle Stage-Steps.
+- `POST /api/tickets/:id/workflow/restart` — Workflow neu starten (Admin).
+- `POST /api/tickets/:id/workflow/steps/:stepId/decision` — Entscheidung des menschlichen Approvers (`approved` | `rejected` | `unclear` | `handoff`).
 
 ### 5. Datenbank initialisieren (optional)
 

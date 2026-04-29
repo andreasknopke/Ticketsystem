@@ -27,6 +27,13 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { marked } = require('marked');
 const { Octokit } = require('@octokit/rest');
+const aiClient = require('./services/ai/client');
+const redactor = require('./services/ai/redact');
+const workflowEngine = require('./services/workflow/engine');
+
+if (process.env.AI_REDACTION_PATTERNS_FILE) {
+    redactor.loadExtraPatternsFromFile(process.env.AI_REDACTION_PATTERNS_FILE);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -627,7 +634,13 @@ function initDb() {
             { col: 'deadline', sql: 'ALTER TABLE tickets ADD COLUMN deadline DATETIME' },
             { col: 'first_responded_at', sql: 'ALTER TABLE tickets ADD COLUMN first_responded_at DATETIME' },
             { col: 'closed_at', sql: 'ALTER TABLE tickets ADD COLUMN closed_at DATETIME' },
-            { col: 'feedback_requested', sql: 'ALTER TABLE tickets ADD COLUMN feedback_requested INTEGER DEFAULT 0' }
+            { col: 'feedback_requested', sql: 'ALTER TABLE tickets ADD COLUMN feedback_requested INTEGER DEFAULT 0' },
+            { col: 'workflow_run_id', sql: 'ALTER TABLE tickets ADD COLUMN workflow_run_id INTEGER' },
+            { col: 'redacted_description', sql: 'ALTER TABLE tickets ADD COLUMN redacted_description TEXT' },
+            { col: 'coding_prompt', sql: 'ALTER TABLE tickets ADD COLUMN coding_prompt TEXT' },
+            { col: 'implementation_plan', sql: 'ALTER TABLE tickets ADD COLUMN implementation_plan TEXT' },
+            { col: 'integration_assessment', sql: 'ALTER TABLE tickets ADD COLUMN integration_assessment TEXT' },
+            { col: 'final_decision', sql: "ALTER TABLE tickets ADD COLUMN final_decision TEXT" }
         ];
 
         migrations.forEach(m => {
@@ -637,6 +650,179 @@ function initDb() {
                 });
             }
         });
+    });
+
+    // --- KI-Workflow: Erweiterungen Mitarbeiter & Systeme ---
+
+    db.all("PRAGMA table_info(staff)", (err, rows) => {
+        if (err) {
+            console.error('Fehler beim Pruefen der staff-Tabelle:', err.message);
+            return;
+        }
+        const cols = rows.map(r => r.name);
+        const staffMigrations = [
+            { col: 'kind', sql: "ALTER TABLE staff ADD COLUMN kind TEXT DEFAULT 'human'" },
+            { col: 'ai_provider', sql: 'ALTER TABLE staff ADD COLUMN ai_provider TEXT' },
+            { col: 'ai_model', sql: 'ALTER TABLE staff ADD COLUMN ai_model TEXT' },
+            { col: 'ai_temperature', sql: 'ALTER TABLE staff ADD COLUMN ai_temperature REAL DEFAULT 0.2' },
+            { col: 'ai_system_prompt', sql: 'ALTER TABLE staff ADD COLUMN ai_system_prompt TEXT' },
+            { col: 'ai_max_tokens', sql: 'ALTER TABLE staff ADD COLUMN ai_max_tokens INTEGER' },
+            { col: 'ai_extra_config', sql: 'ALTER TABLE staff ADD COLUMN ai_extra_config TEXT' }
+        ];
+        staffMigrations.forEach(m => {
+            if (!cols.includes(m.col)) {
+                db.run(m.sql, (e) => {
+                    if (e) {
+                        console.error(`Fehler beim Hinzufuegen von staff.${m.col}:`, e.message);
+                        return;
+                    }
+                    if (m.col === 'kind') {
+                        db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
+                    }
+                });
+            }
+        });
+
+        // Falls 'kind' bereits existierte aber leer ist
+        if (cols.includes('kind')) {
+            db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
+        }
+    });
+
+    db.all("PRAGMA table_info(systems)", (err, rows) => {
+        if (err) return;
+        const cols = rows.map(r => r.name);
+        if (!cols.includes('ai_workflow_enabled')) {
+            db.run('ALTER TABLE systems ADD COLUMN ai_workflow_enabled INTEGER DEFAULT 1', (e) => {
+                if (e) console.error('Fehler beim Hinzufuegen von systems.ai_workflow_enabled:', e.message);
+            });
+        }
+    });
+
+    // n:m Mitarbeiter <-> Workflow-Rollen
+    db.run(`CREATE TABLE IF NOT EXISTS staff_roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_id INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval')),
+        priority INTEGER DEFAULT 100,
+        active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(staff_id, role),
+        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+    )`, (err) => {
+        if (err) {
+            console.error('Fehler beim Erstellen staff_roles:', err.message);
+            return;
+        }
+        // Bestehende Mitarbeiter automatisch der Rolle 'approval' zuordnen
+        db.run(`INSERT OR IGNORE INTO staff_roles (staff_id, role, priority, active)
+                SELECT id, 'approval', 100, 1 FROM staff WHERE active = 1`);
+    });
+
+    // Workflow-Definitionen
+    db.run(`CREATE TABLE IF NOT EXISTS workflow_definitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        is_default INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS workflow_stages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_id INTEGER NOT NULL,
+        sort_order INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval')),
+        executor_kind TEXT CHECK(executor_kind IN ('ai','human','any')) DEFAULT 'any',
+        auto_assign_strategy TEXT CHECK(auto_assign_strategy IN ('round_robin','least_loaded','fixed')) DEFAULT 'round_robin',
+        fixed_staff_id INTEGER,
+        FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+        FOREIGN KEY (fixed_staff_id) REFERENCES staff(id) ON DELETE SET NULL,
+        UNIQUE(workflow_id, sort_order)
+    )`, (err) => {
+        if (err) {
+            console.error('Fehler beim Erstellen workflow_stages:', err.message);
+            return;
+        }
+        seedDefaultWorkflow();
+    });
+
+    // Round-Robin-Cursor pro Rolle
+    db.run(`CREATE TABLE IF NOT EXISTS workflow_role_cursor (
+        role TEXT PRIMARY KEY,
+        last_staff_id INTEGER,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Workflow-Runs pro Ticket
+    db.run(`CREATE TABLE IF NOT EXISTS ticket_workflow_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        workflow_id INTEGER,
+        status TEXT CHECK(status IN ('pending','running','waiting_human','completed','failed','rejected')) DEFAULT 'pending',
+        current_stage TEXT,
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        finished_at DATETIME,
+        result TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id) ON DELETE SET NULL
+    )`);
+
+    // Einzelne Stage-Ausfuehrungen
+    db.run(`CREATE TABLE IF NOT EXISTS ticket_workflow_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval')),
+        sort_order INTEGER NOT NULL,
+        staff_id INTEGER,
+        executor_kind TEXT,
+        status TEXT CHECK(status IN ('pending','in_progress','done','skipped','failed','rejected','waiting_human')) DEFAULT 'pending',
+        input_payload TEXT,
+        output_payload TEXT,
+        provider TEXT,
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        cost_estimate REAL,
+        duration_ms INTEGER,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        finished_at DATETIME,
+        FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL
+    )`);
+}
+
+function seedDefaultWorkflow() {
+    db.get("SELECT id FROM workflow_definitions WHERE name = 'standard'", (err, row) => {
+        if (err) {
+            console.error('Fehler beim Pruefen Default-Workflow:', err.message);
+            return;
+        }
+        if (row) return;
+        db.run(`INSERT INTO workflow_definitions (name, description, is_default, active)
+                VALUES ('standard', 'Standard KI-Pipeline: Triage -> Security -> Planning -> Integration -> Approval', 1, 1)`,
+            function(insertErr) {
+                if (insertErr) {
+                    console.error('Fehler beim Anlegen Default-Workflow:', insertErr.message);
+                    return;
+                }
+                const wfId = this.lastID;
+                const stages = [
+                    { sort: 1, role: 'triage', kind: 'ai' },
+                    { sort: 2, role: 'security', kind: 'ai' },
+                    { sort: 3, role: 'planning', kind: 'ai' },
+                    { sort: 4, role: 'integration', kind: 'ai' },
+                    { sort: 5, role: 'approval', kind: 'human' }
+                ];
+                const stmt = db.prepare(`INSERT INTO workflow_stages
+                    (workflow_id, sort_order, role, executor_kind, auto_assign_strategy)
+                    VALUES (?, ?, ?, ?, 'round_robin')`);
+                stages.forEach(s => stmt.run(wfId, s.sort, s.role, s.kind));
+                stmt.finalize();
+                console.log('Default-Workflow "standard" angelegt.');
+            });
     });
 }
 
@@ -1274,7 +1460,7 @@ app.post('/api/systems', requireAuth, requireAdmin, (req, res) => {
 // --- API: Staff ---
 
 app.get('/api/staff', requireAuth, requireAdmin, (req, res) => {
-    db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, rows) => {
+    loadStaffWithRoles((err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
     });
@@ -1284,14 +1470,111 @@ app.get('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
     db.get('SELECT * FROM staff WHERE id = ?', [req.params.id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden' });
-        res.json(row);
+        db.all('SELECT role, priority, active FROM staff_roles WHERE staff_id = ?', [req.params.id], (rolesErr, roles) => {
+            if (rolesErr) return res.status(500).json({ error: rolesErr.message });
+            row.roles = roles;
+            res.json(row);
+        });
     });
 });
 
 app.post('/api/staff', requireAuth, requireAdmin, (req, res) => {
-    const { name, email, phone } = req.body;
-    db.run('INSERT INTO staff (name, email, phone) VALUES (?, ?, ?)', [name, email, phone],
-        function(err) { if (err) return res.status(500).json({ error: err.message }); res.json({ id: this.lastID }); });
+    const data = parseStaffPayload(req.body);
+    if (!data.name || !data.email) return res.status(400).json({ error: 'Name und E-Mail sind erforderlich.' });
+    const roles = normalizeRolesInput(req.body);
+    db.run(`INSERT INTO staff
+            (name, email, phone, kind, ai_provider, ai_model, ai_temperature, ai_system_prompt, ai_max_tokens, ai_extra_config)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [data.name, data.email, data.phone, data.kind, data.ai_provider, data.ai_model,
+         data.ai_temperature, data.ai_system_prompt, data.ai_max_tokens, data.ai_extra_config],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            const newId = this.lastID;
+            replaceStaffRoles(newId, roles, (rolesErr) => {
+                if (rolesErr) return res.status(500).json({ error: rolesErr.message });
+                res.json({ id: newId });
+            });
+        });
+});
+
+app.post('/api/staff/:id/roles', requireAuth, requireAdmin, (req, res) => {
+    const roles = normalizeRolesInput(req.body);
+    replaceStaffRoles(req.params.id, roles, (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ status: 'ok', roles });
+    });
+});
+
+// --- API: AI Provider Health ---
+
+app.get('/api/ai/providers/health', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const result = await aiClient.health();
+        res.json({ default_provider: aiClient.DEFAULT_PROVIDER, providers: result, config: aiClient.getConfigSummary() });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- API: Workflow ---
+
+app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung' });
+        db.get('SELECT * FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', [ticketId], (err2, run) => {
+            if (err2) return res.status(500).json({ error: err2.message });
+            if (!run) return res.json({ run: null, steps: [] });
+            db.all(`SELECT s.*, st.name AS staff_name, st.kind AS staff_kind
+                FROM ticket_workflow_steps s
+                LEFT JOIN staff st ON st.id = s.staff_id
+                WHERE s.run_id = ? ORDER BY s.sort_order, s.id`, [run.id], (err3, steps) => {
+                if (err3) return res.status(500).json({ error: err3.message });
+                steps = steps.map(s => {
+                    if (s.output_payload) { try { s.output = JSON.parse(s.output_payload); } catch (_) {} }
+                    delete s.output_payload;
+                    return s;
+                });
+                res.json({ run, steps });
+            });
+        });
+    });
+});
+
+app.post('/api/tickets/:id/workflow/restart', requireAuth, requireAdmin, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    db.run('UPDATE tickets SET workflow_run_id = NULL, final_decision = NULL WHERE id = ?', [ticketId], async (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        try {
+            const runId = await workflowEngine.startForTicket(ticketId);
+            res.json({ status: 'started', runId });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+});
+
+app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async (req, res) => {
+    const ticketId = parseInt(req.params.id, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    const decision = req.body.decision;
+    const note = req.body.note ? String(req.body.note).slice(0, 4000) : null;
+    db.get('SELECT t.*, s.staff_id AS step_staff_id, s.run_id FROM ticket_workflow_steps s INNER JOIN tickets t ON t.id = ? WHERE s.id = ?',
+        [ticketId, stepId], async (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Step nicht gefunden' });
+        const isAdmin = isAdminRole(req.session.role);
+        const isAssigned = req.session.staff_id && Number(req.session.staff_id) === Number(row.step_staff_id);
+        if (!isAdmin && !isAssigned) return res.status(403).json({ error: 'Keine Berechtigung' });
+        try {
+            const result = await workflowEngine.decideHumanStep(row.run_id, stepId, decision, note, getActor(req));
+            res.json(result);
+        } catch (e) {
+            res.status(400).json({ error: e.message });
+        }
+    });
 });
 
 app.delete('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
@@ -1508,6 +1791,8 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
                 });
             }
         });
+        // KI-Workflow asynchron starten
+        workflowEngine.startForTicket(ticketId).catch(e => console.error('Workflow-Start (API):', e.message));
         return res.status(201).json({
             id: ticketId,
             status: 'created',
@@ -2124,27 +2409,126 @@ app.post('/admin/systems/:id/delete', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+const WORKFLOW_ROLES = ['triage', 'security', 'planning', 'integration', 'approval'];
+const WORKFLOW_ROLE_LABELS = {
+    triage: 'Triage Reviewer',
+    security: 'Security & Privacy Reviewer',
+    planning: 'Solution Architect (Planner)',
+    integration: 'Integration / Architecture Reviewer',
+    approval: 'Final Approver'
+};
+const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local'];
+
+function parseStaffPayload(body) {
+    const kind = body.kind === 'ai' ? 'ai' : 'human';
+    const ai_provider = kind === 'ai' && AI_PROVIDERS.includes(body.ai_provider) ? body.ai_provider : null;
+    const ai_model = kind === 'ai' && body.ai_model ? String(body.ai_model).trim().slice(0, 200) : null;
+    let temp = parseFloat(body.ai_temperature);
+    if (Number.isNaN(temp) || temp < 0) temp = 0.2;
+    if (temp > 2) temp = 2;
+    const ai_max_tokens = kind === 'ai' && body.ai_max_tokens ? Math.max(0, parseInt(body.ai_max_tokens, 10)) || null : null;
+    const ai_system_prompt = kind === 'ai' && body.ai_system_prompt ? String(body.ai_system_prompt).slice(0, 8000) : null;
+    let ai_extra_config = null;
+    if (kind === 'ai' && body.ai_extra_config) {
+        const raw = String(body.ai_extra_config).trim();
+        if (raw) {
+            try { JSON.parse(raw); ai_extra_config = raw; } catch (_) { ai_extra_config = null; }
+        }
+    }
+    return {
+        name: normalizeText(body.name, 200),
+        email: normalizeText(body.email, 320),
+        phone: body.phone ? normalizeText(body.phone, 80) : null,
+        kind,
+        ai_provider,
+        ai_model,
+        ai_temperature: kind === 'ai' ? temp : null,
+        ai_max_tokens,
+        ai_system_prompt,
+        ai_extra_config
+    };
+}
+
+function normalizeRolesInput(body) {
+    let roles = body.roles;
+    if (!Array.isArray(roles)) roles = roles ? [roles] : [];
+    return Array.from(new Set(roles.filter(r => WORKFLOW_ROLES.includes(r))));
+}
+
+function replaceStaffRoles(staffId, roles, callback) {
+    db.serialize(() => {
+        db.run('DELETE FROM staff_roles WHERE staff_id = ?', [staffId], (err) => {
+            if (err) return callback(err);
+            if (roles.length === 0) return callback(null);
+            const stmt = db.prepare('INSERT OR IGNORE INTO staff_roles (staff_id, role, priority, active) VALUES (?, ?, 100, 1)');
+            roles.forEach(role => stmt.run(staffId, role));
+            stmt.finalize(callback);
+        });
+    });
+}
+
+function loadStaffWithRoles(callback) {
+    db.all(`SELECT s.*, GROUP_CONCAT(sr.role) AS role_list
+        FROM staff s
+        LEFT JOIN staff_roles sr ON sr.staff_id = s.id AND sr.active = 1
+        WHERE s.active = 1
+        GROUP BY s.id
+        ORDER BY s.name`, [], (err, rows) => {
+        if (err) return callback(err);
+        rows.forEach(r => { r.roles = r.role_list ? r.role_list.split(',') : []; delete r.role_list; });
+        callback(null, rows);
+    });
+}
+
 app.get('/admin/staff', requireAuth, requireAdmin, (req, res) => {
-    db.all('SELECT * FROM staff WHERE active = 1 ORDER BY name', [], (err, rows) => {
+    loadStaffWithRoles((err, rows) => {
         if (err) return res.status(500).send('DB Error');
-        res.render('staff', { staff: rows, user: req.session.user, role: req.session.role || 'user' });
+        res.render('staff', {
+            staff: rows,
+            user: req.session.user,
+            role: req.session.role || 'user',
+            workflowRoles: WORKFLOW_ROLES,
+            workflowRoleLabels: WORKFLOW_ROLE_LABELS,
+            aiProviders: AI_PROVIDERS
+        });
     });
 });
 
 app.post('/admin/staff', requireAuth, requireAdmin, (req, res) => {
-    const { name, email, phone } = req.body;
-    db.run('INSERT INTO staff (name, email, phone) VALUES (?, ?, ?)', [name, email, phone], (err) => {
-        if (err) return res.status(500).send('DB Error');
-        res.redirect('/admin/staff');
-    });
+    const data = parseStaffPayload(req.body);
+    if (!data.name || !data.email) return res.status(400).send('Name und E-Mail sind erforderlich.');
+    const roles = normalizeRolesInput(req.body);
+    db.run(`INSERT INTO staff
+            (name, email, phone, kind, ai_provider, ai_model, ai_temperature, ai_system_prompt, ai_max_tokens, ai_extra_config)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [data.name, data.email, data.phone, data.kind, data.ai_provider, data.ai_model,
+         data.ai_temperature, data.ai_system_prompt, data.ai_max_tokens, data.ai_extra_config],
+        function(err) {
+            if (err) return res.status(500).send('DB Error');
+            replaceStaffRoles(this.lastID, roles, (rolesErr) => {
+                if (rolesErr) console.error('Fehler beim Setzen der Rollen:', rolesErr.message);
+                res.redirect('/admin/staff');
+            });
+        });
 });
 
 app.post('/admin/staff/:id/update', requireAuth, requireAdmin, (req, res) => {
-    const { name, email, phone } = req.body;
-    db.run('UPDATE staff SET name = ?, email = ?, phone = ? WHERE id = ?', [name, email, phone || null, req.params.id], (err) => {
-        if (err) return res.status(500).send('DB Error');
-        res.redirect('/admin/staff');
-    });
+    const data = parseStaffPayload(req.body);
+    if (!data.name || !data.email) return res.status(400).send('Name und E-Mail sind erforderlich.');
+    const roles = normalizeRolesInput(req.body);
+    db.run(`UPDATE staff SET
+            name = ?, email = ?, phone = ?, kind = ?, ai_provider = ?, ai_model = ?,
+            ai_temperature = ?, ai_system_prompt = ?, ai_max_tokens = ?, ai_extra_config = ?
+            WHERE id = ?`,
+        [data.name, data.email, data.phone, data.kind, data.ai_provider, data.ai_model,
+         data.ai_temperature, data.ai_system_prompt, data.ai_max_tokens, data.ai_extra_config, req.params.id],
+        (err) => {
+            if (err) return res.status(500).send('DB Error');
+            replaceStaffRoles(req.params.id, roles, (rolesErr) => {
+                if (rolesErr) console.error('Fehler beim Setzen der Rollen:', rolesErr.message);
+                res.redirect('/admin/staff');
+            });
+        });
 });
 
 app.post('/admin/staff/:id/delete', requireAuth, requireAdmin, (req, res) => {
@@ -2872,6 +3256,8 @@ app.post('/ticket/new', requireAuth, (req, res) => {
                 });
             }
         });
+        // KI-Workflow asynchron starten
+        workflowEngine.startForTicket(ticketId).catch(e => console.error('Workflow-Start (UI):', e.message));
         res.redirect(`/ticket/${ticketId}`);
     });
 });
@@ -3090,6 +3476,8 @@ app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
 });
 
 // --- Server Start ---
+
+workflowEngine.init({ db, io });
 
 server.listen(PORT, () => {
     console.log('====================================================');
