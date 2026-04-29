@@ -6,8 +6,8 @@
 const { Octokit } = require('@octokit/rest');
 
 const MAX_FILES = 30;
-const MAX_TOTAL_BYTES = 30 * 1024;       // 30 KB Cap
-const MAX_FILE_BYTES = 20 * 1024;        // 20 KB pro Datei
+const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap
+const MAX_FILE_BYTES = 60 * 1024;       // 60 KB pro Datei
 
 function getOctokit(token) {
     return new Octokit({ auth: token || process.env.GITHUB_DEFAULT_TOKEN || undefined });
