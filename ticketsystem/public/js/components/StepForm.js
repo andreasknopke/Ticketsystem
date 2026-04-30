@@ -29,20 +29,41 @@
     }
 
     var form = createElement('form', { className: 'step-form' });
-    var dateInput = createElement('input', { type: 'date', name: 'date', required: 'required' });
-    var textInput = createElement('textarea', { name: 'text', required: 'required', placeholder: 'Schritt beschreiben' });
-    var fileInput = createElement('input', { type: 'file', name: 'attachments', multiple: 'multiple' });
+    var grid = createElement('div', { className: 'step-form__grid' });
+    var dateField = createElement('div', { className: 'step-form__field' });
+    var textField = createElement('div', { className: 'step-form__field step-form__field--wide' });
+    var fileField = createElement('div', { className: 'step-form__field step-form__field--wide' });
+    var actions = createElement('div', { className: 'step-form__actions' });
+    var dateInput = createElement('input', { type: 'date', name: 'date', required: 'required', className: 'form-input' });
+    var textInput = createElement('textarea', {
+      name: 'text',
+      required: 'required',
+      placeholder: 'Schritt beschreiben',
+      className: 'form-input step-form__textarea',
+      rows: '4'
+    });
+    var fileInput = createElement('input', { type: 'file', name: 'attachments', multiple: 'multiple', className: 'step-form__file-input' });
     var message = createElement('div', { className: 'step-form__message', role: 'status' });
-    var submit = createElement('button', { type: 'submit' }, 'Schritt speichern');
+    var submit = createElement('button', { type: 'submit', className: 'btn-primary step-form__submit' }, 'Schritt speichern');
+    var hint = createElement('p', { className: 'step-form__hint' }, 'Optional kannst du Dateien oder Screenshots als Anhang mitgeben.');
 
-    form.appendChild(createElement('label', {}, 'Datum'));
-    form.appendChild(dateInput);
-    form.appendChild(createElement('label', {}, 'Text'));
-    form.appendChild(textInput);
-    form.appendChild(createElement('label', {}, 'Anhänge'));
-    form.appendChild(fileInput);
-    form.appendChild(submit);
-    form.appendChild(message);
+    dateField.appendChild(createElement('label', { className: 'step-form__label' }, 'Datum'));
+    dateField.appendChild(dateInput);
+
+    textField.appendChild(createElement('label', { className: 'step-form__label' }, 'Beschreibung'));
+    textField.appendChild(textInput);
+
+    fileField.appendChild(createElement('label', { className: 'step-form__label' }, 'Anhänge'));
+    fileField.appendChild(fileInput);
+    fileField.appendChild(hint);
+
+    grid.appendChild(dateField);
+    grid.appendChild(textField);
+    grid.appendChild(fileField);
+    form.appendChild(grid);
+    actions.appendChild(submit);
+    actions.appendChild(message);
+    form.appendChild(actions);
 
     form.addEventListener('submit', this.handleSubmit.bind(this, form, message));
     target.innerHTML = '';
@@ -61,6 +82,7 @@
     }
 
     var data = new FormData(form);
+  message.className = 'step-form__message';
     message.textContent = 'Speichern...';
 
     fetch(this.apiBasePath, {
@@ -68,16 +90,20 @@
       body: data
     }).then(function parse(response) {
       if (!response.ok) {
-        throw new Error('Schritt konnte nicht gespeichert werden.');
+        return response.json().catch(function () { return {}; }).then(function (payload) {
+          throw new Error(payload.error || 'Schritt konnte nicht gespeichert werden.');
+        });
       }
       return response.json();
     }).then(function success(step) {
       form.reset();
+      message.className = 'step-form__message step-form__message--success';
       message.textContent = 'Schritt gespeichert.';
       if (typeof this.options.onSaved === 'function') {
         this.options.onSaved(step);
       }
     }.bind(this)).catch(function failure(error) {
+      message.className = 'step-form__message step-form__message--error';
       message.textContent = error.message;
     });
   };

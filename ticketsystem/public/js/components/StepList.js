@@ -48,33 +48,50 @@
   StepList.prototype.draw = function draw(steps) {
     var list = createElement('div', { className: 'step-list' });
     if (!steps || !steps.length) {
-      list.appendChild(createElement('p', {}, 'Noch keine Schritte vorhanden.'));
+      list.appendChild(createElement('p', { className: 'step-list__empty' }, 'Noch keine Schritte vorhanden.'));
     } else {
       steps.forEach(function appendStep(step) {
         var item = createElement('article', { className: 'step-list__item' });
-        item.appendChild(createElement('h4', {}, step.date || 'Ohne Datum'));
-        item.appendChild(createElement('p', {}, step.text || ''));
+        var header = createElement('div', { className: 'step-list__header' });
+        var meta = createElement('div', { className: 'step-list__meta' });
+        var title = createElement('h4', { className: 'step-list__title' }, step.date || 'Ohne Datum');
+        var badge = createElement('span', { className: 'step-list__badge' }, 'Step #' + step.id);
+        var text = createElement('p', { className: 'step-list__text' }, step.text || '');
+
+        meta.appendChild(title);
+        meta.appendChild(badge);
+        header.appendChild(meta);
 
         if (step.blobs && step.blobs.length) {
+          var attachmentLabel = createElement('p', { className: 'step-list__attachments-label' }, 'Anhänge');
           var attachments = createElement('ul', { className: 'step-list__attachments' });
           step.blobs.forEach(function appendBlob(blob) {
-            var attachment = createElement('li', {});
+            var attachment = createElement('li', { className: 'step-list__attachment' });
             var link = createElement('a', {
-              href: this.apiBasePath + '/' + step.id + '/attachments/' + blob.id
+              href: this.apiBasePath + '/' + step.id + '/attachments/' + blob.id,
+              className: 'step-list__attachment-link'
             }, blob.filename || 'Anhang');
             attachment.appendChild(link);
             if (blob.size) {
-              attachment.appendChild(document.createTextNode(' (' + blob.size + ' Bytes)'));
+              attachment.appendChild(createElement('span', { className: 'step-list__attachment-size' }, blob.size + ' Bytes'));
             }
             attachments.appendChild(attachment);
           }.bind(this));
+          item.appendChild(header);
+          item.appendChild(text);
+          item.appendChild(attachmentLabel);
           item.appendChild(attachments);
+        } else {
+          item.appendChild(header);
+          item.appendChild(text);
         }
 
         if (this.options.allowDelete) {
-          var button = createElement('button', { type: 'button' }, 'Löschen');
+          var actions = createElement('div', { className: 'step-list__actions' });
+          var button = createElement('button', { type: 'button', className: 'btn-secondary step-list__delete' }, 'Löschen');
           button.addEventListener('click', this.remove.bind(this, step.id));
-          item.appendChild(button);
+          actions.appendChild(button);
+          item.appendChild(actions);
         }
 
         list.appendChild(item);
