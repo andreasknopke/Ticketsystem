@@ -1155,7 +1155,7 @@ async function rerunStage(runId, stepId, extraInfo, actor) {
     wfInfo(`rerunStage | run=${runId} step=${stepId} extraInfo_len=${(extraInfo || '').length} actor=${actor}`);
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
-    const allowedStages = ['triage', 'security', 'planning', 'integration'];
+    const allowedStages = ['triage', 'security', 'planning', 'integration', 'coding'];
     if (!allowedStages.includes(step.stage)) throw new Error('Re-Run nur fuer Triage/Security/Planning/Integration moeglich');
     if (step.status !== 'done') throw new Error('Nur abgeschlossene Steps koennen erneut ausgefuehrt werden');
     const info = String(extraInfo || '').trim();

@@ -752,7 +752,7 @@
                 data.steps.forEach(step => {
                     const badge = STATUS_BADGE[step.status] || 'bg-gray-100 text-gray-700';
                     const isApproverWaiting = step.stage === 'approval' && step.status === 'waiting_human';
-                    const canRerun = canManageTickets && step.status === 'done' && ['triage','security','planning','integration'].includes(step.stage);
+                    const canRerun = canManageTickets && step.status === 'done' && ['triage','security','planning','integration','coding'].includes(step.stage);
                     html += `<li class="rounded border border-gray-200 p-3" data-step-id="${step.id}">
                         <div class="flex items-center justify-between">
                             <div>
