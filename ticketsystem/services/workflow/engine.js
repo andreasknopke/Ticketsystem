@@ -696,8 +696,6 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
 async function decideHumanStep(runId, stepId, decision, note, actor, options) {
     options = options || {};
     wfInfo(`decideHumanStep | run=${runId} step=${stepId} decision="${decision}" note="${(note || '').slice(0, 100)}" actor=${actor}`);
-    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
-    if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
     if (step.status !== 'waiting_human') throw new Error('Step erwartet keine menschliche Entscheidung');
@@ -709,34 +707,33 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         try { stepOutput = JSON.parse(step.output_payload); } catch (_) {}
     }
 
+    // Questions-Phase: Bot hat Rueckfragen, Mensch antwortet
+    if (step.stage === 'approval' && stepOutput?.phase === 'questions') {
+        if (decision !== 'answered') throw new Error('Ungueltige Entscheidung – erwarte "answered"');
+        if (!String(note || '').trim()) throw new Error('Bitte beantworte die offenen Fragen im Notizfeld.');
+        const output = {
+            ...(stepOutput || {}),
+            decision,
+            note: note || null,
+            decided_by: actor || null,
+            decided_at: new Date().toISOString()
+        };
+        await finishStep(stepId, { status: 'done', output, ai: null });
+        const wf = await loadDefaultWorkflow();
+        const remaining = wf.stages.filter(s => s.sort_order > Number(stepOutput.resume_after_sort_order || 0));
+        const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus ${stepOutput.source_stage}:\n${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nAntwort / Entscheidung:\n${note}`;
+        await run(`UPDATE ticket_workflow_runs SET status='running', current_stage=? WHERE id = ?`, [remaining[0]?.role || stepOutput.source_stage, runId]);
+        emit('workflow:step', { runId, stage: 'approval', status: 'done', decision, phase: 'questions' });
+        runStages(runId, ticket, remaining, { extra_info: answerContext }).catch(err => {
+            wfError('Workflow Resume nach Fragen fehlgeschlagen', err.message);
+        });
+        return { status: 'resumed_after_questions' };
+    }
+
+    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
+    if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
+
     if (step.stage === 'approval') {
-        if (stepOutput?.phase === 'questions') {
-            if (!String(note || '').trim()) {
-                throw new Error('Bitte beantworte die offenen Fragen im Notizfeld.');
-            }
-            const output = {
-                ...(stepOutput || {}),
-                decision,
-                note: note || null,
-                decided_by: actor || null,
-                decided_at: new Date().toISOString()
-            };
-            await finishStep(stepId, { status: 'done', output, ai: null });
-            const wf = await loadDefaultWorkflow();
-            const remaining = wf.stages.filter(s => s.sort_order > Number(stepOutput.resume_after_sort_order || 0));
-            const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus ${stepOutput.source_stage}:
-${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}
-
-Antwort / Entscheidung:
-${note}`;
-            await run(`UPDATE ticket_workflow_runs SET status='running', current_stage=? WHERE id = ?`, [remaining[0]?.role || stepOutput.source_stage, runId]);
-            emit('workflow:step', { runId, stage: 'approval', status: 'done', decision, phase: 'questions' });
-            runStages(runId, ticket, remaining, { extra_info: answerContext }).catch(err => {
-                wfError('Workflow Resume nach Fragen fehlgeschlagen', err.message);
-            });
-            return { status: 'resumed_after_questions' };
-        }
-
         const codingDone = await getRow(
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
