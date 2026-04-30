@@ -153,6 +153,12 @@ COPILOT_MODEL=gpt-4o                    # z.B. gpt-4o, gpt-5, claude-3.7-sonnet,
 COPILOT_EDITOR_VERSION=vscode/1.95.0
 COPILOT_EDITOR_PLUGIN_VERSION=copilot-chat/0.22.0
 
+# Mistral (OpenAI-kompatibel; Reasoning-Modelle wie magistral-* eignen sich
+# besonders fuer den Integration-Reviewer)
+MISTRAL_API_KEY=
+MISTRAL_BASE_URL=https://api.mistral.ai/v1
+MISTRAL_MODEL=mistral-large-latest      # alternativ: magistral-medium-latest, magistral-small-latest
+
 # Optionaler Fallback-GitHub-Token fuer Planning-Stage
 # (Vorrang: github_integration.access_token des Projekts)
 GITHUB_DEFAULT_TOKEN=

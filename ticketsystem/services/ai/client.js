@@ -1,7 +1,7 @@
 'use strict';
 
 // Einheitlicher AI-Client mit Provider-Abstraktion.
-// Provider: deepseek, ollama, openai_local, anthropic, copilot
+// Provider: deepseek, ollama, openai_local, anthropic, copilot, mistral
 // Methode: chat({ provider, model, system, user, temperature, maxTokens, json, timeoutMs })
 //   -> { text, raw, prompt_tokens, completion_tokens, provider, model, duration_ms }
 
@@ -38,6 +38,13 @@ const CONFIG = {
         defaultModel: env.COPILOT_MODEL || 'gpt-4o',
         editorVersion: env.COPILOT_EDITOR_VERSION || 'vscode/1.95.0',
         editorPluginVersion: env.COPILOT_EDITOR_PLUGIN_VERSION || 'copilot-chat/0.22.0'
+    },
+    mistral: {
+        // OpenAI-kompatible API (api.mistral.ai/v1/chat/completions).
+        // Sinnvoll fuer Reasoning-lastige Stages wie Integration-Reviewer.
+        baseUrl: (env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, ''),
+        apiKey: env.MISTRAL_API_KEY || '',
+        defaultModel: env.MISTRAL_MODEL || 'mistral-large-latest'
     }
 };
 
@@ -179,6 +186,9 @@ async function chat(opts) {
     if (provider === 'copilot') return callCopilot(opts);
     if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) {
         throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
+    }
+    if (provider === 'mistral' && !CONFIG.mistral.apiKey) {
+        throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
     }
     return callOpenAICompatible(provider, opts);
 }
@@ -385,7 +395,8 @@ function getConfigSummary() {
         ollama: { base_url: CONFIG.ollama.baseUrl, model: CONFIG.ollama.defaultModel, configured: true },
         openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true },
         anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
-        copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken }
+        copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken },
+        mistral: { base_url: CONFIG.mistral.baseUrl, model: CONFIG.mistral.defaultModel, configured: !!CONFIG.mistral.apiKey }
     };
 }
 

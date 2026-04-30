@@ -2609,7 +2609,7 @@ const CODING_LEVEL_LABELS = {
     medium: 'Medium (GPT-5.4 / DeepSeek V4 / Kimi 2.6 Niveau)',
     high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
-const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local', 'anthropic', 'copilot'];
+const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local', 'anthropic', 'copilot', 'mistral'];
 
 function parseStaffPayload(body) {
     const kind = body.kind === 'ai' ? 'ai' : 'human';
