@@ -90,11 +90,12 @@ async function getGithubIntegrationForSystem(systemId) {
         WHERE p.system_id = ? LIMIT 1`, [systemId]);
 }
 
-async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES }) {
+async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES, maxTokensOverride = null }) {
     const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
     const model = staff.ai_model || undefined;
     const temperature = staff.ai_temperature ?? 0.2;
-    const maxTokens = staff.ai_max_tokens || undefined;
+    // Reihenfolge: expliziter Stage-Override > Staff-Konfiguration > Provider-Default.
+    const maxTokens = maxTokensOverride || staff.ai_max_tokens || undefined;
     const finalSystem = staff.ai_system_prompt || systemPrompt;
     let extra;
     if (staff.ai_extra_config) {
@@ -115,14 +116,14 @@ async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, r
                 extra
             });
             const parsed = json ? aiClient.tryParseJson(r.text) : null;
-            wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'}`);
+            const finishReason = r.raw?.choices?.[0]?.finish_reason || null;
+            const truncated = finishReason === 'length';
+            wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'} finish_reason=${finishReason || '?'} truncated=${truncated}`);
             if (json && !parsed) {
                 wfWarn(`AI-Call JSON parse failed | raw_preview=${(r.text || '').slice(0, 500)}`);
-                if (r.raw?.choices?.[0]?.finish_reason) {
-                    wfWarn(`AI-Call finish_reason=${r.raw.choices[0].finish_reason}`);
-                }
+                if (finishReason) wfWarn(`AI-Call finish_reason=${finishReason}`);
             }
-            return { ...r, parsed };
+            return { ...r, parsed, finish_reason: finishReason, truncated };
         } catch (e) {
             lastErr = e;
             wfWarn(`AI-Call attempt ${attempt} failed`, e.message);
@@ -813,14 +814,29 @@ async function execCoding(ctx, codingLevel) {
         currentFiles
     });
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
-    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
+    // CODING liefert vollstaendige Datei-Inhalte zurueck und braucht deutlich mehr
+    // Output-Tokens als die uebrigen Stages. Default DEFAULT_MAX_TOKENS (16k)
+    // ist hier zu klein und fuehrt regelmaessig zu finish_reason=length.
+    const codingMaxTokens = parseInt(process.env.AI_CODING_MAX_TOKENS, 10) || 32768;
+    const r = await callAIWithStaff(ctx.staff, {
+        systemPrompt: prompts.CODING.system,
+        userPrompt,
+        maxTokensOverride: codingMaxTokens
+    });
+    const truncationRisk = r.truncated
+        ? `Coding-Antwort wurde vom Modell abgeschnitten (finish_reason=length, completion_tokens=${r.completion_tokens || '?'}). max_tokens war ${codingMaxTokens}. Erhoehe AI_CODING_MAX_TOKENS oder verkleinere den Scope (weniger/kleinere allowed_files).`
+        : null;
     const out = r.parsed || {
         commit_message: 'WIP: ticket #' + ctx.ticket.id,
         summary: r.text?.slice(0, 500) || '(keine strukturierte Antwort)',
         files: [],
         test_plan: [],
-        risks: ['AI-Antwort nicht parsebar']
+        risks: [truncationRisk || 'AI-Antwort nicht parsebar']
     };
+    if (r.parsed && truncationRisk) {
+        out.risks = Array.isArray(out.risks) ? out.risks : [];
+        out.risks.unshift(truncationRisk);
+    }
     wfInfo(`Stage:CODING parsed | parsed=${!!r.parsed} files_count=${out.files?.length || 0} commit_msg_len=${(out.commit_message || '').length} summary_len=${(out.summary || '').length}`);
     if (Array.isArray(out.files)) {
         out.files.forEach((f, i) => {
