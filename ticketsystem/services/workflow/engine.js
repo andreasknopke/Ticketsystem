@@ -289,7 +289,7 @@ function previousStageContextSuffix(ctx, stageName) {
 function extractOpenQuestions(output) {
     if (!output || typeof output !== 'object') return [];
     if (!Array.isArray(output.open_questions)) return [];
-    return output
+    return output.open_questions
         .map(v => typeof v === 'string' ? v.trim() : '')
         .filter(Boolean)
         .slice(0, 10);
