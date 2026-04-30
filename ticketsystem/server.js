@@ -1785,7 +1785,9 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
         const isAssigned = req.session.staff_id && Number(req.session.staff_id) === Number(row.step_staff_id);
         if (!isAdmin && !isAssigned) return res.status(403).json({ error: 'Keine Berechtigung' });
         try {
-            const result = await workflowEngine.decideHumanStep(row.run_id, stepId, decision, note, getActor(req));
+            const result = await workflowEngine.decideHumanStep(row.run_id, stepId, decision, note, getActor(req), {
+                split_tickets: Array.isArray(req.body.split_tickets) ? req.body.split_tickets : null
+            });
             res.json(result);
         } catch (e) {
             res.status(400).json({ error: e.message });

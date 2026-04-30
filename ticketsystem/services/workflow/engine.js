@@ -13,6 +13,10 @@ const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 
 let dbRef = null;
 let ioRef = null;
+const SLA_HOURS = {
+    first_response: { kritisch: 1, hoch: 4, mittel: 8, niedrig: 24 },
+    resolution: { kritisch: 4, hoch: 24, mittel: 72, niedrig: 168 }
+};
 
 function init({ db, io }) {
     dbRef = db;
@@ -62,6 +66,42 @@ function emit(event, payload) {
     }
 }
 
+function safeJsonParse(text, fallback) {
+    if (!text) return fallback;
+    try { return JSON.parse(text); } catch (_) { return fallback; }
+}
+
+function normalizeText(value, maxLen) {
+    return String(value || '').trim().slice(0, maxLen);
+}
+
+function validEnum(value, allowed, fallback) {
+    return allowed.includes(value) ? value : fallback;
+}
+
+function calcSlaDue(priority, createdAt) {
+    const start = new Date(createdAt);
+    const firstHours = SLA_HOURS.first_response[priority] || 8;
+    const resolutionHours = SLA_HOURS.resolution[priority] || 72;
+    return {
+        first: new Date(start.getTime() + firstHours * 3600000).toISOString(),
+        resolution: new Date(start.getTime() + resolutionHours * 3600000).toISOString()
+    };
+}
+
+async function initTicketSla(ticketId, priority, createdAt) {
+    const due = calcSlaDue(priority, createdAt);
+    await run(`INSERT OR REPLACE INTO ticket_sla
+        (ticket_id, first_response_due, resolution_due) VALUES (?, ?, ?)`,
+        [ticketId, due.first, due.resolution]);
+}
+
+async function addActivity(ticketId, actor, actionType, actionText, metadata) {
+    await run(`INSERT INTO activity_stream (ticket_id, actor, action_type, action_text, metadata)
+        VALUES (?, ?, ?, ?, ?)`, [ticketId, actor || null, actionType, actionText, JSON.stringify(metadata || {})]);
+    emit('activity', { ticketId, actor, actionType, actionText, metadata: metadata || {}, timestamp: new Date() });
+}
+
 async function updateTicketState(ticketId, updates) {
     if (!ticketId || !updates || !Object.keys(updates).length) return;
     const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -72,6 +112,61 @@ async function updateTicketState(ticketId, updates) {
         try { ioRef.emit('ticket-updated', payload); } catch (_) {}
         try { ioRef.to(`ticket-${ticketId}`).emit('ticket-updated', payload); } catch (_) {}
     }
+}
+
+function normalizeSplitTickets(input, parentTicket, fallbackSystemId) {
+    if (!Array.isArray(input)) return [];
+    const allowedTypes = ['bug', 'feature'];
+    const allowedPriorities = ['niedrig', 'mittel', 'hoch', 'kritisch'];
+    const allowedUrgency = ['normal', 'emergency', 'safety'];
+    return input.map((item, index) => {
+        const title = normalizeText(item?.title || `Teilticket ${index + 1}`, 200);
+        const description = normalizeText(item?.description || '', 5000);
+        const systemId = Number.isInteger(item?.system_id) ? item.system_id : (item?.system_id ? parseInt(item.system_id, 10) : (fallbackSystemId || parentTicket.system_id || null));
+        return {
+            title: title || `Teilticket ${index + 1}`,
+            description,
+            type: validEnum(item?.type, allowedTypes, parentTicket.type || 'bug'),
+            priority: validEnum(item?.priority, allowedPriorities, parentTicket.priority || 'mittel'),
+            urgency: validEnum(item?.urgency, allowedUrgency, parentTicket.urgency || 'normal'),
+            system_id: Number.isFinite(systemId) ? systemId : (parentTicket.system_id || null)
+        };
+    }).filter(item => item.title && item.description);
+}
+
+async function createSplitTickets(parentTicket, splitTickets, actor) {
+    const createdIds = [];
+    for (const part of splitTickets) {
+        const createdAt = new Date().toISOString();
+        const deadline = parentTicket.deadline || null;
+        const description = `${part.description}\n\nAbgeleitet aus Ticket #${parentTicket.id}: ${parentTicket.title}`.slice(0, 5000);
+        const result = await run(`INSERT INTO tickets
+            (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'offen', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, [
+            part.type,
+            part.title,
+            description,
+            parentTicket.username || null,
+            parentTicket.console_logs || null,
+            parentTicket.software_info || null,
+            part.priority,
+            part.system_id || null,
+            null,
+            parentTicket.location || null,
+            parentTicket.contact_email || null,
+            part.urgency,
+            deadline
+        ]);
+        const childId = result.lastID;
+        createdIds.push(childId);
+        await initTicketSla(childId, part.priority, createdAt);
+        await addActivity(childId, actor, 'created', `Teilticket aus Split von #${parentTicket.id} erstellt`, {
+            parent_ticket_id: parentTicket.id,
+            source: 'workflow_split'
+        });
+        startForTicket(childId).catch(err => wfError(`Split-Child Workflow-Start fehlgeschlagen ticket=${childId}`, err.message));
+    }
+    return createdIds;
 }
 
 async function pickStaff(role, executorKind, options) {
@@ -207,7 +302,12 @@ async function execTriage(ctx) {
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
     const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
-    const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '' };
+    const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '', split_reason: '', split_tickets: [] };
+    if (out.decision === 'split' && !Array.isArray(out.split_tickets)) out.split_tickets = [];
+    if (out.decision !== 'split') {
+        out.split_reason = out.split_reason || '';
+        out.split_tickets = Array.isArray(out.split_tickets) ? out.split_tickets : [];
+    }
     if (out.system_id) {
         await run('UPDATE tickets SET system_id = ? WHERE id = ?', [out.system_id, ctx.ticket.id]);
     }
@@ -528,15 +628,19 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     for (const stage of stages) {
         ctx.ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [initialTicket.id]);
 
-        if (triageDecision === 'unclear' && ['security', 'planning', 'integration'].includes(stage.role)) {
-            await skipStep(runId, stage.role, stage.sort_order, 'triage_unclear');
+        if (['unclear', 'split'].includes(triageDecision) && ['security', 'planning', 'integration'].includes(stage.role)) {
+            await skipStep(runId, stage.role, stage.sort_order, triageDecision === 'split' ? 'triage_split' : 'triage_unclear');
             emit('workflow:step', { runId, stage: stage.role, status: 'skipped' });
             continue;
         }
 
         await run('UPDATE ticket_workflow_runs SET current_stage = ? WHERE id = ?', [stage.role, runId]);
 
-        const staff = await pickStaff(stage.role, stage.executor_kind);
+        let staff = await pickStaff(stage.role, stage.executor_kind);
+        if (triageDecision === 'split' && stage.role === 'approval' && staff && staff.kind !== 'human') {
+            const humanApprover = await pickStaff('approval', 'human');
+            if (humanApprover) staff = humanApprover;
+        }
         if (!staff) {
             wfWarn(`runStages NO_STAFF | run=${runId} stage=${stage.role} kind=${stage.executor_kind}`);
             const stepId = await startStep(runId, stage.role, stage.sort_order, null);
@@ -594,8 +698,8 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
 
             if (ctx.extra_info) delete ctx.extra_info;
 
-            if (stage.role === 'triage' && result.output?.decision === 'unclear') {
-                triageDecision = 'unclear';
+            if (stage.role === 'triage' && ['unclear', 'split'].includes(result.output?.decision)) {
+                triageDecision = result.output?.decision;
             }
         } catch (e) {
             wfError(`runStages STAGE_FAILED | run=${runId} stage=${stage.role}`, e.message);
@@ -612,9 +716,9 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     emit('workflow:completed', { runId, ticketId: initialTicket.id });
 }
 
-async function decideHumanStep(runId, stepId, decision, note, actor) {
+async function decideHumanStep(runId, stepId, decision, note, actor, options) {
     wfInfo(`decideHumanStep | run=${runId} step=${stepId} decision="${decision}" note="${(note || '').slice(0, 100)}" actor=${actor}`);
-    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
+    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework', 'approve_split', 'reject_split'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
@@ -628,7 +732,59 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
         const isDispatchPhase = (codingDone?.c || 0) === 0;
+        const triageStep = await getRow(`SELECT * FROM ticket_workflow_steps WHERE run_id = ? AND stage = 'triage' ORDER BY id ASC LIMIT 1`, [runId]);
+        const triageOutput = safeJsonParse(triageStep?.output_payload, null) || {};
+        const pendingSplitReview = isDispatchPhase && triageOutput.decision === 'split';
         wfInfo(`decideHumanStep APPROVAL | run=${runId} isDispatch=${isDispatchPhase} codingDone=${codingDone?.c || 0}`);
+
+        if (pendingSplitReview) {
+            if (decision === 'approve_split') {
+                const proposal = normalizeSplitTickets(options?.split_tickets || triageOutput.split_tickets, ticket, triageOutput.system_id || ticket.system_id);
+                if (proposal.length < 2) throw new Error('Split-Vorschlag braucht mindestens 2 gueltige Teiltickets');
+                const createdIds = await createSplitTickets(ticket, proposal, actor);
+                const output = {
+                    decision,
+                    note: note || null,
+                    decided_by: actor || null,
+                    decided_at: new Date().toISOString(),
+                    split_tickets: proposal,
+                    created_ticket_ids: createdIds,
+                    created_count: createdIds.length
+                };
+                await finishStep(stepId, { status: 'done', output, ai: null });
+                await updateTicketState(ticket.id, {
+                    status: 'geschlossen',
+                    final_decision: 'split',
+                    closed_at: new Date().toISOString()
+                });
+                await addActivity(ticket.id, actor, 'split_created', `Ticket in ${createdIds.length} Teiltickets aufgeteilt`, {
+                    created_ticket_ids: createdIds
+                });
+                await run(`UPDATE ticket_workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
+                    ['split_created', runId]);
+                emit('workflow:completed', { runId, ticketId: ticket.id, result: 'split_created', created_ticket_ids: createdIds });
+                return { status: 'split_created', created_ticket_ids: createdIds };
+            }
+            if (decision === 'reject_split') {
+                const output = {
+                    decision,
+                    note: note || null,
+                    decided_by: actor || null,
+                    decided_at: new Date().toISOString()
+                };
+                await finishStep(stepId, { status: 'done', output, ai: null });
+                const wf = await loadDefaultWorkflow();
+                const triageStage = wf.stages.find(s => s.role === 'triage');
+                const remaining = wf.stages.filter(s => (triageStage ? s.sort_order > triageStage.sort_order : true));
+                await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='security' WHERE id = ?`, [runId]);
+                await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
+                runStages(runId, ticket, remaining, note ? { extra_info: `Split-Vorschlag vom Human abgelehnt. Begruendung: ${note}` } : undefined).catch(err => {
+                    wfError('Workflow Resume nach Split-Ablehnung fehlgeschlagen', err.message);
+                });
+                return { status: 'split_rejected_resumed' };
+            }
+            throw new Error('In dieser Phase bitte Split anwenden oder Split ablehnen');
+        }
 
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
             const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
