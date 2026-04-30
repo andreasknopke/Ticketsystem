@@ -1267,8 +1267,16 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
         }
         emit('workflow:step', { runId, stage: 'coding', status: 'done' });
 
+        // Post-Coding Code-Review (Merge-Reife, DB-Migration, Backup, Deployment-Risiken)
+        const codeReviewSort = sortOrder + 1;
+        try {
+            await runCodeReviewStage(runId, ctx.ticket, result.output, codeReviewSort);
+        } catch (e) {
+            wfError(`runCodeReviewStage FAILED | run=${runId}`, e.message);
+        }
+
         const approverStaff = await pickStaff('approval', 'human');
-        const finalSort = sortOrder + 1;
+        const finalSort = codeReviewSort + 1;
         const finalStepId = await startStep(runId, 'approval', finalSort, approverStaff);
         await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [finalStepId]);
         await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
@@ -1288,6 +1296,150 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
 }
 
 module.exports = { init, startForTicket, decideHumanStep, rerunStage };
+
+function renderCodeReviewMarkdown(asm) {
+    if (!asm || typeof asm !== 'object') return String(asm || '');
+    const lines = [];
+    if (asm.verdict) lines.push(`**Verdikt:** \`${asm.verdict}\``);
+    if (asm.merge_summary) lines.push(`\n${asm.merge_summary}`);
+    if (Array.isArray(asm.code_quality) && asm.code_quality.length) {
+        lines.push(`\n**Code-Qualitaet (am Diff):**`);
+        asm.code_quality.forEach(v => lines.push(`- ${v}`));
+    }
+    if (asm.db_migration) {
+        const m = asm.db_migration;
+        lines.push(`\n**Datenbank-Migration:**`);
+        lines.push(`- Erforderlich: ${m.required ? 'Ja' : 'Nein'}`);
+        if (m.required) {
+            lines.push(`- Im PR enthalten: ${m.included_in_pr ? 'Ja' : 'Nein'}`);
+            if (m.reversible !== undefined && m.reversible !== null) lines.push(`- Reversibel: ${m.reversible ? 'Ja' : 'Nein'}`);
+        }
+        if (m.notes) lines.push(`- Details: ${m.notes}`);
+    }
+    if (asm.backup_recommended !== undefined) {
+        lines.push(`\n**Backup vor Deployment empfohlen:** ${asm.backup_recommended ? 'Ja' : 'Nein'}`);
+        if (asm.backup_rationale) lines.push(`_${asm.backup_rationale}_`);
+    }
+    if (Array.isArray(asm.breaking_changes) && asm.breaking_changes.length) {
+        lines.push(`\n**Breaking Changes:**`);
+        asm.breaking_changes.forEach(v => lines.push(`- ${v}`));
+    }
+    if (Array.isArray(asm.deployment_steps) && asm.deployment_steps.length) {
+        lines.push(`\n**Deployment-Schritte:**`);
+        asm.deployment_steps.forEach(v => lines.push(`- ${v}`));
+    }
+    if (asm.rollback_plan) {
+        lines.push(`\n**Rollback-Plan:**\n${asm.rollback_plan}`);
+    }
+    if (Array.isArray(asm.manual_verification) && asm.manual_verification.length) {
+        lines.push(`\n**Manuell pruefen vor Approve:**`);
+        asm.manual_verification.forEach(v => lines.push(`- ${v}`));
+    }
+    if (Array.isArray(asm.residual_risks) && asm.residual_risks.length) {
+        lines.push(`\n**Restrisiken:**`);
+        asm.residual_risks.forEach(v => lines.push(`- ${v}`));
+    }
+    return lines.join('\n');
+}
+
+async function execCodeReview(ctx, codingOutput) {
+    wfInfo(`Stage:CODE_REVIEW start | ticket=${ctx.ticket.id}`);
+    // Plan-Daten fuer Kontext (allowed_files, change_kind, plan-Markdown)
+    let allowedFiles = [];
+    let changeKind = 'extend';
+    try {
+        const planStep = await getRow(
+            `SELECT output_payload FROM ticket_workflow_steps
+             WHERE run_id IN (SELECT id FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1)
+               AND stage = 'planning' AND status = 'done'
+             ORDER BY id DESC LIMIT 1`, [ctx.ticket.id]);
+        if (planStep?.output_payload) {
+            const planOut = JSON.parse(planStep.output_payload);
+            if (Array.isArray(planOut.allowed_files)) allowedFiles = planOut.allowed_files;
+            if (planOut.change_kind) changeKind = planOut.change_kind;
+        }
+    } catch (e) { wfWarn(`Stage:CODE_REVIEW plan load failed`, e.message); }
+
+    const userPrompt = prompts.CODE_REVIEW.buildUser({
+        ticket: ctx.ticket,
+        plan: ctx.ticket.implementation_plan,
+        codingOutput,
+        codeChecks: codingOutput?.code_checks || null,
+        prInfo: {
+            pr_url: codingOutput?.pr_url,
+            pr_number: codingOutput?.pr_number,
+            branch: codingOutput?.branch,
+            pr_draft: codingOutput?.pr_draft
+        },
+        changedFiles: codingOutput?.files || [],
+        allowedFiles,
+        changeKind
+    }) + extraInfoSuffix(ctx);
+    wfInfo(`Stage:CODE_REVIEW prompt | userPrompt_len=${userPrompt.length} files=${(codingOutput?.files || []).length}`);
+
+    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODE_REVIEW.system, userPrompt });
+    const out = r.parsed || {
+        verdict: 'merge_with_caution',
+        merge_summary: 'KI-Antwort nicht parsebar - bitte Diff manuell pruefen.',
+        code_quality: [],
+        db_migration: { required: false, included_in_pr: false, reversible: null, notes: '' },
+        backup_recommended: false,
+        backup_rationale: '',
+        breaking_changes: [],
+        deployment_steps: [],
+        rollback_plan: '',
+        manual_verification: [],
+        residual_risks: ['Antwort nicht parsebar']
+    };
+    if (!['ready_to_merge', 'merge_with_caution', 'not_ready'].includes(out.verdict)) {
+        out.verdict = 'merge_with_caution';
+    }
+    const md = renderCodeReviewMarkdown(out);
+    out.markdown = md;
+    ctx._artifacts = [
+        { kind: 'code_review', filename: 'code_review.md', content: md }
+    ];
+    wfInfo(`Stage:CODE_REVIEW done | verdict=${out.verdict} backup=${out.backup_recommended} migration=${out.db_migration?.required}`);
+    return { output: out, ai: r };
+}
+
+async function runCodeReviewStage(runId, ticket, codingOutput, sortOrder) {
+    // Reuse den Integration-Bot (selbe Rolle, gleicher Pool, aber eigener Prompt).
+    const reviewer = await pickStaff('integration', 'ai');
+    if (!reviewer) {
+        wfWarn(`runCodeReviewStage NO_STAFF | run=${runId} - skipping post-coding review`);
+        await skipStep(runId, 'code_review', sortOrder, 'no_integration_bot_available');
+        return;
+    }
+    const ctx = { ticket, staff: reviewer };
+    wfInfo(`runCodeReviewStage | run=${runId} ticket=${ticket.id} reviewer="${reviewer.name}"`);
+    const stepId = await startStep(runId, 'code_review', sortOrder, reviewer);
+    emit('workflow:step', { runId, stage: 'code_review', status: 'in_progress', staff_id: reviewer.id });
+    try {
+        const result = await execCodeReview(ctx, codingOutput);
+        await finishStep(stepId, { status: 'done', output: result.output, ai: result.ai });
+        if (Array.isArray(ctx._artifacts) && ctx._artifacts.length) {
+            for (const a of ctx._artifacts) {
+                try {
+                    await saveArtifact({
+                        ticketId: ctx.ticket.id, runId, stepId, stage: 'code_review',
+                        kind: a.kind, filename: a.filename,
+                        mimeType: a.mimeType || 'text/markdown', content: a.content
+                    });
+                } catch (e) { wfError('Artifact save failed', e.message); }
+            }
+            ctx._artifacts = [];
+        }
+        // Persistiere Ergebnis am Ticket fuer Briefing
+        try {
+            await run(`UPDATE tickets SET merge_review = ? WHERE id = ?`, [result.output.markdown, ctx.ticket.id]);
+        } catch (e) { /* Spalte koennte fehlen, nicht-fatal */ }
+        emit('workflow:step', { runId, stage: 'code_review', status: 'done' });
+    } catch (e) {
+        wfError(`Stage:CODE_REVIEW FAILED | run=${runId}`, e.message);
+        await failStep(stepId, e.message || String(e));
+    }
+}
 
 async function rerunStage(runId, stepId, extraInfo, actor) {
     wfInfo(`rerunStage | run=${runId} step=${stepId} extraInfo_len=${(extraInfo || '').length} actor=${actor}`);

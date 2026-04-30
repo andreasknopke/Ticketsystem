@@ -293,4 +293,96 @@ umgesetzt werden. Der Approver hat das letzte Wort.
 ` : ''}`
 };
 
-module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING };
+const CODE_REVIEW = {
+    system: `Du bist Code Review & Deployment Reviewer. Du erhaeltst das ERGEBNIS
+eines Coding-Bots (Pull Request, geaenderte Datei-Inhalte, Commit-Message,
+Test-Plan, automatische Code-Checks) PLUS den urspruenglichen Architect-Plan.
+
+Deine Aufgabe ist NICHT, den Plan erneut zu bewerten - das wurde vor dem
+Coding bereits getan. Konzentriere dich AUSSCHLIESSLICH auf den tatsaechlich
+erzeugten Code und seine Auswirkungen auf das Deployment.
+
+Pruefe konkret:
+1. **Merge-Reife:** Ist der Diff sauber, fokussiert, mergbar? Gibt es offen-
+   sichtliche Bugs, Tippfehler, unbenutzte Imports, Debug-Code, hartkodierte
+   Werte, fehlerhafte Error-Handling? Passt der Code stilistisch zur Codebase?
+2. **Datenbank/Schema-Migration:** Aendert der PR Models, Tabellen, Spalten,
+   Indizes oder Constraints? Wenn ja: Ist eine Migration noetig? Ist sie im
+   PR enthalten? Ist sie reversibel?
+3. **Backup-Empfehlung:** Sollte vor dem Deployment auf Production die
+   Datenbank gesichert werden? (Ja, wenn Migration/Datenmanipulation; Nein,
+   wenn rein UI/Frontend ohne Persistenzaenderung.)
+4. **Breaking Changes:** API-Vertrag geaendert? Konfigurationsformat? ENV-
+   Variablen? Auswirkungen auf andere Services/Clients?
+5. **Deployment-Checkliste:** Konkrete Schritte fuer einen sicheren Rollout
+   (Reihenfolge Migration->Code, Feature-Flag, Rollback-Plan, Smoke-Tests).
+6. **Restrisiko fuer den Approver:** Was muss ein Mensch zwingend manuell
+   pruefen, bevor er Approve klickt?
+
+Wiederhole NICHT die Risiken aus dem Plan, sofern sie nicht durch den
+tatsaechlichen Code bestaetigt oder widerlegt werden. Sei spezifisch:
+zitiere Zeilen, Dateinamen und Symbole aus dem Diff.
+
+Antworte ausschliesslich als JSON:
+{
+  "verdict": "ready_to_merge" | "merge_with_caution" | "not_ready",
+  "merge_summary": "1-2 Saetze, die der Approver auf einen Blick liest",
+  "code_quality": ["konkrete Punkte zur Diff-Qualitaet, mit Datei:Symbol"],
+  "db_migration": {
+    "required": true | false,
+    "included_in_pr": true | false,
+    "reversible": true | false | null,
+    "notes": "Details zu betroffenen Tabellen/Spalten oder leer"
+  },
+  "backup_recommended": true | false,
+  "backup_rationale": "warum (oder warum nicht) ein DB-Backup vor Deployment",
+  "breaking_changes": ["..."],
+  "deployment_steps": ["1. ...", "2. ..."],
+  "rollback_plan": "konkrete Schritte fuer Rollback",
+  "manual_verification": ["Was der Approver vor dem Merge selber testen muss"],
+  "residual_risks": ["..."]
+}`,
+    buildUser: ({ ticket, plan, codingOutput, codeChecks, prInfo, changedFiles, allowedFiles, changeKind }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
+
+Urspruenglicher Architect-Plan (zur Orientierung, NICHT erneut bewerten):
+${plan || '(leer)'}
+
+Scope-Contract:
+- change_kind: ${changeKind || 'extend'}
+- allowed_files: ${Array.isArray(allowedFiles) && allowedFiles.length ? allowedFiles.join(', ') : '(leer)'}
+
+Coding-Bot Ergebnis:
+- Commit-Message:
+${codingOutput?.commit_message || '(leer)'}
+
+- Zusammenfassung des Bots:
+${codingOutput?.summary || '(leer)'}
+
+- Vom Bot dokumentierte Risiken:
+${(codingOutput?.risks || []).map(r => '  - ' + r).join('\n') || '  (keine)'}
+
+- Test-Plan:
+${(codingOutput?.test_plan || []).map((t, i) => `  ${i+1}. ${t.step || ''} (Erwartet: ${t.expected || ''})`).join('\n') || '  (keiner)'}
+
+- Manuelle Verifikation laut Bot:
+${codingOutput?.manual_verification || '(keine Angabe)'}
+
+- Vom Bot entfernte Symbole:
+${(codingOutput?.removed_symbols || []).map(s => `  - ${s.path}::${s.symbol} (${s.reason})`).join('\n') || '  (keine)'}
+
+Automatische Code-Checks (Syntax/Lint/Build):
+${codeChecks ? `  ok=${codeChecks.ok}, ran=${(codeChecks.ran || []).map(r => r.name + ':' + r.status).join(', ')}\n  violations: ${(codeChecks.violations || []).map(v => `[${v.type}] ${v.file || ''}: ${v.message}`).join('; ') || '(keine)'}` : '  (keine Checks ausgefuehrt)'}
+
+Pull Request:
+${prInfo?.pr_url ? `  #${prInfo.pr_number} ${prInfo.pr_url} (Branch: ${prInfo.branch}${prInfo.pr_draft ? ', Draft' : ''})` : '  (kein PR erstellt - reasons siehe Coding-Step)'}
+
+Geaenderte Dateien (${(changedFiles || []).length}):
+${(changedFiles || []).map(f => {
+    const action = f.action || 'update';
+    const content = f.content || '';
+    const trimmed = content.length > 12000 ? content.slice(0, 12000) + '\n... (gekuerzt, original ' + content.length + ' chars)' : content;
+    return `\n=== ${action.toUpperCase()} ${f.path} ===\n\`\`\`\n${trimmed}\n\`\`\``;
+}).join('\n') || '(keine)'}`
+};
+
+module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING, CODE_REVIEW };

@@ -711,6 +711,7 @@ function initDb() {
             { col: 'coding_prompt', sql: 'ALTER TABLE tickets ADD COLUMN coding_prompt TEXT' },
             { col: 'implementation_plan', sql: 'ALTER TABLE tickets ADD COLUMN implementation_plan TEXT' },
             { col: 'integration_assessment', sql: 'ALTER TABLE tickets ADD COLUMN integration_assessment TEXT' },
+            { col: 'merge_review', sql: 'ALTER TABLE tickets ADD COLUMN merge_review TEXT' },
             { col: 'final_decision', sql: "ALTER TABLE tickets ADD COLUMN final_decision TEXT" }
         ];
 
@@ -1725,12 +1726,14 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
                         coding_prompt: ticket.coding_prompt || '',
                         implementation_plan: ticket.implementation_plan || '',
                         integration_assessment: ticket.integration_assessment || '',
+                        merge_review: ticket.merge_review || '',
                         redacted_description: ticket.redacted_description || '',
                         final_decision: ticket.final_decision || null
                     };
                     try {
                         briefing.implementation_plan_html = ticket.implementation_plan ? marked.parse(ticket.implementation_plan) : '';
                         briefing.integration_assessment_html = ticket.integration_assessment ? marked.parse(ticket.integration_assessment) : '';
+                        briefing.merge_review_html = ticket.merge_review ? marked.parse(ticket.merge_review) : '';
                     } catch (_) {}
                     res.json({ run, steps, artifacts, ticket_briefing: briefing });
                 });

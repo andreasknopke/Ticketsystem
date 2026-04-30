@@ -478,6 +478,7 @@
             security: 'Security & Privacy Reviewer',
             planning: 'Solution Architect (Planner)',
             integration: 'Integration / Architecture Reviewer',
+            code_review: 'Code Review & Deployment Reviewer',
             approval: 'Final Approver',
             coding: 'Coding Bot'
         };
@@ -559,7 +560,10 @@
                 blocks.push(`<details open class="mb-3"><summary class="cursor-pointer text-sm font-semibold text-gray-800">🏗️ Architect Plan</summary><div class="prose prose-sm max-w-none mt-2 p-3 bg-emerald-50 rounded border border-emerald-200">${briefing.implementation_plan_html}</div></details>`);
             }
             if (briefing.integration_assessment_html) {
-                blocks.push(`<details open class="mb-3"><summary class="cursor-pointer text-sm font-semibold text-gray-800">🔗 Integration / Architecture Review</summary><div class="prose prose-sm max-w-none mt-2 p-3 bg-amber-50 rounded border border-amber-200">${briefing.integration_assessment_html}</div></details>`);
+                blocks.push(`<details open class="mb-3"><summary class="cursor-pointer text-sm font-semibold text-gray-800">🔗 Integration / Architecture Review (vor Coding)</summary><div class="prose prose-sm max-w-none mt-2 p-3 bg-amber-50 rounded border border-amber-200">${briefing.integration_assessment_html}</div></details>`);
+            }
+            if (briefing.merge_review_html) {
+                blocks.push(`<details open class="mb-3"><summary class="cursor-pointer text-sm font-semibold text-gray-800">🚀 Code Review & Deployment-Check (nach Coding)</summary><div class="prose prose-sm max-w-none mt-2 p-3 bg-rose-50 rounded border border-rose-200">${briefing.merge_review_html}</div></details>`);
             }
             const allArt = (artifacts || []).map(a => {
                 const inlineable = a.mime_type && (a.mime_type.startsWith('text/') || a.mime_type === 'application/json');
