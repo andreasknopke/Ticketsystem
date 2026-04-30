@@ -1,7 +1,7 @@
 'use strict';
 
 // Einheitlicher AI-Client mit Provider-Abstraktion.
-// Provider: deepseek, ollama, openai_local, anthropic, copilot, mistral
+// Provider: deepseek, ollama (Cloud), openai_local, anthropic, copilot, mistral
 // Methode: chat({ provider, model, system, user, temperature, maxTokens, json, timeoutMs })
 //   -> { text, raw, prompt_tokens, completion_tokens, provider, model, duration_ms }
 
@@ -14,8 +14,13 @@ const CONFIG = {
         defaultModel: env.DEEPSEEK_MODEL || 'deepseek-chat'
     },
     ollama: {
-        baseUrl: (env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, ''),
-        defaultModel: env.OLLAMA_MODEL || 'llama3.1'
+        // Ollama Cloud: https://docs.ollama.com/cloud
+        // Direkter Remote-Host ist https://ollama.com/api/chat mit Bearer-Auth.
+        // Fuer lokale Ollama-Instanzen kann OLLAMA_BASE_URL weiterhin explizit
+        // auf http://localhost:11434 gesetzt werden.
+        baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, ''),
+        apiKey: env.OLLAMA_API_KEY || '',
+        defaultModel: env.OLLAMA_MODEL || 'gpt-oss:120b'
     },
     openai_local: {
         baseUrl: (env.OPENAI_LOCAL_BASE_URL || 'http://localhost:8000/v1').replace(/\/$/, ''),
@@ -50,7 +55,7 @@ const CONFIG = {
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
-// 128k Default fuer grosse Cloud-Provider. Lokale Backends (vLLM, ollama,
+// 128k Default fuer grosse Cloud-Provider. Lokale Backends (vLLM,
 // openai_local) haben oft engere max_model_len-Limits und MUESSEN per
 // provider-spezifischer Env runtergeregelt werden, sonst HTTP 400.
 const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 131072;
@@ -160,6 +165,10 @@ async function callOllama(opts) {
     const cfg = CONFIG.ollama;
     const url = `${cfg.baseUrl}/api/chat`;
     assertAllowed(url);
+    const isCloudHost = new URL(cfg.baseUrl).host === 'ollama.com';
+    if (isCloudHost && !cfg.apiKey) {
+        throw new Error('AI ollama: OLLAMA_API_KEY ist fuer Ollama Cloud nicht gesetzt');
+    }
     const body = {
         model: opts.model || cfg.defaultModel,
         messages: [
@@ -175,9 +184,11 @@ async function callOllama(opts) {
     if (opts.json) body.format = 'json';
 
     const started = Date.now();
+    const headers = { 'Content-Type': 'application/json' };
+    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
     const resp = await fetchWithTimeout(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body)
     }, opts.timeoutMs || DEFAULT_TIMEOUT);
     const duration_ms = Date.now() - started;
@@ -463,7 +474,7 @@ function getConfigSummary() {
     return {
         default_provider: DEFAULT_PROVIDER,
         deepseek: { base_url: CONFIG.deepseek.baseUrl, model: CONFIG.deepseek.defaultModel, configured: !!CONFIG.deepseek.apiKey },
-        ollama: { base_url: CONFIG.ollama.baseUrl, model: CONFIG.ollama.defaultModel, configured: true },
+        ollama: { base_url: CONFIG.ollama.baseUrl, model: CONFIG.ollama.defaultModel, configured: new URL(CONFIG.ollama.baseUrl).host !== 'ollama.com' || !!CONFIG.ollama.apiKey },
         openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true },
         anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
         copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken },

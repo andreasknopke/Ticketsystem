@@ -511,6 +511,13 @@ function initDb() {
             if (cols.includes('kind')) {
                 db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
             }
+            if (cols.includes('ai_provider') && cols.includes('ai_model')) {
+                db.run(`UPDATE staff SET ai_model = 'gpt-oss:120b'
+                    WHERE ai_provider = 'ollama'
+                      AND (ai_model IS NULL OR ai_model = '' OR ai_model IN ('llama3.1', 'gemma3:12b', 'gemma3:12b-cloud'))`, (e) => {
+                    if (e) console.error('Fehler beim Aktualisieren alter Ollama-Modelle:', e.message);
+                });
+            }
         });
     });
 

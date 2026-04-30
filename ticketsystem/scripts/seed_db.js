@@ -55,8 +55,8 @@ async function seed() {
         const aiBots = [
             { name: 'Coding-Bot (DeepSeek)', email: 'bot-deepseek@ticketsystem.local',
               kind: 'ai', ai_provider: 'deepseek', coding_level: 'medium', auto_commit_enabled: 1 },
-            { name: 'Coding-Bot (Ollama)', email: 'bot-ollama@ticketsystem.local',
-              kind: 'ai', ai_provider: 'ollama', ai_model: 'gemma3:12b', coding_level: 'high', auto_commit_enabled: 1 }
+                        { name: 'Coding-Bot (Ollama Cloud)', email: 'bot-ollama@ticketsystem.local',
+                            kind: 'ai', ai_provider: 'ollama', ai_model: 'gpt-oss:120b', coding_level: 'high', auto_commit_enabled: 1 }
         ];
         for (const bot of aiBots) {
             try {

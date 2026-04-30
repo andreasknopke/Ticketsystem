@@ -125,9 +125,12 @@ DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 
-# Ollama (lokal)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
+# Ollama Cloud (https://docs.ollama.com/cloud)
+# API-Key unter ollama.com erzeugen und hier hinterlegen.
+# Hinweis: Direkter Cloud-Zugriff nutzt Modellnamen ohne "-cloud" (z.B. gpt-oss:120b).
+OLLAMA_API_KEY=
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_MODEL=gpt-oss:120b
 
 # Lokales OpenAI-kompatibles LLM (z. B. LM Studio, vLLM)
 OPENAI_LOCAL_BASE_URL=http://localhost:8000/v1
