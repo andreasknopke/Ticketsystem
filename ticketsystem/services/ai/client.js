@@ -393,30 +393,31 @@ function tryParseJson(text) {
     if (!text) return null;
     let s = text.trim();
 
-    // Strip code fences: ```json ... ``` with possible trailing text
+    // Strip code fences
     const fenceMatch = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenceMatch) s = fenceMatch[1].trim();
 
+    // 1) Direkt versuchen
     try { return JSON.parse(s); } catch (_) {}
 
-    // Try to extract the first complete { ... } block (non-greedy nested extraction)
+    // 2) Sanitize (escaped literal newlines in strings) und direkt versuchen
+    const sanitizedFull = sanitizeJsonControlChars(s);
+    if (sanitizedFull !== s) {
+        try { return JSON.parse(sanitizedFull); } catch (_) {}
+    }
+
+    // 3) Erstes {…} extrahieren + parsen + sanitizen
     const braceMatch = extractFirstJsonObject(s);
     if (braceMatch) {
         try { return JSON.parse(braceMatch); } catch (_) {}
-        // Modelle (insb. deepseek/openai-kompatibel) liefern manchmal JSON mit
-        // ROHEN Newlines/Tabs innerhalb von String-Literalen ("commit_message":
-        // "Zeile 1<LF>Zeile 2"), was nach JSON-Spec invalide ist. Wir escapen
-        // diese kontextabhaengig (nur wenn wir gerade in einem String sind).
         const sanitized = sanitizeJsonControlChars(braceMatch);
         if (sanitized !== braceMatch) {
             try { return JSON.parse(sanitized); } catch (_) {}
         }
-    }
-
-    // Letzter Versuch: Sanitizer auf den ganzen Text
-    const sanitizedFull = sanitizeJsonControlChars(s);
-    if (sanitizedFull !== s) {
-        try { return JSON.parse(sanitizedFull); } catch (_) {}
+        // Auch den extrahierten Block über den vollen Sanitizer jagen
+        try { return JSON.parse(sanitizeJsonControlChars(sanitized)); } catch (_) {}
+    } else {
+        console.log(`[AI:JSON] No JSON object found in text | text_len=${text.length} first_chars=${s.slice(0, 80).replace(/\n/g, '\\n')}`);
     }
 
     // Log preview on failure
