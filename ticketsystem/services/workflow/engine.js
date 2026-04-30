@@ -761,7 +761,17 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         const isDispatchPhase = (codingDone?.c || 0) === 0;
         const triageStep = await getRow(`SELECT * FROM ticket_workflow_steps WHERE run_id = ? AND stage = 'triage' ORDER BY id ASC LIMIT 1`, [runId]);
         const triageOutput = safeJsonParse(triageStep?.output_payload, null) || {};
-        const pendingSplitReview = isDispatchPhase && triageOutput.decision === 'split';
+        // Wenn bereits ein vorheriger Approval-Step den Split abgelehnt hat,
+        // ist die aktuelle Approval-Phase die normale Dispatch-Entscheidung
+        // und KEIN Split-Review mehr (sonst Endlosschleife im UI).
+        const priorSplitRejected = await getRow(
+            `SELECT 1 AS x FROM ticket_workflow_steps
+             WHERE run_id = ? AND stage = 'approval' AND status = 'done'
+               AND id <> ? AND output_payload LIKE '%"reject_split"%'
+             LIMIT 1`, [runId, stepId]);
+        const pendingSplitReview = isDispatchPhase
+            && triageOutput.decision === 'split'
+            && !priorSplitRejected;
         wfInfo(`decideHumanStep APPROVAL | run=${runId} isDispatch=${isDispatchPhase} codingDone=${codingDone?.c || 0}`);
 
         if (pendingSplitReview) {

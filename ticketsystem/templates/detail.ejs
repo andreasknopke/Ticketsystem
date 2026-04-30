@@ -580,7 +580,14 @@
             const codingDone = (allSteps || []).some(s => s.stage === 'coding' && s.status === 'done');
             const isDispatch = !codingDone;
             const triage = (allSteps || []).find(s => s.stage === 'triage' && s.output && s.output.decision === 'split');
-            const splitReview = isDispatch && triage && Array.isArray(triage.output.split_tickets) && triage.output.split_tickets.length;
+            // Wenn ein vorheriger Approval-Step den Split bereits abgelehnt hat,
+            // ist die aktuelle Approval-Phase die normale Dispatch-Entscheidung.
+            const splitAlreadyRejected = (allSteps || []).some(s =>
+                s.stage === 'approval' && s.status === 'done'
+                && s.output && s.output.decision === 'reject_split'
+            );
+            const splitReview = isDispatch && triage && !splitAlreadyRejected
+                && Array.isArray(triage.output.split_tickets) && triage.output.split_tickets.length;
             // Empfohlene Komplexitaet aus Integration-Step lesen
             let recommended = null;
             if (isDispatch && !splitReview) {
