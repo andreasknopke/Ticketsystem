@@ -50,10 +50,27 @@ const CONFIG = {
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
-// 128k Default fuer Cloud-Provider; lokale ollama-Modelle koennen deutlich
-// hoeher (siehe AI_OLLAMA_MAX_TOKENS).
+// 128k Default fuer grosse Cloud-Provider. Lokale Backends (vLLM, ollama,
+// openai_local) haben oft engere max_model_len-Limits und MUESSEN per
+// provider-spezifischer Env runtergeregelt werden, sonst HTTP 400.
 const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 131072;
-const OLLAMA_MAX_TOKENS = parseInt(env.AI_OLLAMA_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS;
+const PROVIDER_MAX_TOKENS = {
+    deepseek: parseInt(env.AI_DEEPSEEK_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    mistral: parseInt(env.AI_MISTRAL_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    anthropic: parseInt(env.AI_ANTHROPIC_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    copilot: parseInt(env.AI_COPILOT_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    // Lokale Backends: konservativer Default, da typische vLLM-Setups
+    // max_model_len = 32768 fahren. Per Env hochregeln, wenn das Modell
+    // mehr kann.
+    openai_local: parseInt(env.AI_OPENAI_LOCAL_MAX_TOKENS, 10) || 16384,
+    ollama: parseInt(env.AI_OLLAMA_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS
+};
+
+function resolveMaxTokens(provider, requested) {
+    const cap = PROVIDER_MAX_TOKENS[provider] || DEFAULT_MAX_TOKENS;
+    if (!requested) return cap;
+    return Math.min(requested, cap);
+}
 
 // Allowlist der erlaubten Outbound-Hosts
 const ALLOWED_HOSTS = new Set();
@@ -92,7 +109,7 @@ async function callOpenAICompatible(provider, opts) {
             { role: 'user', content: opts.user || '' }
         ],
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS
+        max_tokens: resolveMaxTokens(provider, opts.maxTokens)
     };
     if (opts.json) body.response_format = { type: 'json_object' };
     if (opts.extra) Object.assign(body, opts.extra);
@@ -152,7 +169,7 @@ async function callOllama(opts) {
         stream: false,
         options: {
             temperature: opts.temperature ?? 0.2,
-            num_predict: opts.maxTokens || OLLAMA_MAX_TOKENS
+            num_predict: resolveMaxTokens('ollama', opts.maxTokens)
         }
     };
     if (opts.json) body.format = 'json';
@@ -208,7 +225,7 @@ async function callAnthropic(opts) {
     }
     const body = {
         model: opts.model || cfg.defaultModel,
-        max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS,
+        max_tokens: resolveMaxTokens('anthropic', opts.maxTokens),
         temperature: opts.temperature ?? 0.2,
         system: opts.system || undefined,
         messages: [{ role: 'user', content: userContent }]
@@ -291,7 +308,7 @@ async function callCopilot(opts) {
             { role: 'user', content: opts.user || '' }
         ],
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS,
+        max_tokens: resolveMaxTokens('copilot', opts.maxTokens),
         stream: false
     };
     if (opts.json) body.response_format = { type: 'json_object' };
