@@ -348,6 +348,20 @@ function tryParseJson(text) {
     const braceMatch = extractFirstJsonObject(s);
     if (braceMatch) {
         try { return JSON.parse(braceMatch); } catch (_) {}
+        // Modelle (insb. deepseek/openai-kompatibel) liefern manchmal JSON mit
+        // ROHEN Newlines/Tabs innerhalb von String-Literalen ("commit_message":
+        // "Zeile 1<LF>Zeile 2"), was nach JSON-Spec invalide ist. Wir escapen
+        // diese kontextabhaengig (nur wenn wir gerade in einem String sind).
+        const sanitized = sanitizeJsonControlChars(braceMatch);
+        if (sanitized !== braceMatch) {
+            try { return JSON.parse(sanitized); } catch (_) {}
+        }
+    }
+
+    // Letzter Versuch: Sanitizer auf den ganzen Text
+    const sanitizedFull = sanitizeJsonControlChars(s);
+    if (sanitizedFull !== s) {
+        try { return JSON.parse(sanitizedFull); } catch (_) {}
     }
 
     // Log preview on failure
@@ -355,13 +369,50 @@ function tryParseJson(text) {
     return null;
 }
 
+// Escapt rohe Steuerzeichen (LF/CR/TAB) innerhalb von JSON-String-Literalen.
+// Ausserhalb von Strings (Whitespace zwischen Tokens) bleiben sie unveraendert.
+// Beruecksichtigt Backslash-Escapes, damit \" nicht den String beendet.
+function sanitizeJsonControlChars(src) {
+    let out = '';
+    let inStr = false;
+    let escape = false;
+    for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (inStr) {
+            if (escape) { out += ch; escape = false; continue; }
+            if (ch === '\\') { out += ch; escape = true; continue; }
+            if (ch === '"') { out += ch; inStr = false; continue; }
+            if (ch === '\n') { out += '\\n'; continue; }
+            if (ch === '\r') { out += '\\r'; continue; }
+            if (ch === '\t') { out += '\\t'; continue; }
+            // Andere Kontrollzeichen 0x00-0x1F als \uXXXX
+            const code = ch.charCodeAt(0);
+            if (code < 0x20) { out += '\\u' + code.toString(16).padStart(4, '0'); continue; }
+            out += ch;
+        } else {
+            if (ch === '"') { inStr = true; }
+            out += ch;
+        }
+    }
+    return out;
+}
+
 function extractFirstJsonObject(str) {
     let depth = 0, start = -1;
+    let inStr = false, escape = false;
     for (let i = 0; i < str.length; i++) {
-        if (str[i] === '{') {
+        const c = str[i];
+        if (inStr) {
+            if (escape) { escape = false; continue; }
+            if (c === '\\') { escape = true; continue; }
+            if (c === '"') { inStr = false; }
+            continue;
+        }
+        if (c === '"') { inStr = true; continue; }
+        if (c === '{') {
             if (depth === 0) start = i;
             depth++;
-        } else if (str[i] === '}') {
+        } else if (c === '}') {
             depth--;
             if (depth === 0 && start >= 0) {
                 return str.substring(start, i + 1);
