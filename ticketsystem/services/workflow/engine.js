@@ -409,11 +409,38 @@ async function execPlanning(ctx) {
     }
 
     // Scope-Contract normalisieren
+    // Strenger Pfad-Filter: keine Whitespaces, muss Datei-Endung haben (filtert Platzhalter wie "zu bestimmende Datei")
+    const looksLikePath = p => typeof p === 'string'
+        && validate(p)
+        && !/\s/.test(p.trim())
+        && /\.[A-Za-z0-9]{1,8}$/.test(p.trim());
+    const inTreeIfKnown = p => !treePathsSet.size || treePathsSet.has(p);
+
     if (!Array.isArray(out.allowed_files)) out.allowed_files = [];
-    out.allowed_files = out.allowed_files
-        .filter(validate)
-        .map(p => p.trim())
+    out.allowed_files = [...new Set(out.allowed_files.filter(looksLikePath).map(p => p.trim()))]
         .slice(0, 25);
+
+    // Fallback: Wenn der Planner keinen Whitelist-Pfad geliefert hat, aus
+    // steps[].files und candidate_files harvesten, damit der Coding-Bot ueberhaupt
+    // einen Scope-Contract bekommt (sonst blockt Scope-Validator garantiert).
+    if (!out.allowed_files.length) {
+        const fromSteps = Array.isArray(out.steps)
+            ? out.steps.flatMap(s => Array.isArray(s?.files) ? s.files : [])
+            : [];
+        const fromCandidates = Array.isArray(out.candidate_files) ? out.candidate_files : [];
+        const harvested = [...new Set(
+            [...fromSteps, ...fromCandidates]
+                .filter(looksLikePath)
+                .map(p => p.trim())
+                .filter(inTreeIfKnown)
+        )].slice(0, 25);
+        if (harvested.length) {
+            out.allowed_files = harvested;
+            out._allowed_files_fallback = true;
+            wfWarn(`Stage:PLANNING allowed_files leer - Fallback aus steps/candidates | count=${harvested.length} paths=${harvested.join(',')}`);
+        }
+    }
+
     if (!['extend', 'new', 'refactor'].includes(out.change_kind)) {
         out.change_kind = 'extend';
     }
@@ -788,6 +815,23 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
 
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
             const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
+            // Sanity: Planner muss eine konkrete allowed_files-Whitelist geliefert haben.
+            // Sonst startet die Coding-Stage zwingend in einen Scope-Violation-Block.
+            const planRow = await getRow(
+                `SELECT output_payload FROM ticket_workflow_steps
+                 WHERE run_id = ? AND stage = 'planning' AND status = 'done'
+                 ORDER BY id DESC LIMIT 1`, [runId]);
+            let planAllowed = [];
+            if (planRow?.output_payload) {
+                try {
+                    const p = JSON.parse(planRow.output_payload);
+                    if (Array.isArray(p.allowed_files)) planAllowed = p.allowed_files.filter(x => typeof x === 'string' && x.trim());
+                } catch { /* ignore */ }
+            }
+            if (!planAllowed.length) {
+                wfWarn(`DISPATCH BLOCKED | run=${runId} ticket=${ticket.id} reason=allowed_files_empty`);
+                throw new Error('Coding-Dispatch nicht moeglich: Planner hat keine konkreten Dateien (allowed_files) geliefert. Bitte zuerst "Erneut pruefen" mit Zusatzinfo (konkreter Datei-/Funktionspfad) verwenden oder den Plan via "Rework" zurueckgeben.');
+            }
             const output = {
                 decision, coding_level: codingLevel, note: note || null,
                 decided_by: actor || null, decided_at: new Date().toISOString()
