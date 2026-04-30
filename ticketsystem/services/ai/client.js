@@ -391,11 +391,23 @@ async function callCopilot(opts) {
 
 function tryParseJson(text) {
     if (!text) return null;
-    let s = text.trim();
+    const original = text.trim();
+    let s = original;
 
-    // Strip code fences
-    const fenceMatch = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenceMatch) s = fenceMatch[1].trim();
+    // Strip code fences NUR, wenn die Antwort tatsaechlich mit einem Fence
+    // beginnt. Sonst wuerde die Regex faelschlich einen INNEREN Code-Block
+    // (z. B. ```bash ... ```) aus einem JSON-String-Wert extrahieren und der
+    // restliche JSON-Wrapper ginge verloren (Coding-Bot README enthaelt oft
+    // eingebettete Fences).
+    if (s.startsWith('```')) {
+        const fenceMatch = s.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
+        if (fenceMatch) {
+            s = fenceMatch[1].trim();
+        } else {
+            // Unvollstaendiger Fence (kein schliessendes ```), trotzdem oeffnenden Marker entfernen
+            s = s.replace(/^```(?:json)?\s*/i, '').trim();
+        }
+    }
 
     // 1) Direkt versuchen
     try { return JSON.parse(s); } catch (_) {}
@@ -416,7 +428,30 @@ function tryParseJson(text) {
         }
         // Auch den extrahierten Block über den vollen Sanitizer jagen
         try { return JSON.parse(sanitizeJsonControlChars(sanitized)); } catch (_) {}
-    } else {
+    }
+
+    // 4) Fallback: Sanitizer auf den ganzen vorbereiteten Text + Brace-Extract
+    if (sanitizedFull !== s) {
+        const braceFromSan = extractFirstJsonObject(sanitizedFull);
+        if (braceFromSan) {
+            try { return JSON.parse(braceFromSan); } catch (_) {}
+        }
+    }
+
+    // 5) Letzter Versuch: extractFirstJsonObject direkt auf Original
+    //    (falls Fence-Strip o. Sanitizer geschadet hat)
+    if (s !== original) {
+        const braceOrig = extractFirstJsonObject(original);
+        if (braceOrig) {
+            try { return JSON.parse(braceOrig); } catch (_) {}
+            const sanOrig = sanitizeJsonControlChars(braceOrig);
+            if (sanOrig !== braceOrig) {
+                try { return JSON.parse(sanOrig); } catch (_) {}
+            }
+        }
+    }
+
+    if (!braceMatch) {
         console.log(`[AI:JSON] No JSON object found in text | text_len=${text.length} first_chars=${s.slice(0, 80).replace(/\n/g, '\\n')}`);
     }
 
