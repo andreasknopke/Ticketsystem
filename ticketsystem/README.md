@@ -127,6 +127,7 @@ DEEPSEEK_MODEL=deepseek-chat
 
 # Ollama Cloud (https://docs.ollama.com/cloud)
 # API-Key unter ollama.com erzeugen und hier hinterlegen.
+# Nur den Key eintragen, nicht "Bearer <key>". Alias: OLLAMA_CLOUD_API_KEY.
 # Hinweis: Direkter Cloud-Zugriff nutzt Modellnamen ohne "-cloud" (z.B. gpt-oss:120b).
 OLLAMA_API_KEY=
 OLLAMA_BASE_URL=https://ollama.com

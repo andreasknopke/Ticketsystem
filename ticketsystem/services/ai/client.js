@@ -7,10 +7,18 @@
 
 const env = process.env;
 
+function normalizeApiKey(value) {
+    return String(value || '')
+        .trim()
+        .replace(/^['"]|['"]$/g, '')
+        .replace(/^Bearer\s+/i, '')
+        .trim();
+}
+
 const CONFIG = {
     deepseek: {
         baseUrl: (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, ''),
-        apiKey: env.DEEPSEEK_API_KEY || '',
+        apiKey: normalizeApiKey(env.DEEPSEEK_API_KEY),
         defaultModel: env.DEEPSEEK_MODEL || 'deepseek-chat'
     },
     ollama: {
@@ -19,17 +27,17 @@ const CONFIG = {
         // Fuer lokale Ollama-Instanzen kann OLLAMA_BASE_URL weiterhin explizit
         // auf http://localhost:11434 gesetzt werden.
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, ''),
-        apiKey: env.OLLAMA_API_KEY || '',
+        apiKey: normalizeApiKey(env.OLLAMA_API_KEY || env.OLLAMA_CLOUD_API_KEY || env.OLLAMA_TOKEN),
         defaultModel: env.OLLAMA_MODEL || 'gpt-oss:120b'
     },
     openai_local: {
         baseUrl: (env.OPENAI_LOCAL_BASE_URL || 'http://localhost:8000/v1').replace(/\/$/, ''),
-        apiKey: env.OPENAI_LOCAL_API_KEY || '',
+        apiKey: normalizeApiKey(env.OPENAI_LOCAL_API_KEY),
         defaultModel: env.OPENAI_LOCAL_MODEL || 'local-model'
     },
     anthropic: {
         baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, ''),
-        apiKey: env.ANTHROPIC_API_KEY || '',
+        apiKey: normalizeApiKey(env.ANTHROPIC_API_KEY),
         defaultModel: env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
         version: env.ANTHROPIC_VERSION || '2023-06-01'
     },
@@ -48,7 +56,7 @@ const CONFIG = {
         // OpenAI-kompatible API (api.mistral.ai/v1/chat/completions).
         // Sinnvoll fuer Reasoning-lastige Stages wie Integration-Reviewer.
         baseUrl: (env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, ''),
-        apiKey: env.MISTRAL_API_KEY || '',
+        apiKey: normalizeApiKey(env.MISTRAL_API_KEY),
         defaultModel: env.MISTRAL_MODEL || 'mistral-large-latest'
     }
 };
@@ -195,6 +203,9 @@ async function callOllama(opts) {
 
     if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
+        if (resp.status === 401 && isCloudHost) {
+            throw new Error(`AI ollama HTTP 401: unauthorized (Ollama Cloud: API-Key wurde ${cfg.apiKey ? 'gesendet' : 'nicht gesendet'}; pruefe OLLAMA_API_KEY ohne "Bearer "-Prefix, aktives Abo und Modell "${body.model}")`);
+        }
         throw new Error(`AI ollama HTTP ${resp.status}: ${errText.slice(0, 500)}`);
     }
     const data = await resp.json();
