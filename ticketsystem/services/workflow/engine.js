@@ -217,10 +217,111 @@ function extraInfoSuffix(ctx) {
     return `\n\n--- Zusatzinformation vom menschlichen Reviewer (bitte beruecksichtigen) ---\n${ctx.extra_info}\n--- Ende Zusatzinformation ---`;
 }
 
+function previousStageContextSuffix(ctx, stageName) {
+    if (!ctx) return '';
+    const blocks = [];
+    const addBlock = (label, lines) => {
+        const cleaned = (lines || []).filter(Boolean);
+        if (!cleaned.length) return;
+        blocks.push(`### ${label}\n${cleaned.join('\n')}`);
+    };
+
+    if (stageName !== 'triage' && ctx.triage) {
+        addBlock('Vorherige Stage: Triage', [
+            `- Entscheidung: ${ctx.triage.decision || '-'}`,
+            `- Zusammenfassung: ${ctx.triage.summary || '-'}`,
+            `- Begründung: ${ctx.triage.reason || '-'}`,
+            `- Vorgeschlagene Handlung: ${ctx.triage.suggested_action || '-'}`,
+            Array.isArray(ctx.triage.open_questions) && ctx.triage.open_questions.length
+                ? `- Offene Fragen: ${ctx.triage.open_questions.join(' | ')}`
+                : ''
+        ]);
+    }
+
+    if (['planning', 'integration', 'coding'].includes(stageName) && ctx.security) {
+        addBlock('Vorherige Stage: Security', [
+            `- Coding-Prompt: ${ctx.security.coding_prompt || ctx.coding_prompt || '-'}`,
+            Array.isArray(ctx.security.findings) && ctx.security.findings.length
+                ? `- Findings: ${ctx.security.findings.map(f => `${f.type || 'finding'}: ${f.note || ''}`).join(' | ')}`
+                : '',
+            Array.isArray(ctx.security.open_questions) && ctx.security.open_questions.length
+                ? `- Offene Fragen: ${ctx.security.open_questions.join(' | ')}`
+                : ''
+        ]);
+    }
+
+    if (['integration', 'coding'].includes(stageName) && ctx.planning) {
+        addBlock('Vorherige Stage: Planning', [
+            `- Zusammenfassung: ${ctx.planning.summary || '-'}`,
+            `- Aufwand: ${ctx.planning.estimated_effort || '-'}`,
+            Array.isArray(ctx.planning.allowed_files) && ctx.planning.allowed_files.length
+                ? `- Allowed Files: ${ctx.planning.allowed_files.join(', ')}`
+                : '',
+            Array.isArray(ctx.planning.risks) && ctx.planning.risks.length
+                ? `- Risiken: ${ctx.planning.risks.join(' | ')}`
+                : '',
+            Array.isArray(ctx.planning.open_questions) && ctx.planning.open_questions.length
+                ? `- Offene Fragen: ${ctx.planning.open_questions.join(' | ')}`
+                : ''
+        ]);
+    }
+
+    if (stageName === 'coding' && ctx.integration) {
+        addBlock('Vorherige Stage: Integration', [
+            `- Verdict: ${ctx.integration.verdict || '-'}`,
+            `- Empfohlener Coding-Level: ${ctx.integration.recommended_complexity || '-'}`,
+            Array.isArray(ctx.integration.recommended_changes) && ctx.integration.recommended_changes.length
+                ? `- Empfohlene Änderungen: ${ctx.integration.recommended_changes.join(' | ')}`
+                : '',
+            Array.isArray(ctx.integration.integration_risks) && ctx.integration.integration_risks.length
+                ? `- Integrationsrisiken: ${ctx.integration.integration_risks.join(' | ')}`
+                : '',
+            Array.isArray(ctx.integration.open_questions) && ctx.integration.open_questions.length
+                ? `- Offene Fragen: ${ctx.integration.open_questions.join(' | ')}`
+                : ''
+        ]);
+    }
+
+    if (!blocks.length) return '';
+    return `\n\n--- Kontext aus vorherigen Workflow-Stages ---\n${blocks.join('\n\n')}\n--- Ende Stage-Kontext ---`;
+}
+
+function extractOpenQuestions(output) {
+    if (!output || typeof output !== 'object') return [];
+    if (!Array.isArray(output.open_questions)) return [];
+    return output
+        .map(v => typeof v === 'string' ? v.trim() : '')
+        .filter(Boolean)
+        .slice(0, 10);
+}
+
+async function pauseForHumanQuestions(runId, ticket, stage, sortOrder, output) {
+    const openQuestions = extractOpenQuestions(output);
+    if (!openQuestions.length) return false;
+    const approverStaff = await pickStaff('approval', 'human');
+    const questionSort = sortOrder + 0.5;
+    const stepId = await startStep(runId, 'approval', questionSort, approverStaff);
+    const payload = {
+        phase: 'questions',
+        source_stage: stage,
+        resume_after_sort_order: sortOrder,
+        open_questions: openQuestions,
+        created_at: new Date().toISOString()
+    };
+    await run(`UPDATE ticket_workflow_steps SET status='waiting_human', output_payload=? WHERE id = ?`, [JSON.stringify(payload), stepId]);
+    await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
+    if (approverStaff) {
+        await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ticket.id]);
+    }
+    wfWarn(`Zwischenstopp fuer offene Fragen | run=${runId} source_stage=${stage} questions=${openQuestions.length}`);
+    emit('workflow:waiting_human', { runId, ticketId: ticket.id, stepId, stage: 'approval', phase: 'questions', source_stage: stage });
+    return true;
+}
+
 async function execTriage(ctx) {
     wfInfo(`Stage:TRIAGE start | ticket=${ctx.ticket.id} title="${(ctx.ticket.title || '').slice(0, 80)}"`);
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
-    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
+    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + previousStageContextSuffix(ctx, 'triage') + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
     const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '' };
     if (out.system_id) {
@@ -237,7 +338,7 @@ async function execSecurity(ctx) {
     const userPrompt = prompts.SECURITY.buildUser({
         ticket: { ...ctx.ticket, triage_summary: ctx.triage?.summary, triage_action: ctx.triage?.suggested_action },
         preRedacted: pre.redacted
-    }) + extraInfoSuffix(ctx);
+    }) + previousStageContextSuffix(ctx, 'security') + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.SECURITY.system, userPrompt });
     const out = r.parsed || { redacted_text: pre.redacted, findings: pre.hits, coding_prompt: pre.redacted };
     const redacted = out.redacted_text || pre.redacted;
@@ -246,6 +347,7 @@ async function execSecurity(ctx) {
         [redacted, codingPrompt, ctx.ticket.id]);
     ctx.redacted_description = redacted;
     ctx.coding_prompt = codingPrompt;
+    ctx.security = out;
     out.markdown = `### Coding-Prompt\n\n${codingPrompt || '(leer)'}\n\n### Redigierte Beschreibung\n\n${redacted || '(leer)'}`;
     ctx._artifacts = [
         { kind: 'redacted_description', filename: 'redacted_description.md', content: redacted },
@@ -324,7 +426,7 @@ async function execPlanning(ctx) {
     const userPrompt = prompts.PLANNING.buildUser({
         ticket: { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt },
         repoContext: repoCtx.repoContext
-    }) + extraInfoSuffix(ctx);
+    }) + previousStageContextSuffix(ctx, 'planning') + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
     const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
     // Scope-Contract normalisieren
@@ -341,6 +443,7 @@ async function execPlanning(ctx) {
     ctx.implementation_plan = planMd;
     ctx.allowed_files = out.allowed_files;
     ctx.change_kind = out.change_kind;
+    ctx.planning = out;
     out.markdown = planMd;
     ctx._artifacts = [
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
@@ -362,7 +465,7 @@ async function execIntegration(ctx) {
         plan: ctx.implementation_plan,
         projectDocs,
         repoDocs: ctx.repo_context || ''
-    }) + extraInfoSuffix(ctx);
+    }) + previousStageContextSuffix(ctx, 'integration') + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
     const out = r.parsed || { verdict: 'approve_with_changes', rationale: r.text?.slice(0, 500) || '' };
     if (!['medium', 'high'].includes(out.recommended_complexity)) {
@@ -372,6 +475,7 @@ async function execIntegration(ctx) {
     await run(`UPDATE tickets SET integration_assessment = ? WHERE id = ?`, [md, ctx.ticket.id]);
     ctx.integration_assessment = md;
     ctx.recommended_complexity = out.recommended_complexity;
+    ctx.integration = out;
     out.markdown = md;
     ctx._artifacts = [
         { kind: 'integration_assessment', filename: 'integration_assessment.md', content: md }
@@ -432,6 +536,10 @@ function renderIntegrationMarkdown(asm) {
     if (Array.isArray(asm.recommended_changes) && asm.recommended_changes.length) {
         lines.push(`\n**Empfohlene Aenderungen:**`);
         asm.recommended_changes.forEach(v => lines.push(`- ${v}`));
+    }
+    if (Array.isArray(asm.open_questions) && asm.open_questions.length) {
+        lines.push(`\n**Offene Fragen (menschliche Klaerung noetig):**`);
+        asm.open_questions.forEach(v => lines.push(`- ${v}`));
     }
     return lines.join('\n');
 }
@@ -560,6 +668,11 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             }
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
 
+            const pausedForQuestions = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, result.output);
+            if (pausedForQuestions) {
+                return;
+            }
+
             if (ctx.extra_info) delete ctx.extra_info;
 
             if (stage.role === 'triage' && result.output?.decision === 'unclear') {
@@ -591,8 +704,39 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
 
     const run_ = await getRow('SELECT * FROM ticket_workflow_runs WHERE id = ?', [runId]);
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
+    let stepOutput = null;
+    if (step.output_payload) {
+        try { stepOutput = JSON.parse(step.output_payload); } catch (_) {}
+    }
 
     if (step.stage === 'approval') {
+        if (stepOutput?.phase === 'questions') {
+            if (!String(note || '').trim()) {
+                throw new Error('Bitte beantworte die offenen Fragen im Notizfeld.');
+            }
+            const output = {
+                ...(stepOutput || {}),
+                decision,
+                note: note || null,
+                decided_by: actor || null,
+                decided_at: new Date().toISOString()
+            };
+            await finishStep(stepId, { status: 'done', output, ai: null });
+            const wf = await loadDefaultWorkflow();
+            const remaining = wf.stages.filter(s => s.sort_order > Number(stepOutput.resume_after_sort_order || 0));
+            const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus ${stepOutput.source_stage}:
+${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}
+
+Antwort / Entscheidung:
+${note}`;
+            await run(`UPDATE ticket_workflow_runs SET status='running', current_stage=? WHERE id = ?`, [remaining[0]?.role || stepOutput.source_stage, runId]);
+            emit('workflow:step', { runId, stage: 'approval', status: 'done', decision, phase: 'questions' });
+            runStages(runId, ticket, remaining, { extra_info: answerContext }).catch(err => {
+                wfError('Workflow Resume nach Fragen fehlgeschlagen', err.message);
+            });
+            return { status: 'resumed_after_questions' };
+        }
+
         const codingDone = await getRow(
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
@@ -798,7 +942,7 @@ async function execCoding(ctx, codingLevel) {
         allowedFiles,
         changeKind,
         currentFiles
-    });
+    }) + previousStageContextSuffix(ctx, 'coding');
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {

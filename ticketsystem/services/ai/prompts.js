@@ -15,7 +15,8 @@ Antworte ausschliesslich als JSON mit Feldern:
   "system_id": <integer|null>,
   "system_match_confidence": "high" | "medium" | "low" | "none",
   "suggested_action": "kurzer Handlungsvorschlag",
-  "summary": "1-Satz-Zusammenfassung des Tickets"
+  "summary": "1-Satz-Zusammenfassung des Tickets",
+  "open_questions": ["nur wenn fuer den naechsten Schritt zwingend menschliche Klaerung noetig ist"]
 }`,
     buildUser: ({ ticket, systems }) => `Ticket:
 - Typ: ${ticket.type}
@@ -41,7 +42,8 @@ Antworte ausschliesslich als JSON:
 {
   "redacted_text": "...",
   "findings": [{"type":"...","note":"..."}],
-  "coding_prompt": "..."
+  "coding_prompt": "...",
+  "open_questions": ["nur wenn fuer den naechsten Schritt zwingend menschliche Klaerung noetig ist"]
 }`,
     buildUser: ({ ticket, preRedacted }) => `Ticket-Typ: ${ticket.type}
 Titel: ${ticket.title}
@@ -114,7 +116,8 @@ Antworte als JSON:
   "integration_risks": ["..."],
   "recommended_changes": ["..."],
   "recommended_complexity": "medium" | "high",
-  "complexity_rationale": "kurze Begruendung (1-2 Saetze)"
+  "complexity_rationale": "kurze Begruendung (1-2 Saetze)",
+  "open_questions": ["nur wenn vor Coding zwingend menschliche Entscheidung/Klaerung noetig ist"]
 }`,
     buildUser: ({ ticket, plan, projectDocs, repoDocs }) => `Plan:
 ${plan || '(leer)'}
