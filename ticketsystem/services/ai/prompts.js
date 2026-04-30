@@ -58,6 +58,12 @@ const PLANNING = {
 und die README. Erstelle einen ausfuehrlichen, schrittweisen Umsetzungsplan fuer die noetigen
 Code-Aenderungen. Beruecksichtige bestehende Module/Dateien, falls erkennbar.
 
+Bevor du planst, leite den REALEN Projekt-Stack aus package.json, Entry-Points und vorhandenen Dateien ab.
+- Erfinde KEINE Frameworks, ORMs, Router-Strukturen, Upload-Libraries oder Build-Setups, die im Repo nicht nachweisbar sind.
+- Wenn eine neue Route, Komponente, Seite oder ein Controller eingefuehrt wird, nenne auch die Integrationsdateien,
+  die das Feature wirklich verdrahten (z. B. server.js, Router-Mount, Template/View, bestehende Seite, Bootstrap-Datei).
+- Wenn du bestehende Dateien erweitern musst, fuehre exakt diese Pfade in allowed_files auf; Foundations ohne Verdrahtung sind unzulaessig.
+
 WICHTIG fuer den nachgelagerten Coding-Bot:
 - "allowed_files" ist der EINZIGE Whitelist-Pfad-Satz, den der Coding-Bot anfassen darf.
   Halte ihn so klein wie moeglich (idealerweise 1-5 Dateien). Niemals "**" oder ganze Verzeichnisse.

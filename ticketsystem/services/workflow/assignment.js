@@ -35,6 +35,18 @@ function pickStaffForRole(db, role, executorKind, callback, options) {
         params.push(options.codingLevel);
     }
 
+    if (options.staffId) {
+        const exactSql = `SELECT s.* FROM staff_roles sr
+            INNER JOIN staff s ON s.id = sr.staff_id
+            WHERE sr.role = ? AND sr.active = 1 AND s.active = 1 ${kindFilter} ${levelFilter} AND s.id = ?
+            ORDER BY sr.priority ASC, s.id ASC LIMIT 1`;
+        db.get(exactSql, [...params, options.staffId], (err, row) => {
+            if (err) return callback(err);
+            callback(null, row || null);
+        });
+        return;
+    }
+
     const sql = `SELECT s.* FROM staff_roles sr
         INNER JOIN staff s ON s.id = sr.staff_id
         WHERE sr.role = ? AND sr.active = 1 AND s.active = 1 ${kindFilter} ${levelFilter}

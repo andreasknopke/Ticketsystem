@@ -8,6 +8,7 @@ const { Octokit } = require('@octokit/rest');
 const MAX_FILES = 30;
 const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap
 const MAX_FILE_BYTES = 60 * 1024;       // 60 KB pro Datei
+const DEFAULT_BOUNDARY_FILES = ['package.json', 'server.js'];
 
 function getOctokit(token) {
     return new Octokit({ auth: token || process.env.GITHUB_DEFAULT_TOKEN || undefined });
@@ -52,6 +53,15 @@ async function fetchRepoContext(integration) {
     const readme = await fetchTextFile(client, owner, repo, 'README.md');
     if (readme) {
         const block = `### README.md\n\n${readme}\n`;
+        parts.push(block);
+        total += block.length;
+    }
+
+    for (const boundaryPath of DEFAULT_BOUNDARY_FILES) {
+        if (total >= MAX_TOTAL_BYTES) break;
+        const content = await fetchTextFile(client, owner, repo, boundaryPath);
+        if (!content) continue;
+        const block = `### ${boundaryPath}\n\n${content}\n`;
         parts.push(block);
         total += block.length;
     }

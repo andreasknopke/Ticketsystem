@@ -5,6 +5,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
+const multer = require('multer');
 
 function hashPassword(password) {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -111,6 +112,8 @@ const EMAIL_NOTIFY_NEW = (process.env.EMAIL_NOTIFY_NEW || 'true').toLowerCase() 
 const EMAIL_NOTIFY_STATUS = (process.env.EMAIL_NOTIFY_STATUS || 'true').toLowerCase() === 'true';
 const EMAIL_NOTIFY_ASSIGN = (process.env.EMAIL_NOTIFY_ASSIGN || 'true').toLowerCase() === 'true';
 const EMAIL_NOTIFY_COMMENT = (process.env.EMAIL_NOTIFY_COMMENT || 'true').toLowerCase() === 'true';
+const MILESTONE_STEP_MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
+const MILESTONE_STEP_MAX_FILES = 5;
 
 if (!APP_SECRET || ADMIN_USER === undefined || ADMIN_PASS === undefined) {
     console.error('FEHLER: APP_SECRET, ADMIN_USER und ADMIN_PASS muessen in der .env Datei gesetzt sein!');
@@ -119,6 +122,27 @@ if (!APP_SECRET || ADMIN_USER === undefined || ADMIN_PASS === undefined) {
 
 const USE_SECURE_COOKIE = BASE_URL.startsWith('https://');
 if (TRUST_PROXY || USE_SECURE_COOKIE) app.set('trust proxy', 1);
+
+const milestoneStepUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: MILESTONE_STEP_MAX_ATTACHMENT_SIZE_BYTES,
+        files: MILESTONE_STEP_MAX_FILES
+    }
+});
+
+function handleMilestoneStepUpload(req, res, next) {
+    milestoneStepUpload.array('attachments', MILESTONE_STEP_MAX_FILES)(req, res, (err) => {
+        if (!err) return next();
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({ error: `Anhaenge duerfen maximal ${MILESTONE_STEP_MAX_ATTACHMENT_SIZE_BYTES} Bytes gross sein.` });
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+            return res.status(400).json({ error: `Maximal ${MILESTONE_STEP_MAX_FILES} Anhaenge pro Schritt erlaubt.` });
+        }
+        return res.status(400).json({ error: err.message || 'Upload fehlgeschlagen.' });
+    });
+}
 
 function clientIp(req) {
     return (req.ip || req.connection?.remoteAddress || '').replace(/^::ffff:/, '');
@@ -605,6 +629,34 @@ function initDb() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     )`);
+
+    db.serialize(() => {
+        db.run(`CREATE TABLE IF NOT EXISTS milestone_steps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            milestone_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            date TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (milestone_id) REFERENCES project_milestones(id) ON DELETE CASCADE
+        )`);
+
+        db.run(`CREATE INDEX IF NOT EXISTS idx_milestone_steps_milestone_id ON milestone_steps(milestone_id)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_milestone_steps_date ON milestone_steps(date)`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS blobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            step_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            mimetype TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            checksum TEXT,
+            data BLOB NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        db.run(`CREATE INDEX IF NOT EXISTS idx_blobs_step_id ON blobs(step_id)`);
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS project_key_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1237,6 +1289,15 @@ function dbGet(sql, params = []) {
     });
 }
 
+function dbRun(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.run(sql, params, function(err) {
+            if (err) reject(err);
+            else resolve({ lastID: this.lastID, changes: this.changes });
+        });
+    });
+}
+
 function getReminderInfo(ticket) {
     if (!ticket || !ticket.deadline) return null;
 
@@ -1744,6 +1805,7 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
                 db.all(`SELECT id, stage, kind, filename, mime_type, size, created_at
                     FROM workflow_artifacts WHERE ticket_id = ? ORDER BY id ASC`, [ticketId], (err4, artifacts) => {
                     if (err4) artifacts = [];
+                    const sendWorkflow = (codingBotChoices) => {
                     const briefing = {
                         coding_prompt: ticket.coding_prompt || '',
                         implementation_plan: ticket.implementation_plan || '',
@@ -1757,7 +1819,31 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
                         briefing.integration_assessment_html = ticket.integration_assessment ? marked.parse(ticket.integration_assessment) : '';
                         briefing.merge_review_html = ticket.merge_review ? marked.parse(ticket.merge_review) : '';
                     } catch (_) {}
-                    res.json({ run, steps, artifacts, ticket_briefing: briefing });
+                        res.json({ run, steps, artifacts, ticket_briefing: briefing, coding_bot_choices: codingBotChoices || {} });
+                    };
+
+                    if (!isAdminRole(req.session.role)) {
+                        sendWorkflow({});
+                        return;
+                    }
+
+                    db.all(`SELECT s.id, s.name, s.coding_level
+                        FROM staff_roles sr
+                        INNER JOIN staff s ON s.id = sr.staff_id
+                        WHERE sr.role = 'coding' AND sr.active = 1 AND s.active = 1
+                          AND s.kind = 'ai' AND s.coding_level IN ('medium', 'high')
+                        ORDER BY s.coding_level ASC, sr.priority ASC, s.name COLLATE NOCASE ASC, s.id ASC`, [], (err5, botRows) => {
+                        if (err5) {
+                            sendWorkflow({});
+                            return;
+                        }
+                        const codingBotChoices = { medium: [], high: [] };
+                        (botRows || []).forEach(bot => {
+                            if (!codingBotChoices[bot.coding_level]) return;
+                            codingBotChoices[bot.coding_level].push({ id: bot.id, name: bot.name });
+                        });
+                        sendWorkflow(codingBotChoices);
+                    });
                 });
             });
         });
@@ -1802,6 +1888,12 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
     const stepId = parseInt(req.params.stepId, 10);
     const decision = req.body.decision;
     const note = req.body.note ? String(req.body.note).slice(0, 4000) : null;
+    const selectedStaffId = req.body.selected_staff_id === undefined || req.body.selected_staff_id === null || req.body.selected_staff_id === ''
+        ? null
+        : parseInt(req.body.selected_staff_id, 10);
+    if (selectedStaffId !== null && Number.isNaN(selectedStaffId)) {
+        return res.status(400).json({ error: 'selected_staff_id ist ungueltig' });
+    }
     db.get('SELECT t.*, s.staff_id AS step_staff_id, s.run_id FROM ticket_workflow_steps s INNER JOIN tickets t ON t.id = ? WHERE s.id = ?',
         [ticketId, stepId], async (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -1811,7 +1903,8 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
         if (!isAdmin && !isAssigned) return res.status(403).json({ error: 'Keine Berechtigung' });
         try {
             const result = await workflowEngine.decideHumanStep(row.run_id, stepId, decision, note, getActor(req), {
-                split_tickets: Array.isArray(req.body.split_tickets) ? req.body.split_tickets : null
+                split_tickets: Array.isArray(req.body.split_tickets) ? req.body.split_tickets : null,
+                selected_staff_id: selectedStaffId
             });
             res.json(result);
         } catch (e) {
@@ -2306,6 +2399,84 @@ app.patch('/api/projects/:id', requireAuth, requireAdmin, (req, res) => {
 
 // --- API: Milestones ---
 
+function validateMilestoneStepPayload(body, partial = false) {
+    const payload = body || {};
+    const out = {};
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, 'text')) {
+        const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        if (!text) return { error: 'text ist erforderlich' };
+        out.text = text;
+    }
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, 'date')) {
+        const date = typeof payload.date === 'string' ? payload.date.trim() : '';
+        if (!date) return { error: 'date ist erforderlich' };
+        out.date = date;
+    }
+
+    return { value: out };
+}
+
+function serializeMilestoneBlob(blob) {
+    return {
+        id: blob.id,
+        stepId: blob.step_id,
+        filename: blob.filename,
+        mimetype: blob.mimetype,
+        size: blob.size,
+        checksum: blob.checksum,
+        createdAt: blob.created_at
+    };
+}
+
+function serializeMilestoneStep(step, blobs) {
+    return {
+        id: step.id,
+        milestoneId: step.milestone_id,
+        text: step.text,
+        date: step.date,
+        createdAt: step.created_at,
+        updatedAt: step.updated_at,
+        blobs: (blobs || []).map(serializeMilestoneBlob)
+    };
+}
+
+async function loadMilestoneStep(stepId, milestoneId) {
+    const step = await dbGet('SELECT * FROM milestone_steps WHERE id = ? AND milestone_id = ?', [stepId, milestoneId]);
+    if (!step.id) return null;
+    const blobs = await dbAll('SELECT * FROM blobs WHERE step_id = ? ORDER BY created_at ASC, id ASC', [stepId]);
+    return serializeMilestoneStep(step, blobs);
+}
+
+async function createMilestoneStepAttachments(stepId, files) {
+    const created = [];
+    for (const file of files || []) {
+        const buffer = file.buffer;
+        if (!buffer) continue;
+        const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+        const result = await dbRun(`INSERT INTO blobs (step_id, filename, mimetype, size, checksum, data)
+            VALUES (?, ?, ?, ?, ?, ?)`, [
+            stepId,
+            file.originalname || file.filename || 'attachment',
+            file.mimetype || 'application/octet-stream',
+            file.size || buffer.length,
+            checksum,
+            buffer
+        ]);
+        created.push({
+            id: result.lastID,
+            step_id: stepId,
+            filename: file.originalname || file.filename || 'attachment',
+            mimetype: file.mimetype || 'application/octet-stream',
+            size: file.size || buffer.length,
+            checksum,
+            created_at: new Date().toISOString()
+        });
+    }
+    return created;
+}
+
 app.get('/api/projects/:projectId/milestones', requireAuth, (req, res) => {
     db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
         [req.params.projectId], (err, rows) => {
@@ -2353,6 +2524,143 @@ app.delete('/api/milestones/:id', requireAuth, requireAdmin, (req, res) => {
             res.json({ status: 'deleted' });
         });
     });
+});
+
+app.get('/api/milestones/:milestoneId/steps', requireAuth, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    if (!milestoneId) return res.status(400).json({ error: 'milestoneId ist erforderlich' });
+
+    try {
+        const milestone = await dbGet('SELECT id FROM project_milestones WHERE id = ?', [milestoneId]);
+        if (!milestone.id) return res.status(404).json({ error: 'Meilenstein nicht gefunden' });
+
+        const steps = await dbAll('SELECT * FROM milestone_steps WHERE milestone_id = ? ORDER BY date ASC, created_at ASC, id ASC', [milestoneId]);
+        if (!steps.length) return res.json([]);
+
+        const stepIds = steps.map(step => step.id);
+        const placeholders = stepIds.map(() => '?').join(',');
+        const blobs = await dbAll(`SELECT * FROM blobs WHERE step_id IN (${placeholders}) ORDER BY created_at ASC, id ASC`, stepIds);
+        const blobsByStep = new Map();
+        blobs.forEach((blob) => {
+            const list = blobsByStep.get(blob.step_id) || [];
+            list.push(blob);
+            blobsByStep.set(blob.step_id, list);
+        });
+
+        res.json(steps.map(step => serializeMilestoneStep(step, blobsByStep.get(step.id) || [])));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/milestones/:milestoneId/steps', requireAuth, requireAdmin, handleMilestoneStepUpload, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    if (!milestoneId) return res.status(400).json({ error: 'milestoneId ist erforderlich' });
+
+    const validated = validateMilestoneStepPayload(req.body, false);
+    if (validated.error) return res.status(400).json({ error: validated.error });
+
+    try {
+        const milestone = await dbGet('SELECT id, project_id FROM project_milestones WHERE id = ?', [milestoneId]);
+        if (!milestone.id) return res.status(404).json({ error: 'Meilenstein nicht gefunden' });
+
+        const result = await dbRun(`INSERT INTO milestone_steps (milestone_id, text, date)
+            VALUES (?, ?, ?)`, [milestoneId, validated.value.text, validated.value.date]);
+        await createMilestoneStepAttachments(result.lastID, req.files || []);
+        io.emit('milestone:updated', { projectId: milestone.project_id });
+        res.status(201).json(await loadMilestoneStep(result.lastID, milestoneId));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/milestones/:milestoneId/steps/:stepId', requireAuth, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    if (!milestoneId || !stepId) return res.status(400).json({ error: 'milestoneId und stepId sind erforderlich' });
+
+    try {
+        const step = await loadMilestoneStep(stepId, milestoneId);
+        if (!step) return res.status(404).json({ error: 'Schritt nicht gefunden' });
+        res.json(step);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/milestones/:milestoneId/steps/:stepId', requireAuth, requireAdmin, handleMilestoneStepUpload, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    if (!milestoneId || !stepId) return res.status(400).json({ error: 'milestoneId und stepId sind erforderlich' });
+
+    const validated = validateMilestoneStepPayload(req.body, true);
+    if (validated.error) return res.status(400).json({ error: validated.error });
+
+    try {
+        const step = await dbGet('SELECT * FROM milestone_steps WHERE id = ? AND milestone_id = ?', [stepId, milestoneId]);
+        if (!step.id) return res.status(404).json({ error: 'Schritt nicht gefunden' });
+
+        const fields = [];
+        const values = [];
+        Object.entries(validated.value).forEach(([key, value]) => {
+            fields.push(`${key} = ?`);
+            values.push(value);
+        });
+        if (fields.length) {
+            fields.push('updated_at = CURRENT_TIMESTAMP');
+            await dbRun(`UPDATE milestone_steps SET ${fields.join(', ')} WHERE id = ? AND milestone_id = ?`, values.concat([stepId, milestoneId]));
+        }
+        await createMilestoneStepAttachments(stepId, req.files || []);
+        res.json(await loadMilestoneStep(stepId, milestoneId));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/milestones/:milestoneId/steps/:stepId', requireAuth, requireAdmin, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    if (!milestoneId || !stepId) return res.status(400).json({ error: 'milestoneId und stepId sind erforderlich' });
+
+    try {
+        const milestone = await dbGet(`SELECT pm.project_id
+            FROM milestone_steps ms
+            INNER JOIN project_milestones pm ON pm.id = ms.milestone_id
+            WHERE ms.id = ? AND ms.milestone_id = ?`, [stepId, milestoneId]);
+        if (!milestone.project_id) return res.status(404).json({ error: 'Schritt nicht gefunden' });
+
+        await dbRun('DELETE FROM blobs WHERE step_id = ?', [stepId]);
+        await dbRun('DELETE FROM milestone_steps WHERE id = ? AND milestone_id = ?', [stepId, milestoneId]);
+        io.emit('milestone:updated', { projectId: milestone.project_id });
+        res.status(204).send();
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/milestones/:milestoneId/steps/:stepId/attachments/:blobId', requireAuth, async (req, res) => {
+    const milestoneId = parseInt(req.params.milestoneId, 10);
+    const stepId = parseInt(req.params.stepId, 10);
+    const blobId = parseInt(req.params.blobId, 10);
+    if (!milestoneId || !stepId || !blobId) {
+        return res.status(400).json({ error: 'milestoneId, stepId und blobId sind erforderlich' });
+    }
+
+    try {
+        const blob = await dbGet(`SELECT b.*
+            FROM blobs b
+            INNER JOIN milestone_steps ms ON ms.id = b.step_id
+            WHERE b.id = ? AND b.step_id = ? AND ms.milestone_id = ?`, [blobId, stepId, milestoneId]);
+        if (!blob.id) return res.status(404).json({ error: 'Anhang nicht gefunden' });
+
+        const safeName = String(blob.filename || 'attachment').replace(/["\r\n]/g, '_');
+        res.setHeader('Content-Type', blob.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+        res.setHeader('Content-Length', blob.data ? blob.data.length : 0);
+        res.send(blob.data);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- API: Key Users ---

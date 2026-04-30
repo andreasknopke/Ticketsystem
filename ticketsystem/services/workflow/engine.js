@@ -255,6 +255,63 @@ async function execSecurity(ctx) {
     return { output: out, ai: r };
 }
 
+function sanitizePlanningPath(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim().replace(/^[-*]\s*/, '');
+    if (!trimmed || trimmed.includes('..') || trimmed.startsWith('/')) return null;
+    if (trimmed.includes('*')) return null;
+    if (!/[A-Za-z0-9]/.test(trimmed)) return null;
+    return trimmed;
+}
+
+function extractExplicitPlanningPaths(values) {
+    const out = [];
+    const seen = new Set();
+    const add = (candidate) => {
+        const safe = sanitizePlanningPath(candidate);
+        if (!safe || seen.has(safe)) return;
+        seen.add(safe);
+        out.push(safe);
+    };
+
+    (values || []).forEach((value) => {
+        if (typeof value !== 'string') return;
+        const direct = sanitizePlanningPath(value);
+        if (direct && /\.[A-Za-z0-9]+$/.test(direct)) add(direct);
+        const matches = value.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+/g) || [];
+        matches.forEach(add);
+    });
+
+    return out;
+}
+
+function normalizePlanningScope(out) {
+    if (!out || typeof out !== 'object') return out;
+    const merged = [];
+    const seen = new Set();
+    const push = (value) => {
+        const safe = sanitizePlanningPath(value);
+        if (!safe || seen.has(safe)) return;
+        seen.add(safe);
+        merged.push(safe);
+    };
+
+    (Array.isArray(out.allowed_files) ? out.allowed_files : []).forEach(push);
+    (Array.isArray(out.candidate_files) ? out.candidate_files : []).forEach(push);
+    extractExplicitPlanningPaths(Array.isArray(out.affected_areas) ? out.affected_areas : []).forEach(push);
+    (Array.isArray(out.steps) ? out.steps : []).forEach((step) => {
+        if (Array.isArray(step?.files)) step.files.forEach(push);
+        extractExplicitPlanningPaths([step?.title, step?.details]).forEach(push);
+    });
+
+    if (merged.some(path => path.startsWith('routes/')) && !seen.has('server.js')) {
+        push('server.js');
+    }
+
+    out.allowed_files = merged.slice(0, 25);
+    return out;
+}
+
 async function execPlanning(ctx) {
     wfInfo(`Stage:PLANNING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'}`);
     const integration = await resolveIntegration(ctx.ticket);
@@ -271,7 +328,7 @@ async function execPlanning(ctx) {
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
     const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
     // Scope-Contract normalisieren
-    if (!Array.isArray(out.allowed_files)) out.allowed_files = [];
+    normalizePlanningScope(out);
     out.allowed_files = out.allowed_files
         .filter(p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/'))
         .map(p => p.trim())
@@ -523,7 +580,8 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     emit('workflow:completed', { runId, ticketId: initialTicket.id });
 }
 
-async function decideHumanStep(runId, stepId, decision, note, actor) {
+async function decideHumanStep(runId, stepId, decision, note, actor, options) {
+    options = options || {};
     wfInfo(`decideHumanStep | run=${runId} step=${stepId} decision="${decision}" note="${(note || '').slice(0, 100)}" actor=${actor}`);
     const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
@@ -543,8 +601,18 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
 
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
             const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
+            const selectedStaffId = Number.isInteger(options.selected_staff_id) ? options.selected_staff_id : null;
+            let selectedStaff = null;
+            if (selectedStaffId) {
+                selectedStaff = await pickStaff('coding', 'ai', { codingLevel, staffId: selectedStaffId });
+                if (!selectedStaff) {
+                    throw new Error(`Der ausgewaehlte Coding-Bot passt nicht zum Level "${codingLevel}" oder ist nicht aktiv.`);
+                }
+            }
             const output = {
                 decision, coding_level: codingLevel, note: note || null,
+                selected_staff_id: selectedStaff ? selectedStaff.id : null,
+                selected_staff_name: selectedStaff ? selectedStaff.name : null,
                 decided_by: actor || null, decided_at: new Date().toISOString()
             };
             await finishStep(stepId, { status: 'done', output, ai: null });
@@ -553,10 +621,15 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel} note="${(note || '').slice(0, 100)}"`);
             // Step-Objekt mit aktuellem output_payload anreichern (nach finishStep, sonst ist output_payload null)
             const enrichedStep = { ...step, output_payload: JSON.stringify(output) };
-            runCodingStage(runId, ticket, codingLevel, enrichedStep).catch(err => {
+            runCodingStage(runId, ticket, codingLevel, enrichedStep, selectedStaff).catch(err => {
                 wfError(`Coding-Stage Fehler run=${runId}`, err.message);
             });
-            return { status: 'coding_dispatched', coding_level: codingLevel };
+            return {
+                status: 'coding_dispatched',
+                coding_level: codingLevel,
+                selected_staff_id: selectedStaff ? selectedStaff.id : null,
+                selected_staff_name: selectedStaff ? selectedStaff.name : null
+            };
         }
 
         if (!isDispatchPhase && decision === 'rework') {
@@ -848,7 +921,7 @@ async function execCoding(ctx, codingLevel) {
     return { output: out, ai: r };
 }
 
-async function runCodingStage(runId, ticket, codingLevel, afterStep) {
+async function runCodingStage(runId, ticket, codingLevel, afterStep, preferredStaff) {
     const ctx = { ticket };
     wfInfo(`runCodingStage | run=${runId} ticket=${ticket.id} level=${codingLevel} hasAfterStep=${!!afterStep} hasOutputPayload=${!!afterStep?.output_payload}`);
     if (afterStep?.output_payload) {
@@ -871,6 +944,7 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
              ORDER BY id DESC LIMIT 1`, [runId]);
         if (planStep?.output_payload) {
             const planOut = JSON.parse(planStep.output_payload);
+            normalizePlanningScope(planOut);
             if (Array.isArray(planOut.allowed_files)) ctx.allowed_files = planOut.allowed_files;
             if (planOut.change_kind) ctx.change_kind = planOut.change_kind;
             wfInfo(`runCodingStage SCOPE | allowed_files=${ctx.allowed_files?.length || 0} change_kind=${ctx.change_kind || '-'}`);
@@ -878,7 +952,7 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
             wfWarn(`runCodingStage | Kein PLANNING-Output gefunden – Scope-Contract leer, PR wird blockiert.`);
         }
     } catch (e) { wfWarn(`runCodingStage planning load error`, e.message); }
-    const staff = await pickStaff('coding', 'ai', { codingLevel });
+    const staff = preferredStaff || await pickStaff('coding', 'ai', { codingLevel });
     const sortOrder = (afterStep?.sort_order || 5) + 1;
 
     if (!staff) {

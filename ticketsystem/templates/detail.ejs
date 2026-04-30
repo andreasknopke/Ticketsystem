@@ -596,8 +596,9 @@
             return `<div class="mt-3 border-t-2 border-primary-300 pt-3"><p class="text-sm font-bold text-primary-800 mb-2">📋 Approver-Briefing</p>${blocks.join('')}</div>`;
         }
 
-        function renderApprover(step, runId, allSteps) {
+        function renderApprover(step, runId, allSteps, codingBotChoices) {
             if (!canManageTickets) return '';
+            codingBotChoices = codingBotChoices || {};
             // Phase ermitteln: Dispatch (kein Coding done) oder Final (Coding done existiert)
             const codingDone = (allSteps || []).some(s => s.stage === 'coding' && s.status === 'done');
             const isDispatch = !codingDone;
@@ -620,12 +621,32 @@
                 ? `<p class="text-xs text-primary-700 mb-2">Empfehlung Integration-Reviewer: <strong>${escapeHtml(recommended)}</strong></p>`
                 : '';
             const splitProposal = splitReview ? JSON.stringify(triage.output.split_tickets, null, 2) : '';
+            const renderDispatchChoice = (level, label, emphasized) => {
+                const choices = Array.isArray(codingBotChoices[level]) ? codingBotChoices[level] : [];
+                const selectId = `dispatch-bot-${level}-${step.id}`;
+                const select = choices.length > 1
+                    ? `<select id="${selectId}" class="form-input text-xs min-w-56">
+                        <option value="">Konkreten Bot waehlen...</option>
+                        ${choices.map(bot => `<option value="${escapeHtml(String(bot.id))}">${escapeHtml(bot.name)}</option>`).join('')}
+                    </select>`
+                    : '';
+                const hint = choices.length > 1
+                    ? `<p class="text-xs text-amber-700">Mehrere ${escapeHtml(level)}-Bots verfuegbar. Auswahl ist erforderlich.</p>`
+                    : '';
+                return `<div class="space-y-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button data-decision="dispatch_${level}" data-level="${level}" class="dec-btn ${emphasized ? 'btn-primary' : 'btn-secondary'} text-xs">${label}</button>
+                        ${select}
+                    </div>
+                    ${hint}
+                </div>`;
+            };
             const buttons = splitReview ? `
                     <button data-decision="approve_split" class="dec-btn btn-primary text-xs">Split anwenden</button>
                     <button data-decision="reject_split" class="dec-btn btn-secondary text-xs">Ohne Split weiter</button>
             ` : isDispatch ? `
-                    <button data-decision="dispatch_medium" class="dec-btn ${recommended === 'medium' ? 'btn-primary' : 'btn-secondary'} text-xs">Dispatch → Medium-Coder</button>
-                    <button data-decision="dispatch_high" class="dec-btn ${recommended === 'high' ? 'btn-primary' : 'btn-secondary'} text-xs">Dispatch → High-Coder</button>
+                    ${renderDispatchChoice('medium', 'Dispatch → Medium-Coder', recommended === 'medium')}
+                    ${renderDispatchChoice('high', 'Dispatch → High-Coder', recommended === 'high')}
                     <button data-decision="rejected" class="dec-btn btn-secondary text-xs">Reject</button>
                     <button data-decision="unclear" class="dec-btn btn-secondary text-xs">Rueckfrage / unklar</button>
                     <button data-decision="handoff" class="dec-btn btn-secondary text-xs">Handoff</button>
@@ -725,7 +746,7 @@
                         <div class="mt-2">${renderOutput(step)}</div>
                         ${renderArtifacts(step.id, artifacts)}
                         ${isApproverWaiting ? renderBriefing(data.ticket_briefing, artifacts) : ''}
-                        ${step.status === 'waiting_human' ? renderApprover(step, run.id, data.steps) : ''}
+                        ${step.status === 'waiting_human' ? renderApprover(step, run.id, data.steps, data.coding_bot_choices) : ''}
                         ${canRerun ? renderRerun(step) : ''}
                     </li>`;
                 });
@@ -739,6 +760,18 @@
                         const stepId = li.dataset.stepId;
                         const decision = ev.target.dataset.decision;
                         const note = document.getElementById('dec-note-' + stepId)?.value || '';
+                        let selected_staff_id = null;
+                        const dispatchLevel = ev.target.dataset.level;
+                        if (dispatchLevel) {
+                            const select = document.getElementById(`dispatch-bot-${dispatchLevel}-${stepId}`);
+                            if (select) {
+                                if (!select.value) {
+                                    alert('Bitte einen konkreten Coding-Bot auswaehlen.');
+                                    return;
+                                }
+                                selected_staff_id = Number(select.value);
+                            }
+                        }
                         let split_tickets = null;
                         if (decision === 'approve_split') {
                             const raw = document.getElementById('split-proposal-' + stepId)?.value || '[]';
@@ -758,7 +791,7 @@
                             const resp = await fetch(`/api/tickets/${ticketId}/workflow/steps/${stepId}/decision`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-                                body: JSON.stringify({ decision, note, split_tickets })
+                                body: JSON.stringify({ decision, note, split_tickets, selected_staff_id })
                             });
                             const json = await resp.json();
                             if (!resp.ok) { alert('Fehler: ' + (json.error || resp.status)); ev.target.disabled = false; return; }
