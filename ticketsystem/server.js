@@ -3549,6 +3549,79 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// Merge-Endpunkt: Nur für Approver oder Admins verfügbar
+// Setzt den Ticketstatus automatisch auf "geschlossen" nach erfolgreichem Merge
+app.post('/ticket/:id/merge', requireAuth, (req, res) => {
+    const ticketId = req.params.id;
+    const actor = getActor(req);
+    const staffId = req.session.staff_id;
+
+    // Prüfe ob User die Rolle "approval" hat oder Admin ist
+    if (req.session.role !== 'admin' && req.session.role !== 'root') {
+        // Prüfe Staff-Rollen auf "approval"
+        if (!staffId) return res.status(403).json({ error: 'Keine Berechtigung zum Mergen' });
+        
+        db.get(`SELECT sr.role FROM staff_roles sr WHERE sr.staff_id = ? AND sr.role = 'approval' AND sr.active = 1`,
+            [staffId], (err, roleRow) => {
+            if (err || !roleRow) {
+                return res.status(403).json({ error: 'Nur Approver dürfen mergen' });
+            }
+            performMerge(ticketId, actor);
+        });
+    } else {
+        performMerge(ticketId, actor);
+    }
+
+    function performMerge(ticketId, actor) {
+        db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, oldTicket) => {
+            if (err || !oldTicket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+
+            // Update: merge_review auf 'merged', Status auf 'geschlossen'
+            const now = new Date().toISOString();
+            const updates = {
+                merge_review: 'merged',
+                status: 'geschlossen',
+                closed_at: now
+            };
+
+            db.run(`UPDATE tickets SET merge_review = ?, status = ?, closed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+                [updates.merge_review, updates.status, updates.closed_at, ticketId],
+                function(err) {
+                    if (err) return res.status(500).json({ error: 'DB Error: ' + err.message });
+                    
+                    logAction(ticketId, actor, 'merge', `Merge durchgeführt durch Approver`);
+                    addActivity(ticketId, actor, 'merged', `Merge durchgeführt und Ticket geschlossen`, 
+                        { old_status: oldTicket.status, new_status: 'geschlossen', merge_review: 'merged' });
+                    
+                    // Update SLA bei Abschluss
+                    updateSLAResolution(ticketId);
+                    
+                    // Feedback anfragen
+                    db.run('UPDATE tickets SET feedback_requested = 1 WHERE id = ?', [ticketId]);
+                    
+                    // Benachrichtigungen senden
+                    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
+                        if (ticket) {
+                            mailStatusChange(ticket, oldTicket.status);
+                        }
+                    });
+
+                    io.to(`ticket-${ticketId}`).emit('ticket-updated', { ticketId, updates, actor });
+                    
+                    // JSON-Response oder Redirect
+                    if (req.headers['content-type']?.includes('application/json')) {
+                        return res.json({ 
+                            success: true, 
+                            message: 'Merge erfolgreich durchgeführt',
+                            ticket: updates
+                        });
+                    }
+                    res.redirect('/ticket/' + ticketId);
+                });
+        });
+    }
+});
+
 app.post('/ticket/:id/assign', requireAuth, requireAdmin, (req, res) => {
     const assignedTo = req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : null;
     const systemId = req.body.system_id ? parseInt(req.body.system_id, 10) : null;
