@@ -8,6 +8,41 @@ const { Octokit } = require('@octokit/rest');
 const MAX_FILES = 30;
 const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap
 const MAX_FILE_BYTES = 60 * 1024;       // 60 KB pro Datei
+const MAX_TREE_BYTES = 12 * 1024;       // 12 KB Cap fuer Repo-Tree-Liste
+const MAX_BOUNDARY_FILES = 8;           // Anzahl zusaetzlicher Schema-/Routen-Dateien
+
+const DEFAULT_BOUNDARY_GLOBS = [
+    'package.json',
+    'tsconfig.json',
+    'prisma/schema.prisma',
+    'db/schema.sql',
+    'database/schema.sql',
+    'schema.sql',
+    'src/api/entities.js',
+    'src/api/entities.ts',
+    'server/routes/*.js',
+    'server/routes/*.ts',
+    'server/db/schema.sql'
+];
+
+function getBoundaryGlobs() {
+    const env = process.env.REPO_BOUNDARY_FILES;
+    if (env && env.trim()) return env.split(',').map(s => s.trim()).filter(Boolean);
+    return DEFAULT_BOUNDARY_GLOBS;
+}
+
+function globToRegex(glob) {
+    const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const withGlobs = escaped.replace(/\*\*/g, '\u0001').replace(/\*/g, '[^/]*').replace(/\u0001/g, '.*');
+    return new RegExp('^' + withGlobs + '$');
+}
+
+function pathMatchesAny(path, globs) {
+    return globs.some(g => globToRegex(g).test(path));
+}
+
+const SKIP_DIR_RE = /^(node_modules|dist|build|out|coverage|\.git|\.next|\.cache|vendor)\//;
+const SKIP_FILE_RE = /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock)$/;
 
 function getOctokit(token) {
     return new Octokit({ auth: token || process.env.GITHUB_DEFAULT_TOKEN || undefined });
@@ -38,9 +73,51 @@ async function listDocsMarkdown(client, owner, repo) {
     return data.filter(e => e.type === 'file' && /\.md$/i.test(e.name)).slice(0, MAX_FILES);
 }
 
+async function fetchLastCommitISO(client, owner, repo, path) {
+    try {
+        const r = await client.repos.listCommits({ owner, repo, path, per_page: 1 });
+        const c = r.data && r.data[0] && r.data[0].commit;
+        return (c && (c.committer?.date || c.author?.date)) || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function staleHint(iso) {
+    if (!iso) return '';
+    const days = (Date.now() - new Date(iso).getTime()) / 86400000;
+    if (!isFinite(days) || days < 0) return '';
+    const months = Math.floor(days / 30);
+    if (days > 365) return ` _(zuletzt geaendert vor ${months} Monaten - moeglicherweise veraltet)_`;
+    if (days > 180) return ` _(zuletzt geaendert vor ${months} Monaten)_`;
+    return '';
+}
+
+async function fetchRepoTree(client, owner, repo, hintBranch) {
+    try {
+        let branch = hintBranch || null;
+        if (!branch) {
+            try {
+                const repoInfo = await client.repos.get({ owner, repo });
+                branch = repoInfo.data.default_branch || 'main';
+            } catch (_) { return { paths: [], truncated: false }; }
+        }
+        const ref = await client.git.getRef({ owner, repo, ref: `heads/${branch}` });
+        const sha = ref.data.object.sha;
+        const tree = await client.git.getTree({ owner, repo, tree_sha: sha, recursive: 'true' });
+        const paths = (tree.data.tree || [])
+            .filter(n => n.type === 'blob' && typeof n.path === 'string')
+            .map(n => n.path)
+            .filter(p => !SKIP_DIR_RE.test(p) && !SKIP_FILE_RE.test(p));
+        return { paths, truncated: !!tree.data.truncated };
+    } catch (e) {
+        return { paths: [], truncated: false, error: e.message };
+    }
+}
+
 async function fetchRepoContext(integration) {
     if (!integration || !integration.repo_owner || !integration.repo_name) {
-        return { repoContext: '', repoDocs: '', source: 'none' };
+        return { repoContext: '', repoDocs: '', repoTree: '', boundaryFiles: [], source: 'none' };
     }
     const client = getOctokit(integration.access_token);
     const owner = integration.repo_owner;
@@ -51,7 +128,8 @@ async function fetchRepoContext(integration) {
 
     const readme = await fetchTextFile(client, owner, repo, 'README.md');
     if (readme) {
-        const block = `### README.md\n\n${readme}\n`;
+        const iso = await fetchLastCommitISO(client, owner, repo, 'README.md');
+        const block = `### README.md${staleHint(iso)}\n\n${readme}\n`;
         parts.push(block);
         total += block.length;
     }
@@ -61,16 +139,42 @@ async function fetchRepoContext(integration) {
         if (total >= MAX_TOTAL_BYTES) break;
         const content = await fetchTextFile(client, owner, repo, f.path);
         if (!content) continue;
-        const block = `### ${f.path}\n\n${content}\n`;
+        const iso = await fetchLastCommitISO(client, owner, repo, f.path);
+        const block = `### ${f.path}${staleHint(iso)}\n\n${content}\n`;
         parts.push(block);
         total += block.length;
     }
 
     const combined = parts.join('\n---\n').slice(0, MAX_TOTAL_BYTES);
+
+    // Repo-Tree (Quellcode-Struktur, nicht nur Doku)
+    const tree = await fetchRepoTree(client, owner, repo, integration.default_branch);
+    let treeText = '';
+    if (tree.paths.length) {
+        const joined = tree.paths.join('\n');
+        if (joined.length > MAX_TREE_BYTES) {
+            treeText = joined.slice(0, MAX_TREE_BYTES) + '\n... (gekuerzt)';
+        } else {
+            treeText = joined + (tree.truncated ? '\n... (von GitHub als truncated markiert)' : '');
+        }
+    }
+
+    // Boundary-Files: Schemata, Routen, Entity-Registry. Source of Truth, nicht Doku.
+    const boundaryGlobs = getBoundaryGlobs();
+    const boundaryPaths = tree.paths.filter(p => pathMatchesAny(p, boundaryGlobs)).slice(0, MAX_BOUNDARY_FILES);
+    const boundaryFiles = [];
+    for (const p of boundaryPaths) {
+        const c = await fetchTextFile(client, owner, repo, p);
+        if (c != null) boundaryFiles.push({ path: p, content: c });
+    }
+
+    const hasAnything = parts.length || tree.paths.length || boundaryFiles.length;
     return {
         repoContext: combined,
         repoDocs: combined,
-        source: parts.length ? `${owner}/${repo}` : 'none'
+        repoTree: treeText,
+        boundaryFiles,
+        source: hasAnything ? `${owner}/${repo}` : 'none'
     };
 }
 

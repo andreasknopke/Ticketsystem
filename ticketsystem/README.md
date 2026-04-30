@@ -157,6 +157,17 @@ COPILOT_EDITOR_PLUGIN_VERSION=copilot-chat/0.22.0
 # (Vorrang: github_integration.access_token des Projekts)
 GITHUB_DEFAULT_TOKEN=
 
+# Code-Grounding fuer Planner / Integration-Reviewer
+# - AI_PLANNER_TWO_PASS=1 (Default): Planner laeuft zwei Mal. Pass 1 listet
+#   "candidate_files", deren Inhalt der Server aus dem Repo nachlaedt; Pass 2
+#   bekommt diese als verbindliche Grundlage.
+# - REPO_BOUNDARY_FILES: Komma-Liste von Glob-Mustern. Diese Dateien werden in
+#   jedem Planner- und Integration-Aufruf als "BOUNDARY FILES" mitgegeben
+#   (Schemata, Routen, Entity-Registry). Default deckt Prisma, sql-Schemas,
+#   src/api/entities.* und server/routes/*.{js,ts} ab.
+AI_PLANNER_TWO_PASS=1
+REPO_BOUNDARY_FILES=
+
 # Coding-Bots: Auto-PR (Schreibzugriff ins Repo)
 # - true (Default): Bots mit auto_commit_enabled=1 und Repo-Token oeffnen automatisch einen PR
 # - false: nur Artefakte (commit_message, test_plan, geaenderte Dateien) als Download

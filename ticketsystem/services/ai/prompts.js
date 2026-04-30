@@ -54,9 +54,18 @@ Vorgeschlagene Handlung: ${ticket.triage_action || '-'}`
 };
 
 const PLANNING = {
-    system: `Du bist Solution Architect (Planner) mit Read-Only-Zugriff auf die Repository-Struktur
-und die README. Erstelle einen ausfuehrlichen, schrittweisen Umsetzungsplan fuer die noetigen
-Code-Aenderungen. Beruecksichtige bestehende Module/Dateien, falls erkennbar.
+    system: `Du bist Solution Architect (Planner). Du erhaeltst Doku (README/docs), eine
+Repository-Tree-Liste, ggf. Boundary-Files (Schema, Routen, Entity-Registry) und
+bei Pass 2 die aktuellen Inhalte zuvor benannter candidate_files.
+
+GROUNDING-REGELN (HART):
+- Quellcode (Repo-Tree, Boundary-Files, Current-Files) ist Source of Truth.
+  Bei Widerspruch zwischen Doku und Code gilt der Code. Markiere Doku, die dem Code
+  widerspricht, in risks.
+- Erfinde keine Pfade, Funktionen, Endpunkte, Tabellen oder Imports. Was nicht im
+  Repo-Tree oder in den Boundary-/Current-Files belegt ist, gilt als nicht vorhanden.
+  Faellt dir das auf, fordere die Datei in candidate_files an, statt zu raten.
+- Beziehe dich, wo immer moeglich, auf konkrete Pfade aus dem Repo-Tree.
 
 WICHTIG fuer den nachgelagerten Coding-Bot:
 - "allowed_files" ist der EINZIGE Whitelist-Pfad-Satz, den der Coding-Bot anfassen darf.
@@ -71,26 +80,59 @@ Antworte als JSON:
 {
   "summary": "1-2 Saetze",
   "affected_areas": ["pfad/oder/modul", ...],
+  "candidate_files": ["src/...", "server/routes/..."],
   "allowed_files": ["exakter/relativer/pfad.ext", ...],
   "change_kind": "extend" | "new" | "refactor",
   "steps": [{"title":"...","details":"...","files":["..."]}],
   "risks": ["..."],
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["..."]
-}`,
-    buildUser: ({ ticket, repoContext }) => `Ticket-Typ: ${ticket.type}
+}
+
+"candidate_files" sind Pfade, deren echten Inhalt du in einem zweiten Pass
+verifizieren moechtest, bevor du allowed_files endgueltig festlegst. Liste
+gezielt Schema-, Routen-, Komponenten- oder Modell-Dateien, die deinen Plan
+bestaetigen oder widerlegen wuerden. In Pass 2 sind diese Inhalte bereits unter
+"AKTUELLE INHALTE" eingebettet; korrigiere dann ggf. allowed_files und steps.`,
+    buildUser: ({ ticket, repoContext, repoTree, boundaryFiles, currentFiles, passNote }) => `${passNote ? `[${passNote}]\n\n` : ''}Ticket-Typ: ${ticket.type}
 Titel: ${ticket.title}
 
 Coding-Prompt (von Security-Stage):
 ${ticket.coding_prompt || ticket.redacted_description || ticket.description || '(leer)'}
 
-Repository-Kontext (gekuerzt):
-${repoContext || '(kein Repo verknuepft)'}`
+Repository-Doku (gekuerzt):
+${repoContext || '(kein Repo verknuepft)'}
+
+${repoTree ? `--- REPOSITORY-TREE (Quellcode-Struktur, gekuerzt) ---
+${repoTree}
+--- ENDE REPO-TREE ---
+` : ''}${boundaryFiles && boundaryFiles.length ? `
+--- BOUNDARY-FILES (Schema/Routen/Entities, Source of Truth) ---
+${boundaryFiles.map(f => `\nBOUNDARY FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+--- ENDE BOUNDARY-FILES ---
+` : ''}${currentFiles && currentFiles.length ? `
+--- AKTUELLE INHALTE DER VON DIR ANGEFRAGTEN DATEIEN (Pass 2 Grounding) ---
+${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (existiert NICHT im Repo)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+--- ENDE AKTUELLE INHALTE ---
+` : ''}`
 };
 
 const INTEGRATION = {
-    system: `Du bist Integration / Architecture Reviewer. Pruefe den vorgeschlagenen Plan gegen die
-Projekt- und Entwicklungsdokumente (README, /docs, Projekt-Wiki). Bewerte:
+    system: `Du bist Integration / Architecture Reviewer. Pruefe den vorgeschlagenen Plan gegen
+den tatsaechlichen Code (Repo-Tree, Boundary-Files, Current-Files) UND gegen die
+Projekt-/Repo-Doku.
+
+GROUNDING-REGELN (HART):
+- Quellcode ist Source of Truth. Bei Widerspruch zwischen Doku (README, /docs,
+  Projekt-Wiki) und Code gilt der Code. Doku-Behauptungen ohne Code-Beleg duerfen
+  KEINE Regelverletzung erzeugen.
+- Behauptest du "Endpunkt/Tabelle/Datei existiert nicht", muss das aus Repo-Tree
+  oder Current-Files belegbar sein. Andernfalls notiere die Unsicherheit als
+  integration_risk und nicht als rule_violation.
+- Fehlt dir Quellcode, um eine Aussage zu pruefen, vermerke das in
+  recommended_changes ("Datei X laden und gegen Y pruefen").
+
+Bewerte:
 - Verstoesst der Plan gegen Grundregeln/Konventionen des Projekts?
 - Passt er in den aktuellen Projektplan?
 - Welche Integrationsrisiken bestehen?
@@ -110,7 +152,7 @@ Antworte als JSON:
   "recommended_complexity": "medium" | "high",
   "complexity_rationale": "kurze Begruendung (1-2 Saetze)"
 }`,
-    buildUser: ({ ticket, plan, projectDocs, repoDocs }) => `Plan:
+    buildUser: ({ ticket, plan, projectDocs, repoDocs, repoTree, boundaryFiles, currentFiles }) => `Plan:
 ${plan || '(leer)'}
 
 Projekt-Dokumente (DB):
@@ -119,6 +161,18 @@ ${projectDocs || '(keine)'}
 Repository-Dokumente (README + docs/):
 ${repoDocs || '(keine)'}
 
+${repoTree ? `--- REPOSITORY-TREE (Quellcode-Struktur, gekuerzt) ---
+${repoTree}
+--- ENDE REPO-TREE ---
+` : ''}${boundaryFiles && boundaryFiles.length ? `
+--- BOUNDARY-FILES (Schema/Routen/Entities, Source of Truth) ---
+${boundaryFiles.map(f => `\nBOUNDARY FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+--- ENDE BOUNDARY-FILES ---
+` : ''}${currentFiles && currentFiles.length ? `
+--- AKTUELLE INHALTE DER GEPLANTEN ZIELDATEIEN ---
+${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (existiert NICHT - vermutlich change_kind=new)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+--- ENDE AKTUELLE INHALTE ---
+` : ''}
 Ticket-Titel: ${ticket.title}
 Ticket-Typ: ${ticket.type}`
 };

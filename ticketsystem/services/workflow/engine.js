@@ -214,18 +214,71 @@ async function execPlanning(ctx) {
     const repoCtx = await fetchRepoContext(integration);
     ctx.repo_context = repoCtx.repoContext;
     ctx.repo_source = repoCtx.source;
-    wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
+    ctx.repo_tree = repoCtx.repoTree || '';
+    ctx.boundary_files = Array.isArray(repoCtx.boundaryFiles) ? repoCtx.boundaryFiles : [];
+    wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} doc_len=${repoCtx.repoContext.length} tree_len=${ctx.repo_tree.length} boundary_files=${ctx.boundary_files.length}`);
 
-    const userPrompt = prompts.PLANNING.buildUser({
-        ticket: { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt },
-        repoContext: repoCtx.repoContext
+    const baseTicket = { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt };
+
+    // -------- Pass 1: Plan auf Basis von Doku + Tree + Boundary --------
+    const userPrompt1 = prompts.PLANNING.buildUser({
+        ticket: baseTicket,
+        repoContext: repoCtx.repoContext,
+        repoTree: ctx.repo_tree,
+        boundaryFiles: ctx.boundary_files,
+        currentFiles: null,
+        passNote: 'Pass 1 von 2 - liste in candidate_files Pfade, deren echten Inhalt du fuer einen verlaesslichen Plan brauchst.'
     }) + extraInfoSuffix(ctx);
-    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
-    const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
+    const r1 = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt: userPrompt1 });
+    const out1 = r1.parsed || { summary: r1.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
+    if (!Array.isArray(out1.candidate_files)) out1.candidate_files = [];
+    if (!Array.isArray(out1.allowed_files)) out1.allowed_files = [];
+
+    // -------- Pass 2: Plan mit echten Dateiinhalten --------
+    const treePathsSet = new Set((ctx.repo_tree || '').split('\n').map(s => s.trim()).filter(Boolean));
+    const validate = p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/');
+    const candidateUnion = [...new Set([...out1.candidate_files, ...out1.allowed_files].filter(validate).map(p => p.trim()))]
+        .filter(p => !treePathsSet.size || treePathsSet.has(p) || true) // tree may be truncated -> nicht hart filtern
+        .slice(0, 12);
+
+    const twoPassEnabled = process.env.AI_PLANNER_TWO_PASS !== '0';
+    let currentFiles = [];
+    if (twoPassEnabled && integration && candidateUnion.length) {
+        try {
+            currentFiles = await fetchFilesFromRepo(integration, candidateUnion);
+            wfInfo(`Stage:PLANNING pass2 currentFiles | requested=${candidateUnion.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
+        } catch (e) {
+            wfWarn(`Stage:PLANNING pass2 currentFiles fetch failed`, e.message);
+        }
+    }
+
+    let r2 = null;
+    let out = out1;
+    if (twoPassEnabled && currentFiles.length) {
+        const userPrompt2 = prompts.PLANNING.buildUser({
+            ticket: baseTicket,
+            repoContext: repoCtx.repoContext,
+            repoTree: ctx.repo_tree,
+            boundaryFiles: ctx.boundary_files,
+            currentFiles,
+            passNote: 'Pass 2 von 2 - die unten eingebetteten AKTUELLEN INHALTE sind verbindlich. Korrigiere allowed_files, steps und risks entsprechend. Halluziniere keine zusaetzlichen Pfade.'
+        }) + extraInfoSuffix(ctx);
+        try {
+            r2 = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt: userPrompt2 });
+            const out2 = r2.parsed;
+            if (out2 && typeof out2 === 'object') out = out2;
+            else wfWarn(`Stage:PLANNING pass2 unparsebar - behalte Pass-1-Plan`);
+        } catch (e) {
+            wfWarn(`Stage:PLANNING pass2 call failed - behalte Pass-1-Plan`, e.message);
+        }
+    } else {
+        wfInfo(`Stage:PLANNING two-pass skipped | enabled=${twoPassEnabled} hasIntegration=${!!integration} candidates=${candidateUnion.length}`);
+    }
+
     // Scope-Contract normalisieren
     if (!Array.isArray(out.allowed_files)) out.allowed_files = [];
     out.allowed_files = out.allowed_files
-        .filter(p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/'))
+        .filter(validate)
         .map(p => p.trim())
         .slice(0, 25);
     if (!['extend', 'new', 'refactor'].includes(out.change_kind)) {
@@ -237,11 +290,17 @@ async function execPlanning(ctx) {
     ctx.allowed_files = out.allowed_files;
     ctx.change_kind = out.change_kind;
     out.markdown = planMd;
+    out._two_pass = !!r2;
+    out._candidate_files = candidateUnion;
     ctx._artifacts = [
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
     ];
-    wfInfo(`Stage:PLANNING done | steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
-    return { output: out, ai: r };
+    if (r2 && out1) {
+        const pass1Md = `### Plan (Pass 1, vor Code-Grounding)\n\n${renderPlanMarkdown(out1, repoCtx.source)}`;
+        ctx._artifacts.push({ kind: 'planning_pass1', filename: 'planning_pass1.md', content: pass1Md });
+    }
+    wfInfo(`Stage:PLANNING done | two_pass=${!!r2} candidates=${candidateUnion.length} steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
+    return { output: out, ai: r2 || r1 };
 }
 
 async function execIntegration(ctx) {
@@ -252,11 +311,45 @@ async function execIntegration(ctx) {
     const projectDocs = projectDocsRows.map(d => `### ${d.title}\n\n${d.content || ''}`).join('\n---\n').slice(0, 60_000);
     wfInfo(`Stage:INTEGRATION projectDocs | count=${projectDocsRows.length} combined_len=${projectDocs.length}`);
 
+    // Code-Grounding: tatsaechliche Inhalte der vom Plan vorgesehenen Zieldateien laden,
+    // damit der Reviewer Doku-Behauptungen am Code pruefen kann statt zu raten.
+    const integration = await getRow(`SELECT gi.* FROM github_integration gi
+        INNER JOIN projects p ON p.id = gi.project_id
+        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+
+    // Bei Re-Run startet die Integration-Stage frisch, ohne Planning-ctx.
+    // Tree und Boundary-Files dann hier neu laden.
+    if (integration && (!ctx.repo_tree || !Array.isArray(ctx.boundary_files))) {
+        try {
+            const r = await fetchRepoContext(integration);
+            if (!ctx.repo_context) ctx.repo_context = r.repoContext;
+            if (!ctx.repo_tree) ctx.repo_tree = r.repoTree || '';
+            if (!Array.isArray(ctx.boundary_files)) ctx.boundary_files = r.boundaryFiles || [];
+            wfInfo(`Stage:INTEGRATION re-fetched repoCtx | tree_len=${ctx.repo_tree.length} boundary_files=${ctx.boundary_files.length}`);
+        } catch (e) {
+            wfWarn(`Stage:INTEGRATION repoCtx fetch failed`, e.message);
+        }
+    }
+
+    let currentFiles = [];
+    const allowed = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
+    if (integration && allowed.length) {
+        try {
+            currentFiles = await fetchFilesFromRepo(integration, allowed);
+            wfInfo(`Stage:INTEGRATION currentFiles | requested=${allowed.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
+        } catch (e) {
+            wfWarn(`Stage:INTEGRATION currentFiles fetch failed`, e.message);
+        }
+    }
+
     const userPrompt = prompts.INTEGRATION.buildUser({
         ticket: ctx.ticket,
         plan: ctx.implementation_plan,
         projectDocs,
-        repoDocs: ctx.repo_context || ''
+        repoDocs: ctx.repo_context || '',
+        repoTree: ctx.repo_tree || '',
+        boundaryFiles: ctx.boundary_files || [],
+        currentFiles
     }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
     const out = r.parsed || { verdict: 'approve_with_changes', rationale: r.text?.slice(0, 500) || '' };
