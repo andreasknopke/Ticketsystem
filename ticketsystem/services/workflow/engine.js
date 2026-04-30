@@ -745,15 +745,28 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
                     violations.push(`Symbol entfernt ohne Begruendung: ${sym} in ${f.path} (change_kind=extend)`);
                 }
             }
-            // Diff-Groesse: bei "extend" nicht mehr als 70% Zeilen anders
-            const oldLines = cur.content.split('\n');
-            const newLines = f.content.split('\n');
-            const minLen = Math.min(oldLines.length, newLines.length);
-            let same = 0;
-            for (let i = 0; i < minLen; i++) if (oldLines[i] === newLines[i]) same++;
-            const ratio = oldLines.length ? same / oldLines.length : 1;
-            if (oldLines.length > 20 && ratio < 0.3) {
-                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% Zeilen erhalten) bei change_kind=extend: ${f.path}`);
+            // Diff-Groesse: bei "extend" muss ein hinreichend grosser Anteil der ALTEN
+            // (nicht-trivialen) Zeilen weiterhin IRGENDWO in der neuen Datei vorkommen.
+            // Wichtig: KEIN positionsweiser Vergleich – sonst verschiebt schon eine
+            // einzige Insertion am Datei-Anfang alle Folgezeilen und der Check
+            // schlaegt fuer jede normale Erweiterung faelschlich an.
+            const normalize = s => s.replace(/\s+/g, ' ').trim();
+            const isTrivial = s => {
+                if (!s) return true;
+                if (s.length < 3) return true;
+                // Klammern/Kommas/Semikolons allein zaehlen nicht als Inhalt.
+                if (/^[\s{}()\[\];,]+$/.test(s)) return true;
+                return false;
+            };
+            const oldLinesRaw = cur.content.split('\n');
+            const newLinesRaw = f.content.split('\n');
+            const newSet = new Set(newLinesRaw.map(normalize));
+            const oldSignificant = oldLinesRaw.map(normalize).filter(s => !isTrivial(s));
+            let preserved = 0;
+            for (const s of oldSignificant) if (newSet.has(s)) preserved++;
+            const ratio = oldSignificant.length ? preserved / oldSignificant.length : 1;
+            if (oldSignificant.length > 20 && ratio < 0.5) {
+                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% der bestehenden Zeilen wiederverwendet) bei change_kind=extend: ${f.path}`);
             }
         }
         if (action === 'delete' && changeKind !== 'refactor') {
