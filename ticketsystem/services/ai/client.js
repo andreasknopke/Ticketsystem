@@ -50,7 +50,10 @@ const CONFIG = {
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
-const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 16384;
+// 128k Default fuer Cloud-Provider; lokale ollama-Modelle koennen deutlich
+// hoeher (siehe AI_OLLAMA_MAX_TOKENS).
+const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 131072;
+const OLLAMA_MAX_TOKENS = parseInt(env.AI_OLLAMA_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS;
 
 // Allowlist der erlaubten Outbound-Hosts
 const ALLOWED_HOSTS = new Set();
@@ -149,7 +152,7 @@ async function callOllama(opts) {
         stream: false,
         options: {
             temperature: opts.temperature ?? 0.2,
-            num_predict: opts.maxTokens || DEFAULT_MAX_TOKENS
+            num_predict: opts.maxTokens || OLLAMA_MAX_TOKENS
         }
     };
     if (opts.json) body.format = 'json';

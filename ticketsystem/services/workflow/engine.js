@@ -814,17 +814,17 @@ async function execCoding(ctx, codingLevel) {
         currentFiles
     });
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
-    // CODING liefert vollstaendige Datei-Inhalte zurueck und braucht deutlich mehr
-    // Output-Tokens als die uebrigen Stages. Default DEFAULT_MAX_TOKENS (16k)
-    // ist hier zu klein und fuehrt regelmaessig zu finish_reason=length.
-    const codingMaxTokens = parseInt(process.env.AI_CODING_MAX_TOKENS, 10) || 32768;
+    // CODING liefert vollstaendige Datei-Inhalte zurueck und braucht den
+    // groesseren Output-Spielraum. Default DEFAULT_MAX_TOKENS (128k) ist hier
+    // ueblicherweise ausreichend; per AI_CODING_MAX_TOKENS ueberschreibbar.
+    const codingMaxTokens = parseInt(process.env.AI_CODING_MAX_TOKENS, 10) || null;
     const r = await callAIWithStaff(ctx.staff, {
         systemPrompt: prompts.CODING.system,
         userPrompt,
         maxTokensOverride: codingMaxTokens
     });
     const truncationRisk = r.truncated
-        ? `Coding-Antwort wurde vom Modell abgeschnitten (finish_reason=length, completion_tokens=${r.completion_tokens || '?'}). max_tokens war ${codingMaxTokens}. Erhoehe AI_CODING_MAX_TOKENS oder verkleinere den Scope (weniger/kleinere allowed_files).`
+        ? `Coding-Antwort wurde vom Modell abgeschnitten (finish_reason=length, completion_tokens=${r.completion_tokens || '?'}). Erhoehe AI_CODING_MAX_TOKENS / AI_WORKFLOW_MAX_TOKENS oder verkleinere den Scope (weniger/kleinere allowed_files).`
         : null;
     const out = r.parsed || {
         commit_message: 'WIP: ticket #' + ctx.ticket.id,
