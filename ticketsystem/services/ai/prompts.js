@@ -34,7 +34,7 @@ Regeln fuer Splitting:
 - Setze decision="split", wenn das Ticket mehrere getrennt plan-/implementierbare Themen enthaelt oder fuer einen einzelnen Coding-PR zu breit ist.
 - Liefere dann 2-6 sinnvolle split_tickets.
 - Wenn kein Split noetig ist: split_reason leer lassen und split_tickets als [] zurueckgeben.`,
-    buildUser: ({ ticket, systems }) => `Ticket:
+    buildUser: ({ ticket, systems, preselectedSystem }) => `Ticket:
 - Typ: ${ticket.type}
 - Titel: ${ticket.title}
 - Prioritaet: ${ticket.priority}
@@ -43,7 +43,10 @@ Regeln fuer Splitting:
 ${ticket.description || '(leer)'}
 
 Verfuegbare Systeme (id | name | description):
-${(systems || []).map(s => `- ${s.id} | ${s.name} | ${s.description || ''}`).join('\n') || '(keine Systeme konfiguriert)'}`
+${(systems || []).map(s => `- ${s.id} | ${s.name} | ${s.description || ''}`).join('\n') || '(keine Systeme konfiguriert)'}
+${preselectedSystem
+    ? `\nHinweis: Der Ersteller hat bereits ein System ausgewaehlt: id=${preselectedSystem.id} | name=${preselectedSystem.name}. Diese Auswahl ist verbindlich und darf NICHT geaendert werden. Setze "system_id" im JSON exakt auf ${preselectedSystem.id}.`
+    : '\nHinweis: Der Ersteller hat kein System ausgewaehlt. Bitte ordne anhand der Beschreibung das passende System zu (oder null, wenn keines passt).'}`
 };
 
 const SECURITY = {

@@ -300,7 +300,11 @@ function extraInfoSuffix(ctx) {
 async function execTriage(ctx) {
     wfInfo(`Stage:TRIAGE start | ticket=${ctx.ticket.id} title="${(ctx.ticket.title || '').slice(0, 80)}"`);
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
-    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
+    const preselectedSystemId = ctx.ticket.system_id ? parseInt(ctx.ticket.system_id, 10) : null;
+    const preselectedSystem = preselectedSystemId
+        ? (systems.find(s => s.id === preselectedSystemId) || null)
+        : null;
+    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems, preselectedSystem }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
     const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '', split_reason: '', split_tickets: [] };
     if (out.decision === 'split' && !Array.isArray(out.split_tickets)) out.split_tickets = [];
@@ -308,11 +312,28 @@ async function execTriage(ctx) {
         out.split_reason = out.split_reason || '';
         out.split_tickets = Array.isArray(out.split_tickets) ? out.split_tickets : [];
     }
-    if (out.system_id) {
-        await run('UPDATE tickets SET system_id = ? WHERE id = ?', [out.system_id, ctx.ticket.id]);
+    // Vom Menschen vorausgewaehltes System nicht ueberschreiben.
+    // Nur wenn kein System gesetzt war, darf die KI eines vorschlagen.
+    if (preselectedSystemId) {
+        if (out.system_id && parseInt(out.system_id, 10) !== preselectedSystemId) {
+            wfWarn(`Stage:TRIAGE AI tried to override user-selected system_id ${preselectedSystemId} -> ${out.system_id}, ignoring`);
+            await addActivity(ctx.ticket.id, 'workflow', 'triage', `Triage-KI wollte System auf #${out.system_id} aendern, vom Nutzer gewaehltes System #${preselectedSystemId} (${preselectedSystem?.name || '?'}) bleibt erhalten.`, { ai_suggested_system_id: out.system_id, preserved_system_id: preselectedSystemId });
+        }
+        out.system_id = preselectedSystemId;
+        out._system_locked = true;
+    } else if (out.system_id) {
+        const sysRow = await getRow('SELECT id, name FROM systems WHERE id = ? AND active = 1', [parseInt(out.system_id, 10)]);
+        if (sysRow) {
+            await run('UPDATE tickets SET system_id = ? WHERE id = ?', [sysRow.id, ctx.ticket.id]);
+            await addActivity(ctx.ticket.id, 'workflow', 'triage', `Triage-KI hat System "${sysRow.name}" zugeordnet (kein System bei Erstellung gewaehlt).`, { ai_assigned_system_id: sysRow.id, confidence: out.system_match_confidence || 'unknown' });
+            out.system_id = sysRow.id;
+        } else {
+            wfWarn(`Stage:TRIAGE AI suggested invalid system_id=${out.system_id}, ignoring`);
+            out.system_id = null;
+        }
     }
     ctx.triage = out;
-    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'}`, out.reason);
+    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'} preselected=${preselectedSystemId || 'no'}`, out.reason);
     return { output: out, ai: r };
 }
 
