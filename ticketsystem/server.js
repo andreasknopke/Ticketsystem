@@ -421,8 +421,39 @@ function initDb() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         description TEXT,
+        repo_owner TEXT,
+        repo_name TEXT,
+        repo_access_token TEXT,
+        repo_webhook_secret TEXT,
         active INTEGER DEFAULT 1
-    )`);
+    )`, (err) => {
+        if (err) {
+            console.error('Systems table error:', err.message);
+            return;
+        }
+        db.all("PRAGMA table_info(systems)", (pragmaErr, rows) => {
+            if (pragmaErr) return;
+            const cols = rows.map(r => r.name);
+            if (!cols.includes('ai_workflow_enabled')) {
+                db.run('ALTER TABLE systems ADD COLUMN ai_workflow_enabled INTEGER DEFAULT 1', (e) => {
+                    if (e) console.error('Fehler beim Hinzufuegen von systems.ai_workflow_enabled:', e.message);
+                });
+            }
+            const systemMigrations = [
+                { col: 'repo_owner', sql: 'ALTER TABLE systems ADD COLUMN repo_owner TEXT' },
+                { col: 'repo_name', sql: 'ALTER TABLE systems ADD COLUMN repo_name TEXT' },
+                { col: 'repo_access_token', sql: 'ALTER TABLE systems ADD COLUMN repo_access_token TEXT' },
+                { col: 'repo_webhook_secret', sql: 'ALTER TABLE systems ADD COLUMN repo_webhook_secret TEXT' }
+            ];
+            systemMigrations.forEach(m => {
+                if (!cols.includes(m.col)) {
+                    db.run(m.sql, (e) => {
+                        if (e) console.error(`Fehler beim Hinzufuegen von systems.${m.col}:`, e.message);
+                    });
+                }
+            });
+        });
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS staff (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -430,7 +461,47 @@ function initDb() {
         email TEXT NOT NULL,
         phone TEXT,
         active INTEGER DEFAULT 1
-    )`);
+    )`, (err) => {
+        if (err) {
+            console.error('Staff table error:', err.message);
+            return;
+        }
+        db.all("PRAGMA table_info(staff)", (pragmaErr, rows) => {
+            if (pragmaErr) {
+                console.error('Fehler beim Pruefen der staff-Tabelle:', pragmaErr.message);
+                return;
+            }
+            const cols = rows.map(r => r.name);
+            const staffMigrations = [
+                { col: 'kind', sql: "ALTER TABLE staff ADD COLUMN kind TEXT DEFAULT 'human'" },
+                { col: 'ai_provider', sql: 'ALTER TABLE staff ADD COLUMN ai_provider TEXT' },
+                { col: 'ai_model', sql: 'ALTER TABLE staff ADD COLUMN ai_model TEXT' },
+                { col: 'ai_temperature', sql: 'ALTER TABLE staff ADD COLUMN ai_temperature REAL DEFAULT 0.2' },
+                { col: 'ai_system_prompt', sql: 'ALTER TABLE staff ADD COLUMN ai_system_prompt TEXT' },
+                { col: 'ai_max_tokens', sql: 'ALTER TABLE staff ADD COLUMN ai_max_tokens INTEGER' },
+                { col: 'ai_extra_config', sql: 'ALTER TABLE staff ADD COLUMN ai_extra_config TEXT' },
+                { col: 'coding_level', sql: "ALTER TABLE staff ADD COLUMN coding_level TEXT" },
+                { col: 'auto_commit_enabled', sql: 'ALTER TABLE staff ADD COLUMN auto_commit_enabled INTEGER DEFAULT 0' }
+            ];
+            staffMigrations.forEach(m => {
+                if (!cols.includes(m.col)) {
+                    db.run(m.sql, (e) => {
+                        if (e) {
+                            console.error(`Fehler beim Hinzufuegen von staff.${m.col}:`, e.message);
+                            return;
+                        }
+                        if (m.col === 'kind') {
+                            db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
+                        }
+                    });
+                }
+            });
+
+            if (cols.includes('kind')) {
+                db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
+            }
+        });
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS ticket_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -654,53 +725,6 @@ function initDb() {
 
     // --- KI-Workflow: Erweiterungen Mitarbeiter & Systeme ---
 
-    db.all("PRAGMA table_info(staff)", (err, rows) => {
-        if (err) {
-            console.error('Fehler beim Pruefen der staff-Tabelle:', err.message);
-            return;
-        }
-        const cols = rows.map(r => r.name);
-        const staffMigrations = [
-            { col: 'kind', sql: "ALTER TABLE staff ADD COLUMN kind TEXT DEFAULT 'human'" },
-            { col: 'ai_provider', sql: 'ALTER TABLE staff ADD COLUMN ai_provider TEXT' },
-            { col: 'ai_model', sql: 'ALTER TABLE staff ADD COLUMN ai_model TEXT' },
-            { col: 'ai_temperature', sql: 'ALTER TABLE staff ADD COLUMN ai_temperature REAL DEFAULT 0.2' },
-            { col: 'ai_system_prompt', sql: 'ALTER TABLE staff ADD COLUMN ai_system_prompt TEXT' },
-            { col: 'ai_max_tokens', sql: 'ALTER TABLE staff ADD COLUMN ai_max_tokens INTEGER' },
-            { col: 'ai_extra_config', sql: 'ALTER TABLE staff ADD COLUMN ai_extra_config TEXT' },
-            { col: 'coding_level', sql: "ALTER TABLE staff ADD COLUMN coding_level TEXT" },
-            { col: 'auto_commit_enabled', sql: 'ALTER TABLE staff ADD COLUMN auto_commit_enabled INTEGER DEFAULT 0' }
-        ];
-        staffMigrations.forEach(m => {
-            if (!cols.includes(m.col)) {
-                db.run(m.sql, (e) => {
-                    if (e) {
-                        console.error(`Fehler beim Hinzufuegen von staff.${m.col}:`, e.message);
-                        return;
-                    }
-                    if (m.col === 'kind') {
-                        db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
-                    }
-                });
-            }
-        });
-
-        // Falls 'kind' bereits existierte aber leer ist
-        if (cols.includes('kind')) {
-            db.run("UPDATE staff SET kind = 'human' WHERE kind IS NULL OR kind = ''");
-        }
-    });
-
-    db.all("PRAGMA table_info(systems)", (err, rows) => {
-        if (err) return;
-        const cols = rows.map(r => r.name);
-        if (!cols.includes('ai_workflow_enabled')) {
-            db.run('ALTER TABLE systems ADD COLUMN ai_workflow_enabled INTEGER DEFAULT 1', (e) => {
-                if (e) console.error('Fehler beim Hinzufuegen von systems.ai_workflow_enabled:', e.message);
-            });
-        }
-    });
-
     // n:m Mitarbeiter <-> Workflow-Rollen
     db.run(`CREATE TABLE IF NOT EXISTS staff_roles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -723,6 +747,20 @@ function initDb() {
                 SELECT s.id, 'approval', 100, 1 FROM staff s
                 WHERE s.active = 1
                   AND NOT EXISTS (SELECT 1 FROM staff_roles r WHERE r.staff_id = s.id)`);
+    });
+
+    db.run(`CREATE TABLE IF NOT EXISTS staff_system_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_id INTEGER NOT NULL,
+        system_id INTEGER NOT NULL,
+        is_primary INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(staff_id, system_id),
+        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE,
+        FOREIGN KEY (system_id) REFERENCES systems(id) ON DELETE CASCADE
+    )`, (err) => {
+        if (err) console.error('Fehler beim Erstellen staff_system_assignments:', err.message);
     });
 
     // Workflow-Definitionen
@@ -1566,14 +1604,21 @@ app.get('/logout', (req, res) => {
 app.get('/api/systems', requireAuth, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
+        res.json((rows || []).map(row => ({
+            ...row,
+            repo_url: row.repo_owner && row.repo_name ? `https://github.com/${row.repo_owner}/${row.repo_name}` : null,
+            repo_access_token: row.repo_access_token ? '***' : null
+        })));
     });
 });
 
 app.post('/api/systems', requireAuth, requireAdmin, (req, res) => {
-    const { name, description } = req.body;
-    db.run('INSERT INTO systems (name, description) VALUES (?, ?)', [name, description],
-        function(err) { if (err) return res.status(500).json({ error: err.message }); res.json({ id: this.lastID }); });
+    const data = parseSystemPayload(req.body);
+    if (!data.name) return res.status(400).json({ error: 'Name ist erforderlich.' });
+    db.run(`INSERT INTO systems (name, description, repo_owner, repo_name, repo_access_token, repo_webhook_secret, ai_workflow_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [data.name, data.description, data.repo_owner, data.repo_name, data.repo_access_token, data.repo_webhook_secret, data.ai_workflow_enabled],
+    function(err) { if (err) return res.status(500).json({ error: err.message }); res.json({ id: this.lastID }); });
 });
 
 // --- API: Staff ---
@@ -1591,8 +1636,16 @@ app.get('/api/staff/:id', requireAuth, requireAdmin, (req, res) => {
         if (!row) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden' });
         db.all('SELECT role, priority, active FROM staff_roles WHERE staff_id = ?', [req.params.id], (rolesErr, roles) => {
             if (rolesErr) return res.status(500).json({ error: rolesErr.message });
-            row.roles = roles;
-            res.json(row);
+            db.all(`SELECT ssa.system_id, ssa.is_primary, sys.name AS system_name
+                FROM staff_system_assignments ssa
+                INNER JOIN systems sys ON sys.id = ssa.system_id
+                WHERE ssa.staff_id = ? AND ssa.active = 1
+                ORDER BY sys.name`, [req.params.id], (sysErr, assignments) => {
+                if (sysErr) return res.status(500).json({ error: sysErr.message });
+                row.roles = roles;
+                row.system_assignments = assignments || [];
+                res.json(row);
+            });
         });
     });
 });
@@ -1601,6 +1654,7 @@ app.post('/api/staff', requireAuth, requireAdmin, (req, res) => {
     const data = parseStaffPayload(req.body);
     if (!data.name || !data.email) return res.status(400).json({ error: 'Name und E-Mail sind erforderlich.' });
     const roles = normalizeRolesInput(req.body);
+    const systemAssignments = data.kind === 'human' ? normalizeSystemAssignmentsInput(req.body) : [];
     db.run(`INSERT INTO staff
             (name, email, phone, kind, ai_provider, ai_model, ai_temperature, ai_system_prompt, ai_max_tokens, ai_extra_config)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1611,7 +1665,10 @@ app.post('/api/staff', requireAuth, requireAdmin, (req, res) => {
             const newId = this.lastID;
             replaceStaffRoles(newId, roles, (rolesErr) => {
                 if (rolesErr) return res.status(500).json({ error: rolesErr.message });
-                res.json({ id: newId });
+                replaceStaffSystemAssignments(newId, systemAssignments, (sysErr) => {
+                    if (sysErr) return res.status(500).json({ error: sysErr.message });
+                    res.json({ id: newId });
+                });
             });
         });
 });
@@ -2573,7 +2630,15 @@ app.get('/admin/systems', requireAuth, requireAdmin, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1 ORDER BY name', [], (err, rows) => {
         if (err) return res.status(500).send('DB Error');
         res.render('systems', {
-            systems: rows,
+            systems: (rows || []).map(row => ({
+                id: row.id,
+                name: row.name,
+                description: row.description,
+                repo_owner: row.repo_owner,
+                repo_name: row.repo_name,
+                ai_workflow_enabled: row.ai_workflow_enabled,
+                repo_url: row.repo_owner && row.repo_name ? `https://github.com/${row.repo_owner}/${row.repo_name}` : ''
+            })),
             user: req.session.user,
             role: req.session.role || 'user'
         });
@@ -2581,8 +2646,26 @@ app.get('/admin/systems', requireAuth, requireAdmin, (req, res) => {
 });
 
 app.post('/admin/systems', requireAuth, requireAdmin, (req, res) => {
-    const { name, description } = req.body;
-    db.run('INSERT INTO systems (name, description) VALUES (?, ?)', [name, description], (err) => {
+    const data = parseSystemPayload(req.body);
+    if (!data.name) return res.status(400).send('Name ist erforderlich.');
+    db.run(`INSERT INTO systems (name, description, repo_owner, repo_name, repo_access_token, repo_webhook_secret, ai_workflow_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [data.name, data.description, data.repo_owner, data.repo_name, data.repo_access_token, data.repo_webhook_secret, data.ai_workflow_enabled], (err) => {
+        if (err) return res.status(500).send('DB Error');
+        res.redirect('/admin/systems');
+    });
+});
+
+app.post('/admin/systems/:id/update', requireAuth, requireAdmin, (req, res) => {
+    const data = parseSystemPayload(req.body);
+    if (!data.name) return res.status(400).send('Name ist erforderlich.');
+    db.run(`UPDATE systems SET
+            name = ?, description = ?, repo_owner = ?, repo_name = ?,
+            repo_access_token = COALESCE(?, repo_access_token),
+            repo_webhook_secret = COALESCE(?, repo_webhook_secret),
+            ai_workflow_enabled = ?
+            WHERE id = ?`,
+    [data.name, data.description, data.repo_owner, data.repo_name, data.repo_access_token, data.repo_webhook_secret, data.ai_workflow_enabled, req.params.id], (err) => {
         if (err) return res.status(500).send('DB Error');
         res.redirect('/admin/systems');
     });
@@ -2610,6 +2693,39 @@ const CODING_LEVEL_LABELS = {
     high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
 const AI_PROVIDERS = ['deepseek', 'ollama', 'openai_local', 'anthropic', 'copilot', 'mistral'];
+
+function parseRepoInput(repoUrlOrOwner, repoNameRaw) {
+    let repo_owner = repoUrlOrOwner ? String(repoUrlOrOwner).trim() : '';
+    let repo_name = repoNameRaw ? String(repoNameRaw).trim() : '';
+
+    const urlMatch = repo_owner.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/i);
+    if (urlMatch) {
+        repo_owner = urlMatch[1];
+        repo_name = repo_name || urlMatch[2];
+    }
+    const urlMatch2 = repo_name.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/i);
+    if (urlMatch2) {
+        repo_owner = urlMatch2[1];
+        repo_name = urlMatch2[2];
+    }
+
+    repo_owner = repo_owner.replace(/^https?:\/\//i, '').trim() || null;
+    repo_name = repo_name ? repo_name.replace(/\.git$/i, '').trim() : null;
+    return { repo_owner, repo_name: repo_name || null };
+}
+
+function parseSystemPayload(body) {
+    const parsedRepo = parseRepoInput(body.repo_url || body.repo_owner, body.repo_name);
+    return {
+        name: normalizeText(body.name, 200),
+        description: body.description ? normalizeText(body.description, 1000) : null,
+        repo_owner: parsedRepo.repo_owner,
+        repo_name: parsedRepo.repo_name,
+        repo_access_token: body.repo_access_token ? String(body.repo_access_token).trim() : null,
+        repo_webhook_secret: body.repo_webhook_secret ? String(body.repo_webhook_secret).trim() : null,
+        ai_workflow_enabled: parseCheckbox(body.ai_workflow_enabled, true) ? 1 : 0
+    };
+}
 
 function parseStaffPayload(body) {
     const kind = body.kind === 'ai' ? 'ai' : 'human';
@@ -2649,6 +2765,22 @@ function normalizeRolesInput(body) {
     return Array.from(new Set(roles.filter(r => WORKFLOW_ROLES.includes(r))));
 }
 
+function normalizeSystemAssignmentsInput(body) {
+    let systems = body.system_ids;
+    if (!Array.isArray(systems)) systems = systems ? [systems] : [];
+    let primary = body.primary_system_ids;
+    if (!Array.isArray(primary)) primary = primary ? [primary] : [];
+
+    const systemIds = Array.from(new Set(systems
+        .map(v => parseInt(v, 10))
+        .filter(v => Number.isInteger(v) && v > 0)));
+    const primarySet = new Set(primary
+        .map(v => parseInt(v, 10))
+        .filter(v => Number.isInteger(v) && v > 0));
+
+    return systemIds.map(systemId => ({ system_id: systemId, is_primary: primarySet.has(systemId) ? 1 : 0 }));
+}
+
 function replaceStaffRoles(staffId, roles, callback) {
     db.serialize(() => {
         db.run('DELETE FROM staff_roles WHERE staff_id = ?', [staffId], (err) => {
@@ -2656,6 +2788,20 @@ function replaceStaffRoles(staffId, roles, callback) {
             if (roles.length === 0) return callback(null);
             const stmt = db.prepare('INSERT OR IGNORE INTO staff_roles (staff_id, role, priority, active) VALUES (?, ?, 100, 1)');
             roles.forEach(role => stmt.run(staffId, role));
+            stmt.finalize(callback);
+        });
+    });
+}
+
+function replaceStaffSystemAssignments(staffId, assignments, callback) {
+    db.serialize(() => {
+        db.run('DELETE FROM staff_system_assignments WHERE staff_id = ?', [staffId], (err) => {
+            if (err) return callback(err);
+            if (!assignments || assignments.length === 0) return callback(null);
+            const stmt = db.prepare(`INSERT OR REPLACE INTO staff_system_assignments
+                (staff_id, system_id, is_primary, active)
+                VALUES (?, ?, ?, 1)`);
+            assignments.forEach(a => stmt.run(staffId, a.system_id, a.is_primary ? 1 : 0));
             stmt.finalize(callback);
         });
     });
@@ -2670,22 +2816,48 @@ function loadStaffWithRoles(callback) {
         ORDER BY s.name`, [], (err, rows) => {
         if (err) return callback(err);
         rows.forEach(r => { r.roles = r.role_list ? r.role_list.split(',') : []; delete r.role_list; });
-        callback(null, rows);
+        const ids = rows.map(r => r.id);
+        if (!ids.length) return callback(null, rows);
+        const placeholders = ids.map(() => '?').join(',');
+        db.all(`SELECT ssa.staff_id, ssa.system_id, ssa.is_primary, sys.name AS system_name
+            FROM staff_system_assignments ssa
+            INNER JOIN systems sys ON sys.id = ssa.system_id
+            WHERE ssa.active = 1 AND ssa.staff_id IN (${placeholders})
+            ORDER BY sys.name`, ids, (assignErr, assignments) => {
+            if (assignErr) return callback(assignErr);
+            const byStaff = new Map();
+            (assignments || []).forEach(a => {
+                if (!byStaff.has(a.staff_id)) byStaff.set(a.staff_id, []);
+                byStaff.get(a.staff_id).push({
+                    system_id: a.system_id,
+                    system_name: a.system_name,
+                    is_primary: !!a.is_primary
+                });
+            });
+            rows.forEach(r => {
+                r.system_assignments = byStaff.get(r.id) || [];
+            });
+            callback(null, rows);
+        });
     });
 }
 
 app.get('/admin/staff', requireAuth, requireAdmin, (req, res) => {
     loadStaffWithRoles((err, rows) => {
         if (err) return res.status(500).send('DB Error');
-        res.render('staff', {
-            staff: rows,
-            user: req.session.user,
-            role: req.session.role || 'user',
-            workflowRoles: WORKFLOW_ROLES,
-            workflowRoleLabels: WORKFLOW_ROLE_LABELS,
-            codingLevels: CODING_LEVELS,
-            codingLevelLabels: CODING_LEVEL_LABELS,
-            aiProviders: AI_PROVIDERS
+        db.all('SELECT id, name FROM systems WHERE active = 1 ORDER BY name', [], (sysErr, systems) => {
+            if (sysErr) return res.status(500).send('DB Error');
+            res.render('staff', {
+                staff: rows,
+                systems: systems || [],
+                user: req.session.user,
+                role: req.session.role || 'user',
+                workflowRoles: WORKFLOW_ROLES,
+                workflowRoleLabels: WORKFLOW_ROLE_LABELS,
+                codingLevels: CODING_LEVELS,
+                codingLevelLabels: CODING_LEVEL_LABELS,
+                aiProviders: AI_PROVIDERS
+            });
         });
     });
 });
@@ -2694,6 +2866,7 @@ app.post('/admin/staff', requireAuth, requireAdmin, (req, res) => {
     const data = parseStaffPayload(req.body);
     if (!data.name || !data.email) return res.status(400).send('Name und E-Mail sind erforderlich.');
     const roles = normalizeRolesInput(req.body);
+    const systemAssignments = data.kind === 'human' ? normalizeSystemAssignmentsInput(req.body) : [];
     db.run(`INSERT INTO staff
             (name, email, phone, kind, ai_provider, ai_model, ai_temperature, ai_system_prompt, ai_max_tokens, ai_extra_config)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2703,7 +2876,10 @@ app.post('/admin/staff', requireAuth, requireAdmin, (req, res) => {
             if (err) return res.status(500).send('DB Error');
             replaceStaffRoles(this.lastID, roles, (rolesErr) => {
                 if (rolesErr) console.error('Fehler beim Setzen der Rollen:', rolesErr.message);
-                res.redirect('/admin/staff');
+                replaceStaffSystemAssignments(this.lastID, systemAssignments, (sysErr) => {
+                    if (sysErr) console.error('Fehler beim Setzen der Systeme:', sysErr.message);
+                    res.redirect('/admin/staff');
+                });
             });
         });
 });
@@ -2712,6 +2888,7 @@ app.post('/admin/staff/:id/update', requireAuth, requireAdmin, (req, res) => {
     const data = parseStaffPayload(req.body);
     if (!data.name || !data.email) return res.status(400).send('Name und E-Mail sind erforderlich.');
     const roles = normalizeRolesInput(req.body);
+    const systemAssignments = data.kind === 'human' ? normalizeSystemAssignmentsInput(req.body) : [];
     db.run(`UPDATE staff SET
             name = ?, email = ?, phone = ?, kind = ?, ai_provider = ?, ai_model = ?,
             ai_temperature = ?, ai_system_prompt = ?, ai_max_tokens = ?, ai_extra_config = ?,
@@ -2724,7 +2901,10 @@ app.post('/admin/staff/:id/update', requireAuth, requireAdmin, (req, res) => {
             if (err) return res.status(500).send('DB Error');
             replaceStaffRoles(req.params.id, roles, (rolesErr) => {
                 if (rolesErr) console.error('Fehler beim Setzen der Rollen:', rolesErr.message);
-                res.redirect('/admin/staff');
+                replaceStaffSystemAssignments(req.params.id, systemAssignments, (sysErr) => {
+                    if (sysErr) console.error('Fehler beim Setzen der Systeme:', sysErr.message);
+                    res.redirect('/admin/staff');
+                });
             });
         });
 });

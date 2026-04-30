@@ -76,6 +76,7 @@
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Typ</th>
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rollen</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Systeme</th>
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">E-Mail</th>
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">KI-Provider</th>
                                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktionen</th>
@@ -104,6 +105,19 @@
                                         </div>
                                     <% } %>
                                 </td>
+                                <td class="px-4 py-3 text-sm text-gray-700">
+                                    <% if (!s.system_assignments || s.system_assignments.length === 0) { %>
+                                        <span class="text-gray-400">–</span>
+                                    <% } else { %>
+                                        <div class="flex flex-wrap gap-1">
+                                            <% s.system_assignments.forEach(a => { %>
+                                                <span class="badge <%= a.is_primary ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700' %>">
+                                                    <%= a.system_name %><%= a.is_primary ? ' · primär' : '' %>
+                                                </span>
+                                            <% }); %>
+                                        </div>
+                                    <% } %>
+                                </td>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500"><%= s.email %></td>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                                     <% if (s.kind === 'ai' && s.ai_provider) { %>
@@ -124,7 +138,7 @@
                             <% }); %>
                             <% if (staff.length === 0) { %>
                             <tr>
-                                <td colspan="7" class="px-6 py-4 text-center text-gray-500">Keine Mitarbeiter vorhanden.</td>
+                                <td colspan="8" class="px-6 py-4 text-center text-gray-500">Keine Mitarbeiter vorhanden.</td>
                             </tr>
                             <% } %>
                         </tbody>
@@ -246,6 +260,27 @@
                     </div>
                 </fieldset>
 
+                <fieldset id="systemAssignmentsBlock">
+                    <legend class="text-sm font-semibold text-slate-700">System-Zuständigkeit</legend>
+                    <p class="text-xs text-slate-500 mt-1 mb-2">Bei Workflow-Start werden offene Tickets eines Systems per Round-Robin an einen zugeordneten Menschen verteilt. Primäre Zuständige werden bevorzugt.</p>
+                    <div class="grid gap-2 sm:grid-cols-2">
+                        <% systems.forEach(sys => { %>
+                            <label class="rounded border border-slate-200 px-3 py-2 hover:bg-slate-50">
+                                <span class="flex items-start gap-3">
+                                    <input type="checkbox" name="system_ids" value="<%= sys.id %>" class="system-checkbox mt-1" data-system-id="<%= sys.id %>">
+                                    <span class="flex-1">
+                                        <span class="block text-sm font-medium text-slate-800"><%= sys.name %></span>
+                                        <span class="mt-1 inline-flex items-center gap-2 text-xs text-slate-500">
+                                            <input type="checkbox" name="primary_system_ids" value="<%= sys.id %>" class="primary-system-checkbox" data-system-id="<%= sys.id %>">
+                                            <span>primär zuständig</span>
+                                        </span>
+                                    </span>
+                                </span>
+                            </label>
+                        <% }); %>
+                    </div>
+                </fieldset>
+
                 <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">
                     <button type="button" onclick="closeStaffModal()" class="btn-secondary">Abbrechen</button>
                     <button type="submit" class="btn-primary">Speichern</button>
@@ -260,6 +295,7 @@
     function onKindChange() {
         const aiSelected = document.getElementById('staff_kind_ai').checked;
         document.getElementById('aiBlock').classList.toggle('hidden', !aiSelected);
+        document.getElementById('systemAssignmentsBlock').classList.toggle('hidden', aiSelected);
     }
 
     function setRoleCheckboxes(roles) {
@@ -268,6 +304,27 @@
             cb.checked = set.has(cb.dataset.role);
         });
     }
+
+    function setSystemCheckboxes(assignments) {
+        const assigned = new Set((assignments || []).map(a => String(a.system_id)));
+        const primary = new Set((assignments || []).filter(a => a.is_primary).map(a => String(a.system_id)));
+        document.querySelectorAll('.system-checkbox').forEach(cb => {
+            cb.checked = assigned.has(cb.dataset.systemId);
+        });
+        document.querySelectorAll('.primary-system-checkbox').forEach(cb => {
+            cb.checked = primary.has(cb.dataset.systemId);
+            cb.disabled = !assigned.has(cb.dataset.systemId);
+        });
+    }
+
+    document.querySelectorAll('.system-checkbox').forEach(cb => {
+        cb.addEventListener('change', function() {
+            const primary = document.querySelector('.primary-system-checkbox[data-system-id="' + this.dataset.systemId + '"]');
+            if (!primary) return;
+            primary.disabled = !this.checked;
+            if (!this.checked) primary.checked = false;
+        });
+    });
 
     function openStaffModal(staff) {
         const isNew = !staff;
@@ -288,6 +345,7 @@
         document.getElementById('staff_kind_ai').checked = kind === 'ai';
         onKindChange();
         setRoleCheckboxes(isNew ? [] : staff.roles);
+        setSystemCheckboxes(isNew ? [] : (staff.system_assignments || []));
         document.getElementById('staffEditForm').action = isNew ? '/admin/staff' : ('/admin/staff/' + staff.id + '/update');
         staffModal.classList.remove('hidden');
         staffModal.classList.add('flex');

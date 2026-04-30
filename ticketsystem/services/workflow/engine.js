@@ -5,7 +5,7 @@
 const aiClient = require('../ai/client');
 const prompts = require('../ai/prompts');
 const { redact } = require('../ai/redact');
-const { pickStaffForRole } = require('./assignment');
+const { pickStaffForRole, pickTicketAssignee } = require('./assignment');
 const { fetchRepoContext, fetchFilesFromRepo, commitFilesAsPR } = require('./githubContext');
 const { runCodeChecks } = require('./codeChecks');
 
@@ -66,6 +66,28 @@ async function pickStaff(role, executorKind, options) {
     return new Promise((resolve, reject) => {
         pickStaffForRole(dbRef, role, executorKind, (err, staff) => err ? reject(err) : resolve(staff), options || {});
     });
+}
+
+async function pickInitialAssignee(systemId) {
+    return new Promise((resolve, reject) => {
+        pickTicketAssignee(dbRef, systemId, (err, staff) => err ? reject(err) : resolve(staff));
+    });
+}
+
+async function getGithubIntegrationForSystem(systemId) {
+    if (!systemId) return null;
+
+    const direct = await getRow(`SELECT id, repo_owner, repo_name,
+        repo_access_token AS access_token,
+        repo_webhook_secret AS webhook_secret,
+        'system' AS integration_scope
+        FROM systems
+        WHERE id = ? AND repo_owner IS NOT NULL AND repo_name IS NOT NULL`, [systemId]);
+    if (direct) return direct;
+
+    return await getRow(`SELECT gi.*, 'project' AS integration_scope FROM github_integration gi
+        INNER JOIN projects p ON p.id = gi.project_id
+        WHERE p.system_id = ? LIMIT 1`, [systemId]);
 }
 
 async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES }) {
@@ -207,9 +229,7 @@ async function execSecurity(ctx) {
 
 async function execPlanning(ctx) {
     wfInfo(`Stage:PLANNING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'}`);
-    const integration = await getRow(`SELECT gi.* FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
     wfInfo(`Stage:PLANNING integration lookup | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token}`);
     const repoCtx = await fetchRepoContext(integration);
     ctx.repo_context = repoCtx.repoContext;
@@ -313,9 +333,7 @@ async function execIntegration(ctx) {
 
     // Code-Grounding: tatsaechliche Inhalte der vom Plan vorgesehenen Zieldateien laden,
     // damit der Reviewer Doku-Behauptungen am Code pruefen kann statt zu raten.
-    const integration = await getRow(`SELECT gi.* FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
 
     // Bei Re-Run startet die Integration-Stage frisch, ohne Planning-ctx.
     // Tree und Boundary-Files dann hier neu laden.
@@ -457,12 +475,22 @@ async function startForTicket(ticketId) {
     const wf = await loadDefaultWorkflow();
     if (!wf) { wfWarn(`startForTicket ticket=${ticketId} SKIP: kein Workflow`); return null; }
 
+    let autoAssignedStaff = null;
+    if (!ticket.assigned_to && ticket.system_id) {
+        try {
+            autoAssignedStaff = await pickInitialAssignee(ticket.system_id);
+        } catch (e) {
+            wfWarn(`startForTicket ticket=${ticketId} auto-assign failed`, e.message);
+        }
+    }
+
     const runRes = await run(`INSERT INTO ticket_workflow_runs (ticket_id, workflow_id, status, current_stage)
         VALUES (?, ?, 'running', ?)`, [ticketId, wf.workflow.id, wf.stages[0].role]);
     const runId = runRes.lastID;
-    await run('UPDATE tickets SET workflow_run_id = ? WHERE id = ?', [runId, ticketId]);
+    await run(`UPDATE tickets SET workflow_run_id = ?, status = ?, assigned_to = COALESCE(assigned_to, ?) WHERE id = ?`,
+        [runId, 'in_bearbeitung', autoAssignedStaff?.id || null, ticketId]);
     emit('workflow:started', { ticketId, runId });
-    wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'}`);
+    wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'} auto_assigned_to=${autoAssignedStaff?.id || 'none'}`);
 
     runStages(runId, ticket, wf.stages).catch(async (err) => {
         wfError(`Workflow-Engine FATAL ticket=${ticketId} run=${runId}`, err.message);
@@ -737,9 +765,7 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
 
 async function execCoding(ctx, codingLevel) {
     wfInfo(`Stage:CODING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'} level=${codingLevel} hasApproverNote=${!!ctx.approverNote} hasExtraInfo=${!!ctx.extra_info}`);
-    const integration = await getRow(`SELECT gi.* FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
     wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
 
     const repoCtx = await fetchRepoContext(integration);

@@ -55,11 +55,19 @@
                 <h2 class="text-lg font-semibold text-gray-900">Neues System hinzufügen</h2>
             </div>
             <div class="card-body">
-                <form method="post" action="/admin/systems" class="flex flex-col md:flex-row gap-4">
+                <form method="post" action="/admin/systems" class="grid gap-4 md:grid-cols-2">
                     <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                    <input name="name" placeholder="Name (z.B. KIS)" required class="form-input md:w-72 md:flex-none">
-                    <input name="description" placeholder="Beschreibung" class="form-input md:flex-1">
-                    <button type="submit" class="btn-primary">Hinzufügen</button>
+                    <input name="name" placeholder="Name (z.B. KIS)" required class="form-input">
+                    <input name="description" placeholder="Beschreibung" class="form-input">
+                    <input name="repo_url" placeholder="GitHub-Repo-URL (optional)" class="form-input md:col-span-2">
+                    <input name="repo_access_token" placeholder="Repo-Token (optional, fuer Workflow/Sync)" class="form-input md:col-span-2">
+                    <label class="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input type="checkbox" name="ai_workflow_enabled" value="1" checked>
+                        <span>KI-Workflow fuer dieses System aktiv</span>
+                    </label>
+                    <div class="md:col-span-2">
+                        <button type="submit" class="btn-primary">Hinzufügen</button>
+                    </div>
                 </form>
             </div>
         </div>
@@ -76,6 +84,8 @@
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Beschreibung</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Repo</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Workflow</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktionen</th>
                             </tr>
                         </thead>
@@ -85,7 +95,22 @@
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">#<%= sys.id %></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><%= sys.name %></td>
                                 <td class="px-6 py-4 text-sm text-gray-500"><%= sys.description || '-' %></td>
+                                <td class="px-6 py-4 text-sm text-gray-500">
+                                    <% if (sys.repo_owner && sys.repo_name) { %>
+                                        <a href="https://github.com/<%= sys.repo_owner %>/<%= sys.repo_name %>" target="_blank" rel="noreferrer" class="text-primary-600 hover:text-primary-800"><%= sys.repo_owner %>/<%= sys.repo_name %></a>
+                                    <% } else { %>
+                                        -
+                                    <% } %>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <% if (sys.ai_workflow_enabled === 0) { %>
+                                        <span class="badge bg-slate-100 text-slate-700">deaktiviert</span>
+                                    <% } else { %>
+                                        <span class="badge bg-emerald-100 text-emerald-700">aktiv</span>
+                                    <% } %>
+                                </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                    <button type="button" class="mr-3 text-primary-600 hover:text-primary-800" onclick='openSystemModal(<%- JSON.stringify(sys) %>)'>Bearbeiten</button>
                                     <form method="post" action="/admin/systems/<%= sys.id %>/delete" style="display:inline;" onsubmit="return confirm('System <%= sys.name %> wirklich löschen?');">
                                         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                         <button type="submit" class="text-red-600 hover:text-red-900">Löschen</button>
@@ -95,7 +120,7 @@
                             <% }); %>
                             <% if (systems.length === 0) { %>
                             <tr>
-                                <td colspan="4" class="px-6 py-4 text-center text-gray-500">Keine Systeme vorhanden.</td>
+                                <td colspan="6" class="px-6 py-4 text-center text-gray-500">Keine Systeme vorhanden.</td>
                             </tr>
                             <% } %>
                         </tbody>
@@ -104,5 +129,59 @@
             </div>
         </div>
     </main>
+
+    <div id="systemModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+        <div class="w-full max-w-2xl rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200">
+            <div class="border-b border-slate-200 px-6 py-4 flex items-start justify-between gap-4">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.2em] text-primary-600">System</p>
+                    <h3 id="systemModalTitle" class="mt-1 text-xl font-semibold text-slate-900">System bearbeiten</h3>
+                </div>
+                <button type="button" class="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onclick="closeSystemModal()">×</button>
+            </div>
+            <form method="post" id="systemEditForm" class="grid gap-4 px-6 py-6 md:grid-cols-2">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <input id="system_name" name="name" required class="form-input" placeholder="Name">
+                <input id="system_description" name="description" class="form-input" placeholder="Beschreibung">
+                <input id="system_repo_url" name="repo_url" class="form-input md:col-span-2" placeholder="https://github.com/org/repo">
+                <input id="system_repo_access_token" name="repo_access_token" class="form-input md:col-span-2" placeholder="Token leer lassen = unverändert">
+                <label class="inline-flex items-center gap-2 text-sm text-slate-700 md:col-span-2">
+                    <input id="system_ai_workflow_enabled" type="checkbox" name="ai_workflow_enabled" value="1">
+                    <span>KI-Workflow fuer dieses System aktiv</span>
+                </label>
+                <div class="md:col-span-2 flex justify-end gap-3 border-t border-slate-200 pt-5">
+                    <button type="button" onclick="closeSystemModal()" class="btn-secondary">Abbrechen</button>
+                    <button type="submit" class="btn-primary">Speichern</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+    const systemModal = document.getElementById('systemModal');
+
+    function openSystemModal(system) {
+        document.getElementById('systemModalTitle').textContent = system.name || 'System bearbeiten';
+        document.getElementById('system_name').value = system.name || '';
+        document.getElementById('system_description').value = system.description || '';
+        document.getElementById('system_repo_url').value = system.repo_url || '';
+        document.getElementById('system_repo_access_token').value = '';
+        document.getElementById('system_ai_workflow_enabled').checked = system.ai_workflow_enabled !== 0;
+        document.getElementById('systemEditForm').action = '/admin/systems/' + system.id + '/update';
+        systemModal.classList.remove('hidden');
+        systemModal.classList.add('flex');
+        document.body.classList.add('overflow-hidden');
+    }
+
+    function closeSystemModal() {
+        systemModal.classList.add('hidden');
+        systemModal.classList.remove('flex');
+        document.body.classList.remove('overflow-hidden');
+    }
+
+    systemModal.addEventListener('click', function(event) {
+        if (event.target === systemModal) closeSystemModal();
+    });
+    </script>
 </body>
 </html>
