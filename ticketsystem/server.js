@@ -634,12 +634,40 @@ function initDb() {
         db.run(`CREATE TABLE IF NOT EXISTS milestone_steps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             milestone_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL,
             date TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (milestone_id) REFERENCES project_milestones(id) ON DELETE CASCADE
-        )`);
+        )`, (err) => {
+            if (err) {
+                console.error('Milestone steps table error:', err.message);
+                return;
+            }
+            db.all('PRAGMA table_info(milestone_steps)', (pragmaErr, rows) => {
+                if (pragmaErr) {
+                    console.error('Fehler beim Pruefen der milestone_steps-Tabelle:', pragmaErr.message);
+                    return;
+                }
+                const cols = rows.map((row) => row.name);
+                if (!cols.includes('title')) {
+                    db.run("ALTER TABLE milestone_steps ADD COLUMN title TEXT DEFAULT ''", (alterErr) => {
+                        if (alterErr) {
+                            console.error('Fehler beim Hinzufuegen von milestone_steps.title:', alterErr.message);
+                            return;
+                        }
+                        db.run(`UPDATE milestone_steps
+                            SET title = substr(trim(COALESCE(text, '')), 1, 80)
+                            WHERE trim(COALESCE(title, '')) = ''`);
+                    });
+                    return;
+                }
+                db.run(`UPDATE milestone_steps
+                    SET title = substr(trim(COALESCE(text, '')), 1, 80)
+                    WHERE trim(COALESCE(title, '')) = ''`);
+            });
+        });
 
         db.run(`CREATE INDEX IF NOT EXISTS idx_milestone_steps_milestone_id ON milestone_steps(milestone_id)`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_milestone_steps_date ON milestone_steps(date)`);
@@ -2403,6 +2431,12 @@ function validateMilestoneStepPayload(body, partial = false) {
     const payload = body || {};
     const out = {};
 
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, 'title')) {
+        const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+        if (!title) return { error: 'title ist erforderlich' };
+        out.title = title.slice(0, 160);
+    }
+
     if (!partial || Object.prototype.hasOwnProperty.call(payload, 'text')) {
         const text = typeof payload.text === 'string' ? payload.text.trim() : '';
         if (!text) return { error: 'text ist erforderlich' };
@@ -2434,6 +2468,7 @@ function serializeMilestoneStep(step, blobs) {
     return {
         id: step.id,
         milestoneId: step.milestone_id,
+        title: step.title,
         text: step.text,
         date: step.date,
         createdAt: step.created_at,
@@ -2564,8 +2599,8 @@ app.post('/api/milestones/:milestoneId/steps', requireAuth, requireAdmin, handle
         const milestone = await dbGet('SELECT id, project_id FROM project_milestones WHERE id = ?', [milestoneId]);
         if (!milestone.id) return res.status(404).json({ error: 'Meilenstein nicht gefunden' });
 
-        const result = await dbRun(`INSERT INTO milestone_steps (milestone_id, text, date)
-            VALUES (?, ?, ?)`, [milestoneId, validated.value.text, validated.value.date]);
+        const result = await dbRun(`INSERT INTO milestone_steps (milestone_id, title, text, date)
+            VALUES (?, ?, ?, ?)`, [milestoneId, validated.value.title, validated.value.text, validated.value.date]);
         await createMilestoneStepAttachments(result.lastID, req.files || []);
         io.emit('milestone:updated', { projectId: milestone.project_id });
         res.status(201).json(await loadMilestoneStep(result.lastID, milestoneId));
@@ -4161,20 +4196,71 @@ app.get('/project/:id', requireAuth, (req, res) => {
 });
 
 app.get('/project/:id/timeline', requireAuth, (req, res) => {
-    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
-        [req.params.id], (err, project) => {
-            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
-            db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
-                [req.params.id], (err, milestones) => {
-                    res.render('project-timeline', {
-                        project,
-                        milestones: milestones || [],
-                        user: req.session.user,
-                        role: req.session.role || 'user',
-                        canManage: isAdminRole(req.session.role)
+    (async () => {
+        try {
+            const project = await dbGet(
+                'SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+                [req.params.id]
+            );
+            if (!project.id) return res.status(404).send('Projekt nicht gefunden');
+
+            const milestones = await dbAll(
+                'SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
+                [req.params.id]
+            );
+
+            let milestonesWithSteps = milestones || [];
+            if (milestonesWithSteps.length) {
+                const milestoneIds = milestonesWithSteps.map((milestone) => milestone.id);
+                const milestonePlaceholders = milestoneIds.map(() => '?').join(',');
+                const steps = await dbAll(
+                    `SELECT * FROM milestone_steps WHERE milestone_id IN (${milestonePlaceholders}) ORDER BY date ASC, created_at ASC, id ASC`,
+                    milestoneIds
+                );
+
+                const serializedSteps = [];
+                if (steps.length) {
+                    const stepIds = steps.map((step) => step.id);
+                    const stepPlaceholders = stepIds.map(() => '?').join(',');
+                    const blobs = await dbAll(
+                        `SELECT * FROM blobs WHERE step_id IN (${stepPlaceholders}) ORDER BY created_at ASC, id ASC`,
+                        stepIds
+                    );
+                    const blobsByStep = new Map();
+                    blobs.forEach((blob) => {
+                        const list = blobsByStep.get(blob.step_id) || [];
+                        list.push(blob);
+                        blobsByStep.set(blob.step_id, list);
                     });
+                    steps.forEach((step) => {
+                        serializedSteps.push(serializeMilestoneStep(step, blobsByStep.get(step.id) || []));
+                    });
+                }
+
+                const stepsByMilestone = new Map();
+                serializedSteps.forEach((step) => {
+                    const list = stepsByMilestone.get(step.milestoneId) || [];
+                    list.push(step);
+                    stepsByMilestone.set(step.milestoneId, list);
                 });
-        });
+
+                milestonesWithSteps = milestonesWithSteps.map((milestone) => ({
+                    ...milestone,
+                    steps: stepsByMilestone.get(milestone.id) || []
+                }));
+            }
+
+            res.render('project-timeline', {
+                project,
+                milestones: milestonesWithSteps,
+                user: req.session.user,
+                role: req.session.role || 'user',
+                canManage: isAdminRole(req.session.role)
+            });
+        } catch (err) {
+            res.status(500).send(err.message);
+        }
+    })();
 });
 
 app.get('/project/:id/milestones', requireAuth, (req, res) => {

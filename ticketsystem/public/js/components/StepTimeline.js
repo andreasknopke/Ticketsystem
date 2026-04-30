@@ -77,10 +77,10 @@
         var marker = createElement('button', {
           type: 'button',
           className: 'step-timeline__marker',
-          title: (step.date || '') + ' - ' + (step.text || '')
+          title: (step.date || '') + ' - ' + (step.title || step.text || '')
         });
         var dot = createElement('span', { className: 'step-timeline__dot' });
-        var label = createElement('span', { className: 'step-timeline__label' }, step.date || 'Ohne Datum');
+        var label = createElement('span', { className: 'step-timeline__label' }, (step.date || 'Ohne Datum') + ' · ' + (step.title || 'Schritt'));
         var offset = ((toTime(step) - min) / span) * 100;
         marker.style.left = offset + '%';
         marker.appendChild(dot);

@@ -30,10 +30,18 @@
 
     var form = createElement('form', { className: 'step-form' });
     var grid = createElement('div', { className: 'step-form__grid' });
+    var titleField = createElement('div', { className: 'step-form__field step-form__field--wide' });
     var dateField = createElement('div', { className: 'step-form__field' });
     var textField = createElement('div', { className: 'step-form__field step-form__field--wide' });
     var fileField = createElement('div', { className: 'step-form__field step-form__field--wide' });
     var actions = createElement('div', { className: 'step-form__actions' });
+    var titleInput = createElement('input', {
+      type: 'text',
+      name: 'title',
+      required: 'required',
+      placeholder: 'z. B. Abstimmung mit Datenschutz',
+      className: 'form-input'
+    });
     var dateInput = createElement('input', { type: 'date', name: 'date', required: 'required', className: 'form-input' });
     var textInput = createElement('textarea', {
       name: 'text',
@@ -47,6 +55,9 @@
     var submit = createElement('button', { type: 'submit', className: 'btn-primary step-form__submit' }, 'Schritt speichern');
     var hint = createElement('p', { className: 'step-form__hint' }, 'Optional kannst du Dateien oder Screenshots als Anhang mitgeben.');
 
+    titleField.appendChild(createElement('label', { className: 'step-form__label' }, 'Titel'));
+    titleField.appendChild(titleInput);
+
     dateField.appendChild(createElement('label', { className: 'step-form__label' }, 'Datum'));
     dateField.appendChild(dateInput);
 
@@ -57,6 +68,7 @@
     fileField.appendChild(fileInput);
     fileField.appendChild(hint);
 
+    grid.appendChild(titleField);
     grid.appendChild(dateField);
     grid.appendChild(textField);
     grid.appendChild(fileField);
@@ -82,7 +94,7 @@
     }
 
     var data = new FormData(form);
-  message.className = 'step-form__message';
+    message.className = 'step-form__message';
     message.textContent = 'Speichern...';
 
     fetch(this.apiBasePath, {

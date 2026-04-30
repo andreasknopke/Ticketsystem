@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zeitleiste - <%= project.name %> | Ticketsystem</title>
     <link rel="stylesheet" href="/style.css?v=2">
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -62,10 +61,10 @@
         <div class="card mb-6 border-primary-200 bg-primary-50">
             <div class="card-body flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                    <p class="text-sm font-semibold text-primary-900">Steps werden pro Meilenstein gepflegt.</p>
-                    <p class="text-sm text-primary-800">Zum Hinzufügen oder Bearbeiten von Steps im Tabellenbereich unten auf „Steps" klicken oder direkt in den Tab „Meilensteine" wechseln.</p>
+                    <p class="text-sm font-semibold text-primary-900">Steps sind direkt im jeweiligen Meilenstein verankert.</p>
+                    <p class="text-sm text-primary-800">Die roten Step-Links in der Leiste springen direkt zur Detailansicht mit Titel, Beschreibung und Dateien.</p>
                 </div>
-                <a href="/project/<%= project.id %>/milestones" class="btn-primary text-sm whitespace-nowrap">Zu den Meilensteinen</a>
+                <a href="/project/<%= project.id %>/milestones" class="btn-primary text-sm whitespace-nowrap">Steps verwalten</a>
             </div>
         </div>
         <% } %>
@@ -79,24 +78,123 @@
             <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="btn-secondary text-sm">GitHub</a><% } %>
         </div>
 
+        <%
+            const datedMilestones = milestones.filter((m) => m.start_date && m.end_date);
+            const timelineStart = datedMilestones.length
+                ? datedMilestones.reduce((min, milestone) => new Date(milestone.start_date) < min ? new Date(milestone.start_date) : min, new Date(datedMilestones[0].start_date))
+                : null;
+            const timelineEnd = datedMilestones.length
+                ? datedMilestones.reduce((max, milestone) => new Date(milestone.end_date) > max ? new Date(milestone.end_date) : max, new Date(datedMilestones[0].end_date))
+                : null;
+            const dayMs = 24 * 60 * 60 * 1000;
+            const totalDays = timelineStart && timelineEnd
+                ? Math.max(1, Math.round((timelineEnd - timelineStart) / dayMs) + 1)
+                : 1;
+            const formatDate = (value) => value ? new Date(value).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Ohne Datum';
+            const axisLabel = (offset) => new Date(timelineStart.getTime() + (offset * dayMs)).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+            const offsetPercent = (value) => {
+                if (!timelineStart || !value) return 0;
+                return Math.max(0, ((new Date(value) - timelineStart) / dayMs / totalDays) * 100);
+            };
+            const widthPercent = (start, end) => {
+                if (!timelineStart || !start || !end) return 100;
+                const span = Math.max(1, Math.round((new Date(end) - new Date(start)) / dayMs) + 1);
+                return Math.max((span / totalDays) * 100, 3);
+            };
+            const milestonesWithSteps = milestones.filter((milestone) => (milestone.steps || []).length > 0);
+        %>
+
         <div class="card mb-6">
             <div class="card-body">
-                <div class="mermaid" id="ganttChart">
-gantt
-    title <%= project.name %> - Zeitleiste
-    dateFormat YYYY-MM-DD
-    axisFormat %d.%m.%Y
-    <% if (milestones.length > 0) { %>
-    <% milestones.forEach(m => { %>
-    <%= m.title %> :<%= m.status === 'completed' ? 'done' : m.status === 'in_progress' ? 'active' : m.status === 'blocked' ? 'crit' : '' %>, <%= m.start_date || '2024-01-01' %>, <%= m.end_date || '2024-02-01' %>
-    <% }); %>
-    <% } else { %>
-    section Keine Meilensteine
-    Keine Daten :2024-01-01, 7d
-    <% } %>
+                <% if (milestones.length === 0) { %>
+                <p class="text-sm text-gray-500">Keine Meilensteine definiert.</p>
+                <% } else { %>
+                <div class="milestone-board">
+                    <% if (timelineStart && timelineEnd) { %>
+                    <div class="milestone-board__axis" aria-hidden="true">
+                        <% for (let dayIndex = 0; dayIndex < totalDays; dayIndex += 1) { %>
+                        <div class="milestone-board__axis-day" style="left:<%= totalDays === 1 ? 0 : (dayIndex / (totalDays - 1)) * 100 %>%">
+                            <span class="milestone-board__axis-tick"></span>
+                            <span class="milestone-board__axis-label"><%= axisLabel(dayIndex) %></span>
+                        </div>
+                        <% } %>
+                    </div>
+                    <% } %>
+
+                    <div class="milestone-board__rows">
+                        <% milestones.forEach((milestone) => { %>
+                        <% const left = offsetPercent(milestone.start_date); %>
+                        <% const width = widthPercent(milestone.start_date, milestone.end_date); %>
+                        <section class="milestone-board__row" id="timeline-milestone-<%= milestone.id %>">
+                            <div class="milestone-board__row-header">
+                                <div>
+                                    <h2 class="milestone-board__title"><%= milestone.title %></h2>
+                                    <p class="milestone-board__meta"><%= formatDate(milestone.start_date) %> bis <%= formatDate(milestone.end_date) %></p>
+                                </div>
+                                <span class="badge text-xs <%= milestone.status === 'completed' ? 'bg-green-100 text-green-800' : milestone.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : milestone.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[milestone.status] %></span>
+                            </div>
+
+                            <% if (timelineStart && milestone.start_date && milestone.end_date) { %>
+                            <div class="milestone-board__track">
+                                <div class="milestone-board__bar" style="left:<%= left %>%; width:<%= width %>%; --milestone-color:<%= milestone.color || '#2563eb' %>">
+                                    <span class="milestone-board__bar-label"><%= milestone.title %></span>
+                                    <% (milestone.steps || []).forEach((step, index) => { %>
+                                    <% const stepPosition = Math.min(Math.max(offsetPercent(step.date) - left, 0), width); %>
+                                    <a href="#timeline-step-<%= step.id %>" class="milestone-board__step-link milestone-board__step-link--<%= index % 2 === 0 ? 'above' : 'below' %>" style="left:<%= stepPosition %>%" title="<%= step.title || ('Step ' + step.id) %>">
+                                        <span class="milestone-board__step-line"></span>
+                                        <span class="milestone-board__step-dot"></span>
+                                        <span class="milestone-board__step-text"><%= formatDate(step.date).slice(0, 5) %> <%= step.title || ('Step ' + step.id) %></span>
+                                    </a>
+                                    <% }); %>
+                                </div>
+                            </div>
+                            <% } else { %>
+                            <div class="milestone-board__missing-dates">Fuer diesen Meilenstein fehlen Start- oder Enddatum.</div>
+                            <% } %>
+                        </section>
+                        <% }); %>
+                    </div>
+                </div>
+                <% } %>
+            </div>
+        </div>
+
+        <% if (milestonesWithSteps.length > 0) { %>
+        <div class="card mb-6">
+            <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Step-Details</h2></div>
+            <div class="card-body">
+                <div class="timeline-step-details">
+                    <% milestonesWithSteps.forEach((milestone) => { %>
+                    <% (milestone.steps || []).forEach((step) => { %>
+                    <article id="timeline-step-<%= step.id %>" class="timeline-step-card">
+                        <div class="timeline-step-card__header">
+                            <div>
+                                <p class="timeline-step-card__eyebrow"><%= milestone.title %></p>
+                                <h3 class="timeline-step-card__title"><%= step.title || ('Step ' + step.id) %></h3>
+                            </div>
+                            <span class="timeline-step-card__date"><%= formatDate(step.date) %></span>
+                        </div>
+                        <p class="timeline-step-card__text"><%= step.text || 'Keine Beschreibung hinterlegt.' %></p>
+                        <% if ((step.blobs || []).length > 0) { %>
+                        <div class="timeline-step-card__attachments">
+                            <h4 class="timeline-step-card__attachments-title">Dateien</h4>
+                            <ul class="timeline-step-card__attachments-list">
+                                <% step.blobs.forEach((blob) => { %>
+                                <li>
+                                    <a class="timeline-step-card__attachment-link" href="/api/milestones/<%= milestone.id %>/steps/<%= step.id %>/attachments/<%= blob.id %>"><%= blob.filename %></a>
+                                    <span class="timeline-step-card__attachment-size"><%= blob.size || 0 %> Bytes</span>
+                                </li>
+                                <% }); %>
+                            </ul>
+                        </div>
+                        <% } %>
+                    </article>
+                    <% }); %>
+                    <% }); %>
                 </div>
             </div>
         </div>
+        <% } %>
 
         <div class="card">
             <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Meilensteine</h2></div>
@@ -110,22 +208,32 @@ gantt
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Start</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ende</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                                <% if (canManage) { %><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Steps</th><% } %>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Step-Links</th>
+                                <% if (canManage) { %><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pflege</th><% } %>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
-                            <% milestones.forEach(m => { %>
+                            <% milestones.forEach((milestone) => { %>
                             <tr>
                                 <td class="px-6 py-4 text-sm font-medium text-gray-900">
-                                    <span class="w-3 h-3 rounded-full inline-block mr-2" style="background:<%= m.color || '#2563eb' %>"></span><%= m.title %>
+                                    <span class="w-3 h-3 rounded-full inline-block mr-2" style="background:<%= milestone.color || '#2563eb' %>"></span><%= milestone.title %>
                                 </td>
-                                <td class="px-6 py-4 text-sm text-gray-500"><%= m.phase ? 'Phase ' + m.phase : '-' %></td>
-                                <td class="px-6 py-4 text-sm text-gray-500"><%= m.start_date ? new Date(m.start_date).toLocaleDateString('de-DE') : '-' %></td>
-                                <td class="px-6 py-4 text-sm text-gray-500"><%= m.end_date ? new Date(m.end_date).toLocaleDateString('de-DE') : '-' %></td>
-                                <td class="px-6 py-4"><span class="badge text-xs <%= m.status === 'completed' ? 'bg-green-100 text-green-800' : m.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : m.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[m.status] %></span></td>
+                                <td class="px-6 py-4 text-sm text-gray-500"><%= milestone.phase ? 'Phase ' + milestone.phase : '-' %></td>
+                                <td class="px-6 py-4 text-sm text-gray-500"><%= milestone.start_date ? new Date(milestone.start_date).toLocaleDateString('de-DE') : '-' %></td>
+                                <td class="px-6 py-4 text-sm text-gray-500"><%= milestone.end_date ? new Date(milestone.end_date).toLocaleDateString('de-DE') : '-' %></td>
+                                <td class="px-6 py-4"><span class="badge text-xs <%= milestone.status === 'completed' ? 'bg-green-100 text-green-800' : milestone.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : milestone.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[milestone.status] %></span></td>
+                                <td class="px-6 py-4 text-sm text-gray-700">
+                                    <% if ((milestone.steps || []).length > 0) { %>
+                                        <% milestone.steps.forEach((step, index) => { %>
+                                            <a href="#timeline-step-<%= step.id %>" class="text-primary-700 hover:text-primary-900 hover:underline"><%= step.title || ('Step ' + step.id) %></a><%= index < milestone.steps.length - 1 ? ', ' : '' %>
+                                        <% }); %>
+                                    <% } else { %>
+                                        <span class="text-gray-400">Keine Steps</span>
+                                    <% } %>
+                                </td>
                                 <% if (canManage) { %>
                                 <td class="px-6 py-4 text-sm">
-                                    <a href="/project/<%= project.id %>/milestones#milestone-<%= m.id %>" class="text-primary-700 hover:text-primary-900 hover:underline">Steps verwalten</a>
+                                    <a href="/project/<%= project.id %>/milestones#milestone-<%= milestone.id %>" class="text-primary-700 hover:text-primary-900 hover:underline">Steps verwalten</a>
                                 </td>
                                 <% } %>
                             </tr>
@@ -136,8 +244,5 @@ gantt
             </div>
         </div>
     </main>
-    <script>
-        mermaid.initialize({ startOnLoad: true, theme: 'default', gantt: { barHeight: 25 } });
-    </script>
 </body>
 </html>

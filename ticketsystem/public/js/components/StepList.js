@@ -54,11 +54,13 @@
         var item = createElement('article', { className: 'step-list__item' });
         var header = createElement('div', { className: 'step-list__header' });
         var meta = createElement('div', { className: 'step-list__meta' });
-        var title = createElement('h4', { className: 'step-list__title' }, step.date || 'Ohne Datum');
+        var title = createElement('h4', { className: 'step-list__title' }, step.title || step.date || 'Ohne Titel');
+        var date = createElement('p', { className: 'step-list__date' }, step.date || 'Ohne Datum');
         var badge = createElement('span', { className: 'step-list__badge' }, 'Step #' + step.id);
         var text = createElement('p', { className: 'step-list__text' }, step.text || '');
 
         meta.appendChild(title);
+        meta.appendChild(date);
         meta.appendChild(badge);
         header.appendChild(meta);
 
