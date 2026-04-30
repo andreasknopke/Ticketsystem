@@ -77,10 +77,16 @@ async function fetchRepoContext(integration) {
         total += block.length;
     }
 
-    // Wenn root fast leer ist (Monorepo), probiere Subdirectories
+    // Wenn root fast leer ist (Monorepo), finde das erste existierende Subdirectory
     if (total < 5000) {
-        for (const sub of SUBDIR_FALLBACKS) {
-            if (total >= MAX_TOTAL_BYTES) break;
+        const rootContents = await safeGetContent(client, owner, repo, '');
+        let foundSub = null;
+        if (rootContents && Array.isArray(rootContents)) {
+            const dirNames = new Set(rootContents.filter(e => e.type === 'dir').map(e => e.name));
+            foundSub = SUBDIR_FALLBACKS.find(s => dirNames.has(s));
+        }
+        if (foundSub) {
+            const sub = foundSub;
             const subReadme = await fetchTextFile(client, owner, repo, `${sub}/README.md`);
             if (subReadme) {
                 const block = `### ${sub}/README.md\n\n${subReadme}\n`;
