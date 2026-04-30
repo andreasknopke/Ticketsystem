@@ -114,7 +114,7 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             <% milestones.forEach(m => { %>
-                            <tr class="cursor-pointer hover:bg-gray-50" onclick="toggleMilestoneDetail(<%= m.id %>)" data-milestone='<%- JSON.stringify({id:m.id,title:m.title,description:m.description||"",phase:m.phase||"",start_date:m.start_date||"",end_date:m.end_date||"",status:m.status,color:m.color||"#2563eb"}) %>'>
+                            <tr id="milestone-<%= m.id %>" class="cursor-pointer hover:bg-gray-50" onclick="toggleMilestoneDetail(<%= m.id %>)" data-milestone='<%- JSON.stringify({id:m.id,title:m.title,description:m.description||"",phase:m.phase||"",start_date:m.start_date||"",end_date:m.end_date||"",status:m.status,color:m.color||"#2563eb"}) %>'>
                                 <td class="px-6 py-4 text-sm font-medium text-gray-900">
                                     <span class="w-3 h-3 rounded-full inline-block mr-2" style="background:<%= m.color || '#2563eb' %>"></span><%= m.title %>
                                     <% if (m.description) { %><span class="text-xs text-gray-400 ml-1">ⓘ</span><% } %>
@@ -281,10 +281,26 @@
             return view;
         }
 
-        function toggleMilestoneDetail(id) {
+        function toggleMilestoneDetail(id, forceOpen) {
             const detail = document.getElementById('detail-' + id);
+            if (!detail) return;
+            if (forceOpen) {
+                detail.classList.remove('hidden');
+                ensureMilestoneSteps(id);
+                return;
+            }
             const isHidden = detail.classList.toggle('hidden');
             if (!isHidden) ensureMilestoneSteps(id);
+        }
+
+        function openMilestoneFromHash() {
+            const match = window.location.hash.match(/^#milestone-(\d+)$/);
+            if (!match) return;
+            const milestoneId = Number(match[1]);
+            if (!milestoneId) return;
+            toggleMilestoneDetail(milestoneId, true);
+            const row = document.getElementById('milestone-' + milestoneId);
+            if (row) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         function editMilestoneFromData(tr) {
             const data = JSON.parse(tr.dataset.milestone);
@@ -350,6 +366,8 @@
         if (editModal) {
             editModal.addEventListener('click', function(e) { if (e.target === this) closeEditModal(); });
         }
+        openMilestoneFromHash();
+        window.addEventListener('hashchange', openMilestoneFromHash);
     </script>
 </body>
 </html>
