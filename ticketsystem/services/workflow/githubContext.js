@@ -9,6 +9,7 @@ const MAX_FILES = 30;
 const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap
 const MAX_FILE_BYTES = 60 * 1024;       // 60 KB pro Datei
 const DEFAULT_BOUNDARY_FILES = ['package.json', 'server.js'];
+const SUBDIR_FALLBACKS = ['ticketsystem', 'src', 'app', 'backend', 'frontend'];
 
 function getOctokit(token) {
     return new Octokit({ auth: token || process.env.GITHUB_DEFAULT_TOKEN || undefined });
@@ -33,8 +34,8 @@ async function fetchTextFile(client, owner, repo, path) {
     return null;
 }
 
-async function listDocsMarkdown(client, owner, repo) {
-    const data = await safeGetContent(client, owner, repo, 'docs');
+async function listDocsMarkdown(client, owner, repo, basePath = 'docs') {
+    const data = await safeGetContent(client, owner, repo, basePath);
     if (!data || !Array.isArray(data)) return [];
     return data.filter(e => e.type === 'file' && /\.md$/i.test(e.name)).slice(0, MAX_FILES);
 }
@@ -74,6 +75,36 @@ async function fetchRepoContext(integration) {
         const block = `### ${f.path}\n\n${content}\n`;
         parts.push(block);
         total += block.length;
+    }
+
+    // Wenn root fast leer ist (Monorepo), probiere Subdirectories
+    if (total < 5000) {
+        for (const sub of SUBDIR_FALLBACKS) {
+            if (total >= MAX_TOTAL_BYTES) break;
+            const subReadme = await fetchTextFile(client, owner, repo, `${sub}/README.md`);
+            if (subReadme) {
+                const block = `### ${sub}/README.md\n\n${subReadme}\n`;
+                parts.push(block);
+                total += block.length;
+            }
+            for (const bf of DEFAULT_BOUNDARY_FILES) {
+                if (total >= MAX_TOTAL_BYTES) break;
+                const content = await fetchTextFile(client, owner, repo, `${sub}/${bf}`);
+                if (!content) continue;
+                const block = `### ${sub}/${bf}\n\n${content}\n`;
+                parts.push(block);
+                total += block.length;
+            }
+            const subDocFiles = await listDocsMarkdown(client, owner, repo, `${sub}/docs`);
+            for (const f of subDocFiles) {
+                if (total >= MAX_TOTAL_BYTES) break;
+                const content = await fetchTextFile(client, owner, repo, f.path);
+                if (!content) continue;
+                const block = `### ${f.path}\n\n${content}\n`;
+                parts.push(block);
+                total += block.length;
+            }
+        }
     }
 
     const combined = parts.join('\n---\n').slice(0, MAX_TOTAL_BYTES);
