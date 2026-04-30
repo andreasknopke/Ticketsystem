@@ -905,142 +905,57 @@ video {
   gap: 1.25rem;
 }
 
-.milestone-board__project {
-  position: relative;
-  min-height: 13.5rem;
-  padding: 4.5rem 1.5rem 3.5rem;
+.vis-timeline-container {
+  width: 100%;
   border: 1px solid rgb(219 234 254 / 1);
   border-radius: 1rem;
   background: linear-gradient(180deg, rgb(248 250 252 / 1) 0%, rgb(239 246 255 / 1) 100%);
-  overflow: visible;
+  padding: 0.5rem;
 }
 
-.milestone-board__marker-layer {
-  position: absolute;
-  left: 1.5rem;
-  right: 1.5rem;
-  top: 0;
-  bottom: 0;
-  pointer-events: none;
-}
-
-.milestone-board__project-bar {
-  position: relative;
-  height: 2rem;
-  border-radius: 9999px;
-  border: 2px solid rgb(79 70 229 / 1);
+.vis-timeline-container .vis-item.vis-item-project {
   background: linear-gradient(90deg, rgb(224 231 255 / 1), rgb(199 210 254 / 1));
-  box-shadow: 0 14px 30px rgba(79, 70, 229, 0.18);
-  z-index: 2;
-}
-
-.milestone-board__project-label {
-  position: absolute;
-  inset: 50% auto auto 1.25rem;
-  transform: translateY(-50%);
-  max-width: calc(100% - 2.5rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: rgb(15 23 42 / 1);
-}
-
-.milestone-board__axis {
-  position: relative;
-  height: 2rem;
-  margin-top: 1.25rem;
-  border-top: 1px solid rgb(148 163 184 / 0.7);
-}
-
-.milestone-board__axis-day {
-  position: absolute;
-  top: 0;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.milestone-board__axis-tick {
-  width: 1px;
-  height: 0.75rem;
-  background-color: rgb(148 163 184 / 1);
-}
-
-.milestone-board__axis-label {
-  font-size: 0.72rem;
-  color: rgb(100 116 139 / 1);
-  white-space: nowrap;
-}
-
-.milestone-board__marker {
-  position: absolute;
-  left: 0;
-  top: calc(4.5rem + 1rem);
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-  color: rgb(185 28 28 / 1);
-  text-decoration: none;
-  pointer-events: auto;
-  z-index: 4;
-}
-
-.milestone-board__marker--below {
-  flex-direction: column-reverse;
-}
-
-.milestone-board__marker--above {
-  transform: translate(-50%, -100%);
-}
-
-.milestone-board__marker--below {
-  transform: translate(-50%, 0.4rem);
-}
-
-.milestone-board__marker-label {
-  max-width: 10rem;
-  text-align: center;
-  font-size: 0.82rem;
-  font-weight: 700;
-  line-height: 1.2;
-  color: currentColor;
-}
-
-.milestone-board__marker-line {
-  width: 2px;
-  height: 2rem;
-  background-color: currentColor;
-  opacity: 0.7;
-}
-
-.milestone-board__marker-dot {
-  width: 0.95rem;
-  height: 0.95rem;
+  border: 2px solid rgb(79 70 229 / 1);
   border-radius: 9999px;
-  border: 2px solid currentColor;
-  background-color: rgb(255 255 255 / 1);
-  box-shadow: 0 0 0 4px rgb(255 255 255 / 0.92);
+  color: rgb(15 23 42 / 1);
+  font-weight: 700;
+  height: 2rem;
+  line-height: 2rem;
+  box-shadow: 0 8px 20px rgba(79, 70, 229, 0.18);
 }
 
-.milestone-board__marker--milestone {
-  color: rgb(88 28 135 / 1);
+.vis-timeline-container .vis-item.vis-item-project .vis-item-content {
+  padding: 0 1rem;
 }
 
-.milestone-board__marker--milestone .milestone-board__marker-dot {
-  width: 1.1rem;
-  height: 1.1rem;
+.vis-timeline-container .vis-item.vis-item-milestone .vis-dot {
+  border-color: rgb(88 28 135 / 1);
+  border-width: 4px;
   background-color: rgb(250 245 255 / 1);
 }
 
-.milestone-board__marker:hover .milestone-board__marker-label,
-.milestone-board__marker:focus-visible .milestone-board__marker-label {
-  text-decoration: underline;
+.vis-timeline-container .vis-item.vis-item-milestone .vis-item-content {
+  color: rgb(88 28 135 / 1);
+  font-weight: 700;
+}
+
+.vis-timeline-container .vis-item.vis-item-step .vis-dot {
+  border-color: rgb(185 28 28 / 1);
+  border-width: 3px;
+  background-color: rgb(255 255 255 / 1);
+}
+
+.vis-timeline-container .vis-item.vis-item-step .vis-item-content {
+  color: rgb(185 28 28 / 1);
+  font-weight: 600;
+}
+
+.vis-timeline-container .vis-time-axis .vis-text {
+  color: rgb(71 85 105 / 1);
+}
+
+.vis-timeline-container .vis-time-axis .vis-grid.vis-major {
+  border-color: rgb(148 163 184 / 0.45);
 }
 
 .milestone-board__milestone-summary {
@@ -1246,22 +1161,6 @@ video {
   .milestone-board__summary-card,
   .timeline-step-card__header {
     flex-direction: column;
-  }
-
-  .milestone-board__project {
-    min-height: 15rem;
-    padding-left: 1rem;
-    padding-right: 1rem;
-  }
-
-  .milestone-board__marker-layer {
-    left: 1rem;
-    right: 1rem;
-  }
-
-  .milestone-board__marker-label {
-    max-width: 6.75rem;
-    font-size: 0.74rem;
   }
 
   .step-timeline {

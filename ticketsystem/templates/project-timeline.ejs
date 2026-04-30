@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zeitleiste - <%= project.name %> | Ticketsystem</title>
     <link rel="stylesheet" href="/style.css?v=2">
+    <link rel="stylesheet" href="https://unpkg.com/vis-timeline@7.7.3/styles/vis-timeline-graph2d.min.css">
+    <script src="https://unpkg.com/vis-timeline@7.7.3/standalone/umd/vis-timeline-graph2d.min.js"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -85,79 +87,105 @@
                 : datedMilestones.length
                     ? datedMilestones.reduce((min, milestone) => new Date(milestone.start_date) < min ? new Date(milestone.start_date) : min, new Date(datedMilestones[0].start_date))
                     : null;
-            const timelineEnd = project.end_date
-                ? new Date(project.end_date)
-                : null;
             const fallbackEnd = datedMilestones.length
                 ? datedMilestones.reduce((max, milestone) => new Date(milestone.end_date) > max ? new Date(milestone.end_date) : max, new Date(datedMilestones[0].end_date))
                 : null;
-            const effectiveTimelineEnd = timelineEnd || fallbackEnd;
-            const dayMs = 24 * 60 * 60 * 1000;
-            const totalDays = timelineStart && effectiveTimelineEnd
-                ? Math.max(1, Math.round((effectiveTimelineEnd - timelineStart) / dayMs) + 1)
-                : 1;
+            const timelineEnd = project.end_date ? new Date(project.end_date) : fallbackEnd;
             const formatDate = (value) => value ? new Date(value).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Ohne Datum';
-            const axisLabel = (offset) => new Date(timelineStart.getTime() + (offset * dayMs)).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-            const offsetPercent = (value) => {
-                if (!timelineStart || !value) return 0;
-                return Math.max(0, ((new Date(value) - timelineStart) / dayMs / totalDays) * 100);
-            };
             const milestonesWithSteps = milestones.filter((milestone) => (milestone.steps || []).length > 0);
+            const timelineItems = [];
+            if (timelineStart && timelineEnd) {
+                timelineItems.push({
+                    id: 'project',
+                    content: project.name,
+                    start: project.start_date || timelineStart.toISOString().slice(0, 10),
+                    end: project.end_date || timelineEnd.toISOString().slice(0, 10),
+                    type: 'range',
+                    className: 'vis-item-project',
+                });
+            }
+            milestones.forEach((milestone) => {
+                const anchor = milestone.end_date || milestone.start_date;
+                if (!anchor) return;
+                timelineItems.push({
+                    id: 'milestone-' + milestone.id,
+                    content: milestone.title,
+                    start: anchor,
+                    type: 'point',
+                    className: 'vis-item-milestone',
+                    title: 'Meilenstein: ' + milestone.title + ' (' + formatDate(milestone.start_date) + ' - ' + formatDate(milestone.end_date) + ')',
+                });
+                (milestone.steps || []).forEach((step) => {
+                    if (!step.date) return;
+                    timelineItems.push({
+                        id: 'step-' + step.id,
+                        content: step.title || ('Step ' + step.id),
+                        start: step.date,
+                        type: 'point',
+                        className: 'vis-item-step',
+                        title: (step.title || 'Step ' + step.id) + ' (' + formatDate(step.date) + ')',
+                        link: '#timeline-step-' + step.id,
+                    });
+                });
+            });
         %>
 
         <div class="card mb-6">
             <div class="card-body">
                 <% if (milestones.length === 0) { %>
                 <p class="text-sm text-gray-500">Keine Meilensteine definiert.</p>
+                <% } else if (!timelineStart || !timelineEnd) { %>
+                <div class="milestone-board__missing-dates">Fuer die Projektzeitleiste fehlen Start- oder Enddatum.</div>
                 <% } else { %>
-                <div class="milestone-board">
-                    <% if (timelineStart && effectiveTimelineEnd) { %>
-                    <section class="milestone-board__project" aria-label="Projektzeitleiste <%= project.name %>">
-                        <div class="milestone-board__marker-layer">
-                            <% milestones.forEach((milestone, milestoneIndex) => { %>
-                            <% const milestonePosition = offsetPercent(milestone.end_date || milestone.start_date); %>
-                            <a href="#timeline-milestone-<%= milestone.id %>" class="milestone-board__marker milestone-board__marker--milestone milestone-board__marker--<%= milestoneIndex % 2 === 0 ? 'above' : 'below' %>" style="left:<%= milestonePosition %>%" title="Meilenstein: <%= milestone.title %>">
-                                <span class="milestone-board__marker-label"><%= formatDate(milestone.end_date || milestone.start_date).slice(0, 5) %> <%= milestone.title %></span>
-                                <span class="milestone-board__marker-line"></span>
-                                <span class="milestone-board__marker-dot"></span>
-                            </a>
-                            <% (milestone.steps || []).forEach((step, stepIndex) => { %>
-                            <% const stepPosition = offsetPercent(step.date); %>
-                            <a href="#timeline-step-<%= step.id %>" class="milestone-board__marker milestone-board__marker--step milestone-board__marker--<%= (milestoneIndex + stepIndex + 1) % 2 === 0 ? 'above' : 'below' %>" style="left:<%= stepPosition %>%" title="<%= step.title || ('Step ' + step.id) %>">
-                                <span class="milestone-board__marker-label"><%= formatDate(step.date).slice(0, 5) %> <%= step.title || ('Step ' + step.id) %></span>
-                                <span class="milestone-board__marker-line"></span>
-                                <span class="milestone-board__marker-dot"></span>
-                            </a>
-                            <% }); %>
-                            <% }); %>
-                        </div>
-                        <div class="milestone-board__project-bar">
-                            <span class="milestone-board__project-label"><%= project.name %></span>
-                        </div>
-                        <div class="milestone-board__axis" aria-hidden="true">
-                            <% for (let dayIndex = 0; dayIndex < totalDays; dayIndex += 1) { %>
-                            <div class="milestone-board__axis-day" style="left:<%= totalDays === 1 ? 0 : (dayIndex / (totalDays - 1)) * 100 %>%">
-                                <span class="milestone-board__axis-tick"></span>
-                                <span class="milestone-board__axis-label"><%= axisLabel(dayIndex) %></span>
-                            </div>
-                            <% } %>
-                        </div>
-                    </section>
-                    <% } else { %>
-                    <div class="milestone-board__missing-dates">Fuer die Projektzeitleiste fehlen Start- oder Enddatum.</div>
-                    <% } %>
+                <div id="visTimeline" class="vis-timeline-container"></div>
+                <script>
+                  (function () {
+                    var container = document.getElementById('visTimeline');
+                    if (!container || typeof vis === 'undefined') return;
+                    var items = new vis.DataSet(<%- JSON.stringify(timelineItems) %>);
+                    var projectStart = '<%= project.start_date || timelineStart.toISOString().slice(0,10) %>';
+                    var projectEnd = '<%= project.end_date || timelineEnd.toISOString().slice(0,10) %>';
+                    var options = {
+                      stack: true,
+                      stackSubgroups: true,
+                      orientation: { axis: 'bottom', item: 'top' },
+                      min: projectStart,
+                      max: projectEnd,
+                      start: projectStart,
+                      end: projectEnd,
+                      zoomMin: 1000 * 60 * 60 * 24 * 7,
+                      zoomMax: 1000 * 60 * 60 * 24 * 365 * 5,
+                      margin: { item: 10, axis: 10 },
+                      locale: 'de',
+                      showCurrentTime: true,
+                      tooltip: { followMouse: true },
+                      height: '320px'
+                    };
+                    var timeline = new vis.Timeline(container, items, options);
+                    timeline.on('select', function (props) {
+                      if (!props.items || !props.items.length) return;
+                      var selected = items.get(props.items[0]);
+                      if (selected && selected.link) {
+                        var target = document.querySelector(selected.link);
+                        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      } else if (selected && /^milestone-/.test(selected.id)) {
+                        var anchor = document.getElementById('timeline-' + selected.id);
+                        if (anchor) anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }
+                    });
+                  })();
+                </script>
 
-                    <div class="milestone-board__milestone-summary">
-                        <% milestones.forEach((milestone) => { %>
-                        <article class="milestone-board__summary-card" id="timeline-milestone-<%= milestone.id %>">
-                            <div>
-                                <h2 class="milestone-board__summary-title"><%= milestone.title %></h2>
-                                <p class="milestone-board__summary-meta"><%= formatDate(milestone.start_date) %> bis <%= formatDate(milestone.end_date) %></p>
-                            </div>
-                            <span class="badge text-xs <%= milestone.status === 'completed' ? 'bg-green-100 text-green-800' : milestone.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : milestone.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[milestone.status] %></span>
-                        </article>
-                        <% }); %>
-                    </div>
+                <div class="milestone-board__milestone-summary mt-6">
+                    <% milestones.forEach((milestone) => { %>
+                    <article class="milestone-board__summary-card" id="timeline-milestone-<%= milestone.id %>">
+                        <div>
+                            <h2 class="milestone-board__summary-title"><%= milestone.title %></h2>
+                            <p class="milestone-board__summary-meta"><%= formatDate(milestone.start_date) %> bis <%= formatDate(milestone.end_date) %></p>
+                        </div>
+                        <span class="badge text-xs <%= milestone.status === 'completed' ? 'bg-green-100 text-green-800' : milestone.status === 'in_progress' ? 'bg-blue-100 text-blue-800' : milestone.status === 'blocked' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600' %>"><%= {pending:'Offen',in_progress:'In Arbeit',completed:'Erledigt',blocked:'Blockiert'}[milestone.status] %></span>
+                    </article>
+                    <% }); %>
                 </div>
                 <% } %>
             </div>
