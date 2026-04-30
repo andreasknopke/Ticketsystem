@@ -341,6 +341,12 @@
             location.reload();
         });
 
+        socket.on('ticket-updated', (data) => {
+            if (data && data.ticketId) {
+                location.reload();
+            }
+        });
+
         // Status-Filter
         function filterTable() {
             const checked = Array.from(document.querySelectorAll('.status-filter:checked')).map(cb => cb.value);

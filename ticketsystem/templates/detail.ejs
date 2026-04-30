@@ -421,7 +421,9 @@
         });
         
         socket.on('ticket-updated', (data) => {
-            // Optional: UI aktualisieren ohne Neuladen
+            if (data && Number(data.ticketId) === Number(ticketId)) {
+                location.reload();
+            }
         });
         
         // Feedback Form

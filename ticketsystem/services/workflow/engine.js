@@ -62,6 +62,18 @@ function emit(event, payload) {
     }
 }
 
+async function updateTicketState(ticketId, updates) {
+    if (!ticketId || !updates || !Object.keys(updates).length) return;
+    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = [...Object.values(updates), ticketId];
+    await run(`UPDATE tickets SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, values);
+    if (ioRef) {
+        const payload = { ticketId, updates };
+        try { ioRef.emit('ticket-updated', payload); } catch (_) {}
+        try { ioRef.to(`ticket-${ticketId}`).emit('ticket-updated', payload); } catch (_) {}
+    }
+}
+
 async function pickStaff(role, executorKind, options) {
     return new Promise((resolve, reject) => {
         pickStaffForRole(dbRef, role, executorKind, (err, staff) => err ? reject(err) : resolve(staff), options || {});
@@ -488,8 +500,11 @@ async function startForTicket(ticketId) {
     const runRes = await run(`INSERT INTO ticket_workflow_runs (ticket_id, workflow_id, status, current_stage)
         VALUES (?, ?, 'running', ?)`, [ticketId, wf.workflow.id, wf.stages[0].role]);
     const runId = runRes.lastID;
-    await run(`UPDATE tickets SET workflow_run_id = ?, status = ?, assigned_to = COALESCE(assigned_to, ?) WHERE id = ?`,
-        [runId, 'in_bearbeitung', autoAssignedStaff?.id || null, ticketId]);
+    await updateTicketState(ticketId, {
+        workflow_run_id: runId,
+        status: 'in_bearbeitung',
+        assigned_to: autoAssignedStaff?.id || ticket.assigned_to || null
+    });
     emit('workflow:started', { ticketId, runId });
     wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'} auto_assigned_to=${autoAssignedStaff?.id || 'none'}`);
 
@@ -541,7 +556,7 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             wfInfo(`runStages WAITING_HUMAN | run=${runId} stage=${stage.role} staff="${staff.name}"`);
             await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [stepId]);
             await run(`UPDATE ticket_workflow_runs SET status='waiting_human' WHERE id = ?`, [runId]);
-            await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [staff.id, initialTicket.id]);
+            await updateTicketState(initialTicket.id, { status: 'wartend', assigned_to: staff.id });
             emit('workflow:waiting_human', { runId, ticketId: initialTicket.id, stepId, staff_id: staff.id, stage: stage.role });
             return;
         }
@@ -623,6 +638,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             };
             await finishStep(stepId, { status: 'done', output, ai: null });
             await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
+            await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
             emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
             wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel} note="${(note || '').slice(0, 100)}"`);
             // Step-Objekt mit aktuellem output_payload anreichern (nach finishStep, sonst ist output_payload null)
@@ -644,6 +660,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
             const newStepId = await startStep(runId, 'approval', newSort, approverStaff);
             await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [newStepId]);
             await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
+            await updateTicketState(ticket.id, { status: 'wartend', assigned_to: approverStaff?.id || ticket.assigned_to || null });
             emit('workflow:waiting_human', { runId, ticketId: ticket.id, stepId: newStepId, stage: 'approval', phase: 'rework' });
             return { status: 'rework_started' };
         }
@@ -666,6 +683,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor) {
     const wf = await loadDefaultWorkflow();
     const remaining = wf.stages.filter(s => s.sort_order > step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status='running' WHERE id = ?`, [runId]);
+    await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
     runStages(runId, ticket, remaining).catch(err => {
         wfError('Workflow Resume Fehler', err.message);
     });
@@ -996,6 +1014,7 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     ctx.staff = staff;
     wfInfo(`runCodingStage BOT | "${staff.name}" id=${staff.id} provider=${staff.ai_provider || 'default'} auto_commit=${staff.auto_commit_enabled || 0}`);
     const stepId = await startStep(runId, 'coding', sortOrder, staff);
+    await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
     emit('workflow:step', { runId, stage: 'coding', status: 'in_progress', staff_id: staff.id, level: codingLevel });
 
     try {
@@ -1022,9 +1041,10 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
         const finalStepId = await startStep(runId, 'approval', finalSort, approverStaff);
         await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [finalStepId]);
         await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
-        if (approverStaff) {
-            await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ctx.ticket.id]);
-        }
+        await updateTicketState(ctx.ticket.id, {
+            status: 'wartend',
+            assigned_to: approverStaff?.id || ctx.ticket.assigned_to || null
+        });
         wfInfo(`runCodingStage FINAL-APPROVAL | run=${runId} approver="${approverStaff?.name || 'none'}"`);
         emit('workflow:waiting_human', { runId, ticketId: ctx.ticket.id, stepId: finalStepId, stage: 'approval', phase: 'final' });
     } catch (e) {
