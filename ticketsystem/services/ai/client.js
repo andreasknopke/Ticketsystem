@@ -1,7 +1,7 @@
 'use strict';
 
 // Einheitlicher AI-Client mit Provider-Abstraktion.
-// Provider: deepseek, ollama (Cloud), openai_local, anthropic, copilot, mistral
+// Provider: deepseek, ollama (Cloud), openai, openai_local, anthropic, copilot, mistral
 // Methode: chat({ provider, model, system, user, temperature, maxTokens, json, timeoutMs })
 //   -> { text, raw, prompt_tokens, completion_tokens, provider, model, duration_ms }
 
@@ -29,6 +29,11 @@ const CONFIG = {
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, ''),
         apiKey: normalizeApiKey(env.OLLAMA_API_KEY || env.OLLAMA_CLOUD_API_KEY || env.OLLAMA_TOKEN),
         defaultModel: env.OLLAMA_MODEL || 'gpt-oss:120b'
+    },
+    openai: {
+        baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
+        apiKey: normalizeApiKey(env.OPENAI_API_KEY),
+        defaultModel: env.OPENAI_MODEL || 'gpt-4.1'
     },
     openai_local: {
         baseUrl: (env.OPENAI_LOCAL_BASE_URL || 'http://localhost:8000/v1').replace(/\/$/, ''),
@@ -64,11 +69,12 @@ const CONFIG = {
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
 const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
 // 128k Default fuer grosse Cloud-Provider. Lokale Backends (vLLM,
-// openai_local) haben oft engere max_model_len-Limits und MUESSEN per
+// openai/openai_local) haben oft engere max_model_len-Limits und MUESSEN per
 // provider-spezifischer Env runtergeregelt werden, sonst HTTP 400.
 const DEFAULT_MAX_TOKENS = parseInt(env.AI_WORKFLOW_MAX_TOKENS, 10) || 131072;
 const PROVIDER_MAX_TOKENS = {
     deepseek: parseInt(env.AI_DEEPSEEK_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    openai: parseInt(env.AI_OPENAI_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     mistral: parseInt(env.AI_MISTRAL_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     anthropic: parseInt(env.AI_ANTHROPIC_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     copilot: parseInt(env.AI_COPILOT_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
@@ -228,6 +234,9 @@ async function chat(opts) {
     if (provider === 'copilot') return callCopilot(opts);
     if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) {
         throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
+    }
+    if (provider === 'openai' && !CONFIG.openai.apiKey) {
+        throw new Error('AI openai: OPENAI_API_KEY ist nicht gesetzt');
     }
     if (provider === 'mistral' && !CONFIG.mistral.apiKey) {
         throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
@@ -486,6 +495,7 @@ function getConfigSummary() {
         default_provider: DEFAULT_PROVIDER,
         deepseek: { base_url: CONFIG.deepseek.baseUrl, model: CONFIG.deepseek.defaultModel, configured: !!CONFIG.deepseek.apiKey },
         ollama: { base_url: CONFIG.ollama.baseUrl, model: CONFIG.ollama.defaultModel, configured: new URL(CONFIG.ollama.baseUrl).host !== 'ollama.com' || !!CONFIG.ollama.apiKey },
+        openai: { base_url: CONFIG.openai.baseUrl, model: CONFIG.openai.defaultModel, configured: !!CONFIG.openai.apiKey },
         openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true },
         anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
         copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken },

@@ -114,7 +114,7 @@ EMAIL_NOTIFY_COMMENT=true
 
 # --- KI-Workflow ---
 AI_WORKFLOW_ENABLED=true
-AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai_local | anthropic | copilot
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral
 AI_WORKFLOW_MAX_RETRIES=2
 AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
 AI_WORKFLOW_MAX_TOKENS=2048
@@ -132,6 +132,11 @@ DEEPSEEK_MODEL=deepseek-chat
 OLLAMA_API_KEY=
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_MODEL=gpt-oss:120b
+
+# OpenAI
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4.1
 
 # Lokales OpenAI-kompatibles LLM (z. B. LM Studio, vLLM)
 OPENAI_LOCAL_BASE_URL=http://localhost:8000/v1
