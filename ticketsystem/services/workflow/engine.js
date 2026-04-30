@@ -68,6 +68,56 @@ async function pickStaff(role, executorKind, options) {
     });
 }
 
+// Resolve GitHub-Integration aus mehreren Quellen mit Fallback-Hierarchie:
+// 1. github_integration via projects.system_id (höchste Priorität, dediziertes Project)
+// 2. systems.repo_owner/repo_name/repo_access_token (System-eigene Repo-Konfig)
+// 3. ticket.reference_repo_owner/reference_repo_name (Ticket-spezifische Referenz)
+async function resolveIntegration(ticket) {
+    if (!ticket) return null;
+
+    // 1. github_integration via projects
+    if (ticket.system_id) {
+        const integration = await getRow(`SELECT gi.* FROM github_integration gi
+            INNER JOIN projects p ON p.id = gi.project_id
+            WHERE p.system_id = ? LIMIT 1`, [ticket.system_id]);
+        if (integration && integration.repo_owner && integration.repo_name) {
+            wfInfo(`resolveIntegration | source=github_integration project_id=${integration.project_id} repo=${integration.repo_owner}/${integration.repo_name}`);
+            return integration;
+        }
+
+        // 2. Fallback: systems-Tabelle
+        const sys = await getRow(`SELECT id, name, repo_owner, repo_name, repo_access_token
+            FROM systems WHERE id = ? AND active = 1 LIMIT 1`, [ticket.system_id]);
+        if (sys && sys.repo_owner && sys.repo_name) {
+            wfInfo(`resolveIntegration | source=systems system_id=${sys.id} repo=${sys.repo_owner}/${sys.repo_name}`);
+            return {
+                project_id: null,
+                system_id: sys.id,
+                repo_owner: sys.repo_owner,
+                repo_name: sys.repo_name,
+                access_token: sys.repo_access_token || null,
+                default_branch: null
+            };
+        }
+    }
+
+    // 3. Fallback: ticket.reference_repo
+    if (ticket.reference_repo_owner && ticket.reference_repo_name) {
+        wfInfo(`resolveIntegration | source=ticket.reference_repo repo=${ticket.reference_repo_owner}/${ticket.reference_repo_name}`);
+        return {
+            project_id: null,
+            system_id: ticket.system_id || null,
+            repo_owner: ticket.reference_repo_owner,
+            repo_name: ticket.reference_repo_name,
+            access_token: null,
+            default_branch: null
+        };
+    }
+
+    wfWarn(`resolveIntegration | NO INTEGRATION found | ticket=${ticket.id} system_id=${ticket.system_id || 'null'}`);
+    return null;
+}
+
 async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES }) {
     const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
     const model = staff.ai_model || undefined;
@@ -207,9 +257,7 @@ async function execSecurity(ctx) {
 
 async function execPlanning(ctx) {
     wfInfo(`Stage:PLANNING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'}`);
-    const integration = await getRow(`SELECT gi.* FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const integration = await resolveIntegration(ctx.ticket);
     wfInfo(`Stage:PLANNING integration lookup | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token}`);
     const repoCtx = await fetchRepoContext(integration);
     ctx.repo_context = repoCtx.repoContext;
@@ -644,9 +692,7 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
 
 async function execCoding(ctx, codingLevel) {
     wfInfo(`Stage:CODING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'} level=${codingLevel} hasApproverNote=${!!ctx.approverNote} hasExtraInfo=${!!ctx.extra_info}`);
-    const integration = await getRow(`SELECT gi.* FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
+    const integration = await resolveIntegration(ctx.ticket);
     wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
 
     const repoCtx = await fetchRepoContext(integration);
@@ -790,7 +836,7 @@ async function execCoding(ctx, codingLevel) {
         if (scopeViolations.length) reasons.push(`scope_violations=${scopeViolations.length}`);
         if (checkViolations.length) reasons.push(`code_check_violations=${checkViolations.length}`);
         if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR=false');
-        if (!integration) reasons.push('Keine github_integration für project.system_id=' + (ctx.ticket.system_id || 'null'));
+        if (!integration) reasons.push('Keine Repo-Verknüpfung gefunden (weder github_integration via project, noch systems.repo_*, noch ticket.reference_repo_*) für system_id=' + (ctx.ticket.system_id || 'null'));
         if (!ctx.staff?.auto_commit_enabled) reasons.push('auto_commit_enabled=0 für Bot "' + (ctx.staff?.name || '?') + '" (id=' + (ctx.staff?.id || '?') + ')');
         if (!Array.isArray(out.files) || !out.files.length) reasons.push('Coding-Antwort enthielt keine Dateien (out.files leer)');
         if (reasons.length) {
