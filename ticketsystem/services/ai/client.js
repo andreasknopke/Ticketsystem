@@ -121,15 +121,22 @@ async function callOpenAICompatible(provider, opts) {
     assertAllowed(url);
     const headers = { 'Content-Type': 'application/json' };
     if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    const model = opts.model || cfg.defaultModel;
     const body = {
-        model: opts.model || cfg.defaultModel,
+        model,
         messages: [
             { role: 'system', content: opts.system || '' },
             { role: 'user', content: opts.user || '' }
         ],
-        temperature: opts.temperature ?? 0.2,
-        max_tokens: resolveMaxTokens(provider, opts.maxTokens)
+        temperature: opts.temperature ?? 0.2
     };
+    // OpenAI o1, o3, gpt-5 und Varianten benötigen max_completion_tokens statt max_tokens
+    const useMaxCompletionTokens = /^(o1|o3|gpt-5)[-\d.]*/.test(model);
+    if (useMaxCompletionTokens) {
+        body.max_completion_tokens = resolveMaxTokens(provider, opts.maxTokens);
+    } else {
+        body.max_tokens = resolveMaxTokens(provider, opts.maxTokens);
+    }
     if (opts.json) body.response_format = { type: 'json_object' };
     if (opts.extra) Object.assign(body, opts.extra);
 

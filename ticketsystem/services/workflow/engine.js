@@ -5,7 +5,7 @@
 const aiClient = require('../ai/client');
 const prompts = require('../ai/prompts');
 const { redact } = require('../ai/redact');
-const { pickStaffForRole, pickTicketAssignee } = require('./assignment');
+const { pickStaffForRole } = require('./assignment');
 const { fetchRepoContext, fetchFilesFromRepo, commitFilesAsPR } = require('./githubContext');
 const { runCodeChecks } = require('./codeChecks');
 
@@ -13,10 +13,6 @@ const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 
 let dbRef = null;
 let ioRef = null;
-const SLA_HOURS = {
-    first_response: { kritisch: 1, hoch: 4, mittel: 8, niedrig: 24 },
-    resolution: { kritisch: 4, hoch: 24, mittel: 72, niedrig: 168 }
-};
 
 function init({ db, io }) {
     dbRef = db;
@@ -66,176 +62,17 @@ function emit(event, payload) {
     }
 }
 
-function safeJsonParse(text, fallback) {
-    if (!text) return fallback;
-    try { return JSON.parse(text); } catch (_) { return fallback; }
-}
-
-function normalizeText(value, maxLen) {
-    return String(value || '').trim().slice(0, maxLen);
-}
-
-function validEnum(value, allowed, fallback) {
-    return allowed.includes(value) ? value : fallback;
-}
-
-function calcSlaDue(priority, createdAt) {
-    const start = new Date(createdAt);
-    const firstHours = SLA_HOURS.first_response[priority] || 8;
-    const resolutionHours = SLA_HOURS.resolution[priority] || 72;
-    return {
-        first: new Date(start.getTime() + firstHours * 3600000).toISOString(),
-        resolution: new Date(start.getTime() + resolutionHours * 3600000).toISOString()
-    };
-}
-
-async function initTicketSla(ticketId, priority, createdAt) {
-    const due = calcSlaDue(priority, createdAt);
-    await run(`INSERT OR REPLACE INTO ticket_sla
-        (ticket_id, first_response_due, resolution_due) VALUES (?, ?, ?)`,
-        [ticketId, due.first, due.resolution]);
-}
-
-async function addActivity(ticketId, actor, actionType, actionText, metadata) {
-    await run(`INSERT INTO activity_stream (ticket_id, actor, action_type, action_text, metadata)
-        VALUES (?, ?, ?, ?, ?)`, [ticketId, actor || null, actionType, actionText, JSON.stringify(metadata || {})]);
-    emit('activity', { ticketId, actor, actionType, actionText, metadata: metadata || {}, timestamp: new Date() });
-}
-
-async function updateTicketState(ticketId, updates) {
-    if (!ticketId || !updates || !Object.keys(updates).length) return;
-    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-    const values = [...Object.values(updates), ticketId];
-    await run(`UPDATE tickets SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, values);
-    if (ioRef) {
-        const payload = { ticketId, updates };
-        try { ioRef.emit('ticket-updated', payload); } catch (_) {}
-        try { ioRef.to(`ticket-${ticketId}`).emit('ticket-updated', payload); } catch (_) {}
-    }
-}
-
-function normalizeSplitTickets(input, parentTicket, fallbackSystemId) {
-    if (!Array.isArray(input)) return [];
-    const allowedTypes = ['bug', 'feature'];
-    const allowedPriorities = ['niedrig', 'mittel', 'hoch', 'kritisch'];
-    const allowedUrgency = ['normal', 'emergency', 'safety'];
-    return input.map((item, index) => {
-        const title = normalizeText(item?.title || `Teilticket ${index + 1}`, 200);
-        const description = normalizeText(item?.description || '', 5000);
-        const systemId = Number.isInteger(item?.system_id) ? item.system_id : (item?.system_id ? parseInt(item.system_id, 10) : (fallbackSystemId || parentTicket.system_id || null));
-        return {
-            title: title || `Teilticket ${index + 1}`,
-            description,
-            type: validEnum(item?.type, allowedTypes, parentTicket.type || 'bug'),
-            priority: validEnum(item?.priority, allowedPriorities, parentTicket.priority || 'mittel'),
-            urgency: validEnum(item?.urgency, allowedUrgency, parentTicket.urgency || 'normal'),
-            system_id: Number.isFinite(systemId) ? systemId : (parentTicket.system_id || null)
-        };
-    }).filter(item => item.title && item.description);
-}
-
-async function createSplitTickets(parentTicket, splitTickets, actor) {
-    const createdIds = [];
-    for (const part of splitTickets) {
-        const createdAt = new Date().toISOString();
-        const deadline = parentTicket.deadline || null;
-        const description = `${part.description}\n\nAbgeleitet aus Ticket #${parentTicket.id}: ${parentTicket.title}`.slice(0, 5000);
-        const result = await run(`INSERT INTO tickets
-            (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'offen', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, [
-            part.type,
-            part.title,
-            description,
-            parentTicket.username || null,
-            parentTicket.console_logs || null,
-            parentTicket.software_info || null,
-            part.priority,
-            part.system_id || null,
-            null,
-            parentTicket.location || null,
-            parentTicket.contact_email || null,
-            part.urgency,
-            deadline
-        ]);
-        const childId = result.lastID;
-        createdIds.push(childId);
-        await initTicketSla(childId, part.priority, createdAt);
-        await addActivity(childId, actor, 'created', `Teilticket aus Split von #${parentTicket.id} erstellt`, {
-            parent_ticket_id: parentTicket.id,
-            source: 'workflow_split'
-        });
-        startForTicket(childId).catch(err => wfError(`Split-Child Workflow-Start fehlgeschlagen ticket=${childId}`, err.message));
-    }
-    return createdIds;
-}
-
 async function pickStaff(role, executorKind, options) {
     return new Promise((resolve, reject) => {
         pickStaffForRole(dbRef, role, executorKind, (err, staff) => err ? reject(err) : resolve(staff), options || {});
     });
 }
 
-async function pickInitialAssignee(systemId) {
-    return new Promise((resolve, reject) => {
-        pickTicketAssignee(dbRef, systemId, (err, staff) => err ? reject(err) : resolve(staff));
-    });
-}
-
-async function getGithubIntegrationForSystem(systemId) {
-    if (!systemId) return null;
-
-    const direct = await getRow(`SELECT id, repo_owner, repo_name,
-        repo_access_token AS access_token,
-        repo_webhook_secret AS webhook_secret,
-        'system' AS integration_scope
-        FROM systems
-        WHERE id = ? AND repo_owner IS NOT NULL AND repo_name IS NOT NULL`, [systemId]);
-    if (direct) return direct;
-
-    return await getRow(`SELECT gi.*, 'project' AS integration_scope FROM github_integration gi
-        INNER JOIN projects p ON p.id = gi.project_id
-        WHERE p.system_id = ? LIMIT 1`, [systemId]);
-}
-
-async function getReferenceIntegrationForTicket(ticket) {
-    if (!ticket?.reference_repo_owner || !ticket?.reference_repo_name) return null;
-    const owner = String(ticket.reference_repo_owner).trim();
-    const repo = String(ticket.reference_repo_name).trim();
-    if (!owner || !repo) return null;
-
-    const systemMatch = await getRow(`SELECT repo_access_token AS access_token
-        FROM systems
-        WHERE repo_owner = ? AND repo_name = ? AND active = 1
-        LIMIT 1`, [owner, repo]);
-    if (systemMatch) {
-        return { repo_owner: owner, repo_name: repo, access_token: systemMatch.access_token || null, integration_scope: 'reference_system' };
-    }
-
-    const projectMatch = await getRow(`SELECT access_token
-        FROM github_integration
-        WHERE repo_owner = ? AND repo_name = ?
-        LIMIT 1`, [owner, repo]);
-    if (projectMatch) {
-        return { repo_owner: owner, repo_name: repo, access_token: projectMatch.access_token || null, integration_scope: 'reference_project' };
-    }
-
-    return { repo_owner: owner, repo_name: repo, access_token: null, integration_scope: 'reference_manual' };
-}
-
-async function fetchReferenceRepoContext(ticket, stageLabel) {
-    const refIntegration = await getReferenceIntegrationForTicket(ticket);
-    if (!refIntegration) return null;
-    wfInfo(`Stage:${stageLabel} reference repo | owner=${refIntegration.repo_owner} repo=${refIntegration.repo_name} token=${!!refIntegration.access_token || !!process.env.GITHUB_DEFAULT_TOKEN}`);
-    const refCtx = await fetchRepoContext(refIntegration);
-    return { integration: refIntegration, ...refCtx };
-}
-
-async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES, maxTokensOverride = null }) {
+async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES }) {
     const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
     const model = staff.ai_model || undefined;
     const temperature = staff.ai_temperature ?? 0.2;
-    // Reihenfolge: expliziter Stage-Override > Staff-Konfiguration > Provider-Default.
-    const maxTokens = maxTokensOverride || staff.ai_max_tokens || undefined;
+    const maxTokens = staff.ai_max_tokens || undefined;
     const finalSystem = staff.ai_system_prompt || systemPrompt;
     let extra;
     if (staff.ai_extra_config) {
@@ -256,14 +93,14 @@ async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, r
                 extra
             });
             const parsed = json ? aiClient.tryParseJson(r.text) : null;
-            const finishReason = r.raw?.choices?.[0]?.finish_reason || null;
-            const truncated = finishReason === 'length';
-            wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'} finish_reason=${finishReason || '?'} truncated=${truncated}`);
+            wfInfo(`AI-Call success | attempt=${attempt} provider=${r.provider} model=${r.model} resp_len=${r.text?.length || 0} parsed=${!!parsed} duration_ms=${r.duration_ms} prompt_tokens=${r.prompt_tokens || '?'} completion_tokens=${r.completion_tokens || '?'}`);
             if (json && !parsed) {
                 wfWarn(`AI-Call JSON parse failed | raw_preview=${(r.text || '').slice(0, 500)}`);
-                if (finishReason) wfWarn(`AI-Call finish_reason=${finishReason}`);
+                if (r.raw?.choices?.[0]?.finish_reason) {
+                    wfWarn(`AI-Call finish_reason=${r.raw.choices[0].finish_reason}`);
+                }
             }
-            return { ...r, parsed, finish_reason: finishReason, truncated };
+            return { ...r, parsed };
         } catch (e) {
             lastErr = e;
             wfWarn(`AI-Call attempt ${attempt} failed`, e.message);
@@ -333,40 +170,14 @@ function extraInfoSuffix(ctx) {
 async function execTriage(ctx) {
     wfInfo(`Stage:TRIAGE start | ticket=${ctx.ticket.id} title="${(ctx.ticket.title || '').slice(0, 80)}"`);
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
-    const preselectedSystemId = ctx.ticket.system_id ? parseInt(ctx.ticket.system_id, 10) : null;
-    const preselectedSystem = preselectedSystemId
-        ? (systems.find(s => s.id === preselectedSystemId) || null)
-        : null;
-    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems, preselectedSystem }) + extraInfoSuffix(ctx);
+    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
-    const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '', split_reason: '', split_tickets: [] };
-    if (out.decision === 'split' && !Array.isArray(out.split_tickets)) out.split_tickets = [];
-    if (out.decision !== 'split') {
-        out.split_reason = out.split_reason || '';
-        out.split_tickets = Array.isArray(out.split_tickets) ? out.split_tickets : [];
-    }
-    // Vom Menschen vorausgewaehltes System nicht ueberschreiben.
-    // Nur wenn kein System gesetzt war, darf die KI eines vorschlagen.
-    if (preselectedSystemId) {
-        if (out.system_id && parseInt(out.system_id, 10) !== preselectedSystemId) {
-            wfWarn(`Stage:TRIAGE AI tried to override user-selected system_id ${preselectedSystemId} -> ${out.system_id}, ignoring`);
-            await addActivity(ctx.ticket.id, 'workflow', 'triage', `Triage-KI wollte System auf #${out.system_id} aendern, vom Nutzer gewaehltes System #${preselectedSystemId} (${preselectedSystem?.name || '?'}) bleibt erhalten.`, { ai_suggested_system_id: out.system_id, preserved_system_id: preselectedSystemId });
-        }
-        out.system_id = preselectedSystemId;
-        out._system_locked = true;
-    } else if (out.system_id) {
-        const sysRow = await getRow('SELECT id, name FROM systems WHERE id = ? AND active = 1', [parseInt(out.system_id, 10)]);
-        if (sysRow) {
-            await run('UPDATE tickets SET system_id = ? WHERE id = ?', [sysRow.id, ctx.ticket.id]);
-            await addActivity(ctx.ticket.id, 'workflow', 'triage', `Triage-KI hat System "${sysRow.name}" zugeordnet (kein System bei Erstellung gewaehlt).`, { ai_assigned_system_id: sysRow.id, confidence: out.system_match_confidence || 'unknown' });
-            out.system_id = sysRow.id;
-        } else {
-            wfWarn(`Stage:TRIAGE AI suggested invalid system_id=${out.system_id}, ignoring`);
-            out.system_id = null;
-        }
+    const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '' };
+    if (out.system_id) {
+        await run('UPDATE tickets SET system_id = ? WHERE id = ?', [out.system_id, ctx.ticket.id]);
     }
     ctx.triage = out;
-    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'} preselected=${preselectedSystemId || 'no'}`, out.reason);
+    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'}`, out.reason);
     return { output: out, ai: r };
 }
 
@@ -396,139 +207,41 @@ async function execSecurity(ctx) {
 
 async function execPlanning(ctx) {
     wfInfo(`Stage:PLANNING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'}`);
-    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
+    const integration = await getRow(`SELECT gi.* FROM github_integration gi
+        INNER JOIN projects p ON p.id = gi.project_id
+        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
     wfInfo(`Stage:PLANNING integration lookup | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token}`);
     const repoCtx = await fetchRepoContext(integration);
     ctx.repo_context = repoCtx.repoContext;
     ctx.repo_source = repoCtx.source;
-    ctx.repo_tree = repoCtx.repoTree || '';
-    ctx.boundary_files = Array.isArray(repoCtx.boundaryFiles) ? repoCtx.boundaryFiles : [];
-    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'PLANNING');
-    ctx.reference_repo_context = referenceCtx?.repoContext || '';
-    ctx.reference_repo_source = referenceCtx?.source || 'none';
-    ctx.reference_repo_tree = referenceCtx?.repoTree || '';
-    ctx.reference_boundary_files = Array.isArray(referenceCtx?.boundaryFiles) ? referenceCtx.boundaryFiles : [];
-    wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} doc_len=${repoCtx.repoContext.length} tree_len=${ctx.repo_tree.length} boundary_files=${ctx.boundary_files.length}`);
-    if (referenceCtx) wfInfo(`Stage:PLANNING referenceContext | source=${referenceCtx.source} doc_len=${referenceCtx.repoContext.length} tree_len=${ctx.reference_repo_tree.length} boundary_files=${ctx.reference_boundary_files.length}`);
+    wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
 
-    const baseTicket = { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt };
-
-    // -------- Pass 1: Plan auf Basis von Doku + Tree + Boundary --------
-    const userPrompt1 = prompts.PLANNING.buildUser({
-        ticket: baseTicket,
-        repoContext: repoCtx.repoContext,
-        repoTree: ctx.repo_tree,
-        boundaryFiles: ctx.boundary_files,
-        referenceRepoContext: ctx.reference_repo_context,
-        referenceRepoSource: ctx.reference_repo_source,
-        referenceRepoTree: ctx.reference_repo_tree,
-        referenceBoundaryFiles: ctx.reference_boundary_files,
-        currentFiles: null,
-        passNote: 'Pass 1 von 2 - liste in candidate_files Pfade, deren echten Inhalt du fuer einen verlaesslichen Plan brauchst.'
+    const userPrompt = prompts.PLANNING.buildUser({
+        ticket: { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt },
+        repoContext: repoCtx.repoContext
     }) + extraInfoSuffix(ctx);
-    const r1 = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt: userPrompt1 });
-    const out1 = r1.parsed || { summary: r1.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
-    if (!Array.isArray(out1.candidate_files)) out1.candidate_files = [];
-    if (!Array.isArray(out1.allowed_files)) out1.allowed_files = [];
-
-    // -------- Pass 2: Plan mit echten Dateiinhalten --------
-    const treePathsSet = new Set((ctx.repo_tree || '').split('\n').map(s => s.trim()).filter(Boolean));
-    const validate = p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/');
-    const candidateUnion = [...new Set([...out1.candidate_files, ...out1.allowed_files].filter(validate).map(p => p.trim()))]
-        .filter(p => !treePathsSet.size || treePathsSet.has(p) || true) // tree may be truncated -> nicht hart filtern
-        .slice(0, 12);
-
-    const twoPassEnabled = process.env.AI_PLANNER_TWO_PASS !== '0';
-    let currentFiles = [];
-    if (twoPassEnabled && integration && candidateUnion.length) {
-        try {
-            currentFiles = await fetchFilesFromRepo(integration, candidateUnion);
-            wfInfo(`Stage:PLANNING pass2 currentFiles | requested=${candidateUnion.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
-        } catch (e) {
-            wfWarn(`Stage:PLANNING pass2 currentFiles fetch failed`, e.message);
-        }
-    }
-
-    let r2 = null;
-    let out = out1;
-    if (twoPassEnabled && currentFiles.length) {
-        const userPrompt2 = prompts.PLANNING.buildUser({
-            ticket: baseTicket,
-            repoContext: repoCtx.repoContext,
-            repoTree: ctx.repo_tree,
-            boundaryFiles: ctx.boundary_files,
-            referenceRepoContext: ctx.reference_repo_context,
-            referenceRepoSource: ctx.reference_repo_source,
-            referenceRepoTree: ctx.reference_repo_tree,
-            referenceBoundaryFiles: ctx.reference_boundary_files,
-            currentFiles,
-            passNote: 'Pass 2 von 2 - die unten eingebetteten AKTUELLEN INHALTE sind verbindlich. Korrigiere allowed_files, steps und risks entsprechend. Halluziniere keine zusaetzlichen Pfade.'
-        }) + extraInfoSuffix(ctx);
-        try {
-            r2 = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt: userPrompt2 });
-            const out2 = r2.parsed;
-            if (out2 && typeof out2 === 'object') out = out2;
-            else wfWarn(`Stage:PLANNING pass2 unparsebar - behalte Pass-1-Plan`);
-        } catch (e) {
-            wfWarn(`Stage:PLANNING pass2 call failed - behalte Pass-1-Plan`, e.message);
-        }
-    } else {
-        wfInfo(`Stage:PLANNING two-pass skipped | enabled=${twoPassEnabled} hasIntegration=${!!integration} candidates=${candidateUnion.length}`);
-    }
-
+    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
+    const out = r.parsed || { summary: r.text?.slice(0, 500) || '', steps: [], risks: ['Antwort nicht parsebar'] };
     // Scope-Contract normalisieren
-    // Strenger Pfad-Filter: keine Whitespaces, muss Datei-Endung haben (filtert Platzhalter wie "zu bestimmende Datei")
-    const looksLikePath = p => typeof p === 'string'
-        && validate(p)
-        && !/\s/.test(p.trim())
-        && /\.[A-Za-z0-9]{1,8}$/.test(p.trim());
-    const inTreeIfKnown = p => !treePathsSet.size || treePathsSet.has(p);
-
     if (!Array.isArray(out.allowed_files)) out.allowed_files = [];
-    out.allowed_files = [...new Set(out.allowed_files.filter(looksLikePath).map(p => p.trim()))]
+    out.allowed_files = out.allowed_files
+        .filter(p => typeof p === 'string' && p.trim() && !p.includes('..') && !p.startsWith('/'))
+        .map(p => p.trim())
         .slice(0, 25);
-
-    // Fallback: Wenn der Planner keinen Whitelist-Pfad geliefert hat, aus
-    // steps[].files und candidate_files harvesten, damit der Coding-Bot ueberhaupt
-    // einen Scope-Contract bekommt (sonst blockt Scope-Validator garantiert).
-    if (!out.allowed_files.length) {
-        const fromSteps = Array.isArray(out.steps)
-            ? out.steps.flatMap(s => Array.isArray(s?.files) ? s.files : [])
-            : [];
-        const fromCandidates = Array.isArray(out.candidate_files) ? out.candidate_files : [];
-        const harvested = [...new Set(
-            [...fromSteps, ...fromCandidates]
-                .filter(looksLikePath)
-                .map(p => p.trim())
-                .filter(inTreeIfKnown)
-        )].slice(0, 25);
-        if (harvested.length) {
-            out.allowed_files = harvested;
-            out._allowed_files_fallback = true;
-            wfWarn(`Stage:PLANNING allowed_files leer - Fallback aus steps/candidates | count=${harvested.length} paths=${harvested.join(',')}`);
-        }
-    }
-
     if (!['extend', 'new', 'refactor'].includes(out.change_kind)) {
         out.change_kind = 'extend';
     }
-    const planMd = renderPlanMarkdown(out, repoCtx.source, ctx.reference_repo_source);
+    const planMd = renderPlanMarkdown(out, repoCtx.source);
     await run(`UPDATE tickets SET implementation_plan = ? WHERE id = ?`, [planMd, ctx.ticket.id]);
     ctx.implementation_plan = planMd;
     ctx.allowed_files = out.allowed_files;
     ctx.change_kind = out.change_kind;
     out.markdown = planMd;
-    out._two_pass = !!r2;
-    out._candidate_files = candidateUnion;
     ctx._artifacts = [
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
     ];
-    if (r2 && out1) {
-        const pass1Md = `### Plan (Pass 1, vor Code-Grounding)\n\n${renderPlanMarkdown(out1, repoCtx.source, ctx.reference_repo_source)}`;
-        ctx._artifacts.push({ kind: 'planning_pass1', filename: 'planning_pass1.md', content: pass1Md });
-    }
-    wfInfo(`Stage:PLANNING done | two_pass=${!!r2} candidates=${candidateUnion.length} steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
-    return { output: out, ai: r2 || r1 };
+    wfInfo(`Stage:PLANNING done | steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
+    return { output: out, ai: r };
 }
 
 async function execIntegration(ctx) {
@@ -538,49 +251,12 @@ async function execIntegration(ctx) {
         WHERE p.system_id = ? LIMIT 20`, [ctx.ticket.system_id]);
     const projectDocs = projectDocsRows.map(d => `### ${d.title}\n\n${d.content || ''}`).join('\n---\n').slice(0, 60_000);
     wfInfo(`Stage:INTEGRATION projectDocs | count=${projectDocsRows.length} combined_len=${projectDocs.length}`);
-    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'INTEGRATION');
-
-    // Code-Grounding: tatsaechliche Inhalte der vom Plan vorgesehenen Zieldateien laden,
-    // damit der Reviewer Doku-Behauptungen am Code pruefen kann statt zu raten.
-    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
-
-    // Bei Re-Run startet die Integration-Stage frisch, ohne Planning-ctx.
-    // Tree und Boundary-Files dann hier neu laden.
-    if (integration && (!ctx.repo_tree || !Array.isArray(ctx.boundary_files))) {
-        try {
-            const r = await fetchRepoContext(integration);
-            if (!ctx.repo_context) ctx.repo_context = r.repoContext;
-            if (!ctx.repo_tree) ctx.repo_tree = r.repoTree || '';
-            if (!Array.isArray(ctx.boundary_files)) ctx.boundary_files = r.boundaryFiles || [];
-            wfInfo(`Stage:INTEGRATION re-fetched repoCtx | tree_len=${ctx.repo_tree.length} boundary_files=${ctx.boundary_files.length}`);
-        } catch (e) {
-            wfWarn(`Stage:INTEGRATION repoCtx fetch failed`, e.message);
-        }
-    }
-
-    let currentFiles = [];
-    const allowed = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
-    if (integration && allowed.length) {
-        try {
-            currentFiles = await fetchFilesFromRepo(integration, allowed);
-            wfInfo(`Stage:INTEGRATION currentFiles | requested=${allowed.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
-        } catch (e) {
-            wfWarn(`Stage:INTEGRATION currentFiles fetch failed`, e.message);
-        }
-    }
 
     const userPrompt = prompts.INTEGRATION.buildUser({
         ticket: ctx.ticket,
         plan: ctx.implementation_plan,
         projectDocs,
-        repoDocs: ctx.repo_context || '',
-        repoTree: ctx.repo_tree || '',
-        boundaryFiles: ctx.boundary_files || [],
-        referenceRepoContext: referenceCtx?.repoContext || ctx.reference_repo_context || '',
-        referenceRepoSource: referenceCtx?.source || ctx.reference_repo_source || 'none',
-        referenceRepoTree: referenceCtx?.repoTree || ctx.reference_repo_tree || '',
-        referenceBoundaryFiles: referenceCtx?.boundaryFiles || ctx.reference_boundary_files || [],
-        currentFiles
+        repoDocs: ctx.repo_context || ''
     }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
     const out = r.parsed || { verdict: 'approve_with_changes', rationale: r.text?.slice(0, 500) || '' };
@@ -599,12 +275,11 @@ async function execIntegration(ctx) {
     return { output: out, ai: r };
 }
 
-function renderPlanMarkdown(plan, repoSource, referenceRepoSource) {
+function renderPlanMarkdown(plan, repoSource) {
     if (!plan || typeof plan !== 'object') return String(plan || '');
     const lines = [];
     if (plan.summary) lines.push(`**Zusammenfassung:** ${plan.summary}`);
     if (repoSource && repoSource !== 'none') lines.push(`\n_Repo-Kontext aus: ${repoSource}_`);
-    if (referenceRepoSource && referenceRepoSource !== 'none') lines.push(`\n_Referenz-Repo gelesen: ${referenceRepoSource} (read-only Vorlage)_`);
     if (Array.isArray(plan.affected_areas) && plan.affected_areas.length) {
         lines.push(`\n**Betroffene Bereiche:**`);
         plan.affected_areas.forEach(a => lines.push(`- ${a}`));
@@ -689,25 +364,12 @@ async function startForTicket(ticketId) {
     const wf = await loadDefaultWorkflow();
     if (!wf) { wfWarn(`startForTicket ticket=${ticketId} SKIP: kein Workflow`); return null; }
 
-    let autoAssignedStaff = null;
-    if (!ticket.assigned_to && ticket.system_id) {
-        try {
-            autoAssignedStaff = await pickInitialAssignee(ticket.system_id);
-        } catch (e) {
-            wfWarn(`startForTicket ticket=${ticketId} auto-assign failed`, e.message);
-        }
-    }
-
     const runRes = await run(`INSERT INTO ticket_workflow_runs (ticket_id, workflow_id, status, current_stage)
         VALUES (?, ?, 'running', ?)`, [ticketId, wf.workflow.id, wf.stages[0].role]);
     const runId = runRes.lastID;
-    await updateTicketState(ticketId, {
-        workflow_run_id: runId,
-        status: 'in_bearbeitung',
-        assigned_to: autoAssignedStaff?.id || ticket.assigned_to || null
-    });
+    await run('UPDATE tickets SET workflow_run_id = ? WHERE id = ?', [runId, ticketId]);
     emit('workflow:started', { ticketId, runId });
-    wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'} auto_assigned_to=${autoAssignedStaff?.id || 'none'}`);
+    wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'}`);
 
     runStages(runId, ticket, wf.stages).catch(async (err) => {
         wfError(`Workflow-Engine FATAL ticket=${ticketId} run=${runId}`, err.message);
@@ -729,19 +391,15 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     for (const stage of stages) {
         ctx.ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [initialTicket.id]);
 
-        if (['unclear', 'split'].includes(triageDecision) && ['security', 'planning', 'integration'].includes(stage.role)) {
-            await skipStep(runId, stage.role, stage.sort_order, triageDecision === 'split' ? 'triage_split' : 'triage_unclear');
+        if (triageDecision === 'unclear' && ['security', 'planning', 'integration'].includes(stage.role)) {
+            await skipStep(runId, stage.role, stage.sort_order, 'triage_unclear');
             emit('workflow:step', { runId, stage: stage.role, status: 'skipped' });
             continue;
         }
 
         await run('UPDATE ticket_workflow_runs SET current_stage = ? WHERE id = ?', [stage.role, runId]);
 
-        let staff = await pickStaff(stage.role, stage.executor_kind);
-        if (triageDecision === 'split' && stage.role === 'approval' && staff && staff.kind !== 'human') {
-            const humanApprover = await pickStaff('approval', 'human');
-            if (humanApprover) staff = humanApprover;
-        }
+        const staff = await pickStaff(stage.role, stage.executor_kind);
         if (!staff) {
             wfWarn(`runStages NO_STAFF | run=${runId} stage=${stage.role} kind=${stage.executor_kind}`);
             const stepId = await startStep(runId, stage.role, stage.sort_order, null);
@@ -761,7 +419,7 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             wfInfo(`runStages WAITING_HUMAN | run=${runId} stage=${stage.role} staff="${staff.name}"`);
             await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [stepId]);
             await run(`UPDATE ticket_workflow_runs SET status='waiting_human' WHERE id = ?`, [runId]);
-            await updateTicketState(initialTicket.id, { status: 'wartend', assigned_to: staff.id });
+            await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [staff.id, initialTicket.id]);
             emit('workflow:waiting_human', { runId, ticketId: initialTicket.id, stepId, staff_id: staff.id, stage: stage.role });
             return;
         }
@@ -799,8 +457,8 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
 
             if (ctx.extra_info) delete ctx.extra_info;
 
-            if (stage.role === 'triage' && ['unclear', 'split'].includes(result.output?.decision)) {
-                triageDecision = result.output?.decision;
+            if (stage.role === 'triage' && result.output?.decision === 'unclear') {
+                triageDecision = 'unclear';
             }
         } catch (e) {
             wfError(`runStages STAGE_FAILED | run=${runId} stage=${stage.role}`, e.message);
@@ -817,9 +475,9 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     emit('workflow:completed', { runId, ticketId: initialTicket.id });
 }
 
-async function decideHumanStep(runId, stepId, decision, note, actor, options) {
+async function decideHumanStep(runId, stepId, decision, note, actor) {
     wfInfo(`decideHumanStep | run=${runId} step=${stepId} decision="${decision}" note="${(note || '').slice(0, 100)}" actor=${actor}`);
-    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework', 'approve_split', 'reject_split'];
+    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
     const step = await getRow('SELECT * FROM ticket_workflow_steps WHERE id = ?', [stepId]);
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
@@ -833,96 +491,16 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
         const isDispatchPhase = (codingDone?.c || 0) === 0;
-        const triageStep = await getRow(`SELECT * FROM ticket_workflow_steps WHERE run_id = ? AND stage = 'triage' ORDER BY id ASC LIMIT 1`, [runId]);
-        const triageOutput = safeJsonParse(triageStep?.output_payload, null) || {};
-        // Wenn bereits ein vorheriger Approval-Step den Split abgelehnt hat,
-        // ist die aktuelle Approval-Phase die normale Dispatch-Entscheidung
-        // und KEIN Split-Review mehr (sonst Endlosschleife im UI).
-        const priorSplitRejected = await getRow(
-            `SELECT 1 AS x FROM ticket_workflow_steps
-             WHERE run_id = ? AND stage = 'approval' AND status = 'done'
-               AND id <> ? AND output_payload LIKE '%"reject_split"%'
-             LIMIT 1`, [runId, stepId]);
-        const pendingSplitReview = isDispatchPhase
-            && triageOutput.decision === 'split'
-            && !priorSplitRejected;
         wfInfo(`decideHumanStep APPROVAL | run=${runId} isDispatch=${isDispatchPhase} codingDone=${codingDone?.c || 0}`);
-
-        if (pendingSplitReview) {
-            if (decision === 'approve_split') {
-                const proposal = normalizeSplitTickets(options?.split_tickets || triageOutput.split_tickets, ticket, triageOutput.system_id || ticket.system_id);
-                if (proposal.length < 2) throw new Error('Split-Vorschlag braucht mindestens 2 gueltige Teiltickets');
-                const createdIds = await createSplitTickets(ticket, proposal, actor);
-                const output = {
-                    decision,
-                    note: note || null,
-                    decided_by: actor || null,
-                    decided_at: new Date().toISOString(),
-                    split_tickets: proposal,
-                    created_ticket_ids: createdIds,
-                    created_count: createdIds.length
-                };
-                await finishStep(stepId, { status: 'done', output, ai: null });
-                await updateTicketState(ticket.id, {
-                    status: 'geschlossen',
-                    final_decision: 'split',
-                    closed_at: new Date().toISOString()
-                });
-                await addActivity(ticket.id, actor, 'split_created', `Ticket in ${createdIds.length} Teiltickets aufgeteilt`, {
-                    created_ticket_ids: createdIds
-                });
-                await run(`UPDATE ticket_workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
-                    ['split_created', runId]);
-                emit('workflow:completed', { runId, ticketId: ticket.id, result: 'split_created', created_ticket_ids: createdIds });
-                return { status: 'split_created', created_ticket_ids: createdIds };
-            }
-            if (decision === 'reject_split') {
-                const output = {
-                    decision,
-                    note: note || null,
-                    decided_by: actor || null,
-                    decided_at: new Date().toISOString()
-                };
-                await finishStep(stepId, { status: 'done', output, ai: null });
-                const wf = await loadDefaultWorkflow();
-                const triageStage = wf.stages.find(s => s.role === 'triage');
-                const remaining = wf.stages.filter(s => (triageStage ? s.sort_order > triageStage.sort_order : true));
-                await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='security' WHERE id = ?`, [runId]);
-                await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
-                runStages(runId, ticket, remaining, note ? { extra_info: `Split-Vorschlag vom Human abgelehnt. Begruendung: ${note}` } : undefined).catch(err => {
-                    wfError('Workflow Resume nach Split-Ablehnung fehlgeschlagen', err.message);
-                });
-                return { status: 'split_rejected_resumed' };
-            }
-            throw new Error('In dieser Phase bitte Split anwenden oder Split ablehnen');
-        }
 
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {
             const codingLevel = decision === 'dispatch_medium' ? 'medium' : 'high';
-            // Sanity: Planner muss eine konkrete allowed_files-Whitelist geliefert haben.
-            // Sonst startet die Coding-Stage zwingend in einen Scope-Violation-Block.
-            const planRow = await getRow(
-                `SELECT output_payload FROM ticket_workflow_steps
-                 WHERE run_id = ? AND stage = 'planning' AND status = 'done'
-                 ORDER BY id DESC LIMIT 1`, [runId]);
-            let planAllowed = [];
-            if (planRow?.output_payload) {
-                try {
-                    const p = JSON.parse(planRow.output_payload);
-                    if (Array.isArray(p.allowed_files)) planAllowed = p.allowed_files.filter(x => typeof x === 'string' && x.trim());
-                } catch { /* ignore */ }
-            }
-            if (!planAllowed.length) {
-                wfWarn(`DISPATCH BLOCKED | run=${runId} ticket=${ticket.id} reason=allowed_files_empty`);
-                throw new Error('Coding-Dispatch nicht moeglich: Planner hat keine konkreten Dateien (allowed_files) geliefert. Bitte zuerst "Erneut pruefen" mit Zusatzinfo (konkreter Datei-/Funktionspfad) verwenden oder den Plan via "Rework" zurueckgeben.');
-            }
             const output = {
                 decision, coding_level: codingLevel, note: note || null,
                 decided_by: actor || null, decided_at: new Date().toISOString()
             };
             await finishStep(stepId, { status: 'done', output, ai: null });
             await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
-            await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
             emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
             wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel} note="${(note || '').slice(0, 100)}"`);
             // Step-Objekt mit aktuellem output_payload anreichern (nach finishStep, sonst ist output_payload null)
@@ -944,7 +522,6 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
             const newStepId = await startStep(runId, 'approval', newSort, approverStaff);
             await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [newStepId]);
             await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
-            await updateTicketState(ticket.id, { status: 'wartend', assigned_to: approverStaff?.id || ticket.assigned_to || null });
             emit('workflow:waiting_human', { runId, ticketId: ticket.id, stepId: newStepId, stage: 'approval', phase: 'rework' });
             return { status: 'rework_started' };
         }
@@ -967,7 +544,6 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
     const wf = await loadDefaultWorkflow();
     const remaining = wf.stages.filter(s => s.sort_order > step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status='running' WHERE id = ?`, [runId]);
-    await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
     runStages(runId, ticket, remaining).catch(err => {
         wfError('Workflow Resume Fehler', err.message);
     });
@@ -1048,28 +624,15 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
                     violations.push(`Symbol entfernt ohne Begruendung: ${sym} in ${f.path} (change_kind=extend)`);
                 }
             }
-            // Diff-Groesse: bei "extend" muss ein hinreichend grosser Anteil der ALTEN
-            // (nicht-trivialen) Zeilen weiterhin IRGENDWO in der neuen Datei vorkommen.
-            // Wichtig: KEIN positionsweiser Vergleich – sonst verschiebt schon eine
-            // einzige Insertion am Datei-Anfang alle Folgezeilen und der Check
-            // schlaegt fuer jede normale Erweiterung faelschlich an.
-            const normalize = s => s.replace(/\s+/g, ' ').trim();
-            const isTrivial = s => {
-                if (!s) return true;
-                if (s.length < 3) return true;
-                // Klammern/Kommas/Semikolons allein zaehlen nicht als Inhalt.
-                if (/^[\s{}()\[\];,]+$/.test(s)) return true;
-                return false;
-            };
-            const oldLinesRaw = cur.content.split('\n');
-            const newLinesRaw = f.content.split('\n');
-            const newSet = new Set(newLinesRaw.map(normalize));
-            const oldSignificant = oldLinesRaw.map(normalize).filter(s => !isTrivial(s));
-            let preserved = 0;
-            for (const s of oldSignificant) if (newSet.has(s)) preserved++;
-            const ratio = oldSignificant.length ? preserved / oldSignificant.length : 1;
-            if (oldSignificant.length > 20 && ratio < 0.5) {
-                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% der bestehenden Zeilen wiederverwendet) bei change_kind=extend: ${f.path}`);
+            // Diff-Groesse: bei "extend" nicht mehr als 70% Zeilen anders
+            const oldLines = cur.content.split('\n');
+            const newLines = f.content.split('\n');
+            const minLen = Math.min(oldLines.length, newLines.length);
+            let same = 0;
+            for (let i = 0; i < minLen; i++) if (oldLines[i] === newLines[i]) same++;
+            const ratio = oldLines.length ? same / oldLines.length : 1;
+            if (oldLines.length > 20 && ratio < 0.3) {
+                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% Zeilen erhalten) bei change_kind=extend: ${f.path}`);
             }
         }
         if (action === 'delete' && changeKind !== 'refactor') {
@@ -1081,13 +644,13 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
 
 async function execCoding(ctx, codingLevel) {
     wfInfo(`Stage:CODING start | ticket=${ctx.ticket.id} system_id=${ctx.ticket.system_id || 'none'} level=${codingLevel} hasApproverNote=${!!ctx.approverNote} hasExtraInfo=${!!ctx.extra_info}`);
-    const integration = await getGithubIntegrationForSystem(ctx.ticket.system_id);
+    const integration = await getRow(`SELECT gi.* FROM github_integration gi
+        INNER JOIN projects p ON p.id = gi.project_id
+        WHERE p.system_id = ? LIMIT 1`, [ctx.ticket.system_id]);
     wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
 
     const repoCtx = await fetchRepoContext(integration);
     wfInfo(`Stage:CODING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
-    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'CODING');
-    if (referenceCtx) wfInfo(`Stage:CODING referenceContext | source=${referenceCtx.source} doc_len=${referenceCtx.repoContext.length} tree_len=${(referenceCtx.repoTree || '').length} boundary_files=${(referenceCtx.boundaryFiles || []).length}`);
 
     const allowedFiles = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
     const changeKind = ctx.change_kind || 'extend';
@@ -1109,10 +672,6 @@ async function execCoding(ctx, codingLevel) {
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
         repoContext: repoCtx.repoContext,
-        referenceRepoContext: referenceCtx?.repoContext || '',
-        referenceRepoSource: referenceCtx?.source || 'none',
-        referenceRepoTree: referenceCtx?.repoTree || '',
-        referenceBoundaryFiles: referenceCtx?.boundaryFiles || [],
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
@@ -1122,29 +681,14 @@ async function execCoding(ctx, codingLevel) {
         currentFiles
     });
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
-    // CODING liefert vollstaendige Datei-Inhalte zurueck und braucht den
-    // groesseren Output-Spielraum. Default DEFAULT_MAX_TOKENS (128k) ist hier
-    // ueblicherweise ausreichend; per AI_CODING_MAX_TOKENS ueberschreibbar.
-    const codingMaxTokens = parseInt(process.env.AI_CODING_MAX_TOKENS, 10) || null;
-    const r = await callAIWithStaff(ctx.staff, {
-        systemPrompt: prompts.CODING.system,
-        userPrompt,
-        maxTokensOverride: codingMaxTokens
-    });
-    const truncationRisk = r.truncated
-        ? `Coding-Antwort wurde vom Modell abgeschnitten (finish_reason=length, completion_tokens=${r.completion_tokens || '?'}). Erhoehe AI_CODING_MAX_TOKENS / AI_WORKFLOW_MAX_TOKENS oder verkleinere den Scope (weniger/kleinere allowed_files).`
-        : null;
+    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {
         commit_message: 'WIP: ticket #' + ctx.ticket.id,
         summary: r.text?.slice(0, 500) || '(keine strukturierte Antwort)',
         files: [],
         test_plan: [],
-        risks: [truncationRisk || 'AI-Antwort nicht parsebar']
+        risks: ['AI-Antwort nicht parsebar']
     };
-    if (r.parsed && truncationRisk) {
-        out.risks = Array.isArray(out.risks) ? out.risks : [];
-        out.risks.unshift(truncationRisk);
-    }
     wfInfo(`Stage:CODING parsed | parsed=${!!r.parsed} files_count=${out.files?.length || 0} commit_msg_len=${(out.commit_message || '').length} summary_len=${(out.summary || '').length}`);
     if (Array.isArray(out.files)) {
         out.files.forEach((f, i) => {
@@ -1304,7 +848,6 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
     ctx.staff = staff;
     wfInfo(`runCodingStage BOT | "${staff.name}" id=${staff.id} provider=${staff.ai_provider || 'default'} auto_commit=${staff.auto_commit_enabled || 0}`);
     const stepId = await startStep(runId, 'coding', sortOrder, staff);
-    await updateTicketState(ticket.id, { status: 'in_bearbeitung' });
     emit('workflow:step', { runId, stage: 'coding', status: 'in_progress', staff_id: staff.id, level: codingLevel });
 
     try {
@@ -1326,23 +869,14 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
         }
         emit('workflow:step', { runId, stage: 'coding', status: 'done' });
 
-        // Post-Coding Code-Review (Merge-Reife, DB-Migration, Backup, Deployment-Risiken)
-        const codeReviewSort = sortOrder + 1;
-        try {
-            await runCodeReviewStage(runId, ctx.ticket, result.output, codeReviewSort);
-        } catch (e) {
-            wfError(`runCodeReviewStage FAILED | run=${runId}`, e.message);
-        }
-
         const approverStaff = await pickStaff('approval', 'human');
-        const finalSort = codeReviewSort + 1;
+        const finalSort = sortOrder + 1;
         const finalStepId = await startStep(runId, 'approval', finalSort, approverStaff);
         await run(`UPDATE ticket_workflow_steps SET status='waiting_human' WHERE id = ?`, [finalStepId]);
         await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
-        await updateTicketState(ctx.ticket.id, {
-            status: 'wartend',
-            assigned_to: approverStaff?.id || ctx.ticket.assigned_to || null
-        });
+        if (approverStaff) {
+            await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ctx.ticket.id]);
+        }
         wfInfo(`runCodingStage FINAL-APPROVAL | run=${runId} approver="${approverStaff?.name || 'none'}"`);
         emit('workflow:waiting_human', { runId, ticketId: ctx.ticket.id, stepId: finalStepId, stage: 'approval', phase: 'final' });
     } catch (e) {
@@ -1355,150 +889,6 @@ async function runCodingStage(runId, ticket, codingLevel, afterStep) {
 }
 
 module.exports = { init, startForTicket, decideHumanStep, rerunStage };
-
-function renderCodeReviewMarkdown(asm) {
-    if (!asm || typeof asm !== 'object') return String(asm || '');
-    const lines = [];
-    if (asm.verdict) lines.push(`**Verdikt:** \`${asm.verdict}\``);
-    if (asm.merge_summary) lines.push(`\n${asm.merge_summary}`);
-    if (Array.isArray(asm.code_quality) && asm.code_quality.length) {
-        lines.push(`\n**Code-Qualitaet (am Diff):**`);
-        asm.code_quality.forEach(v => lines.push(`- ${v}`));
-    }
-    if (asm.db_migration) {
-        const m = asm.db_migration;
-        lines.push(`\n**Datenbank-Migration:**`);
-        lines.push(`- Erforderlich: ${m.required ? 'Ja' : 'Nein'}`);
-        if (m.required) {
-            lines.push(`- Im PR enthalten: ${m.included_in_pr ? 'Ja' : 'Nein'}`);
-            if (m.reversible !== undefined && m.reversible !== null) lines.push(`- Reversibel: ${m.reversible ? 'Ja' : 'Nein'}`);
-        }
-        if (m.notes) lines.push(`- Details: ${m.notes}`);
-    }
-    if (asm.backup_recommended !== undefined) {
-        lines.push(`\n**Backup vor Deployment empfohlen:** ${asm.backup_recommended ? 'Ja' : 'Nein'}`);
-        if (asm.backup_rationale) lines.push(`_${asm.backup_rationale}_`);
-    }
-    if (Array.isArray(asm.breaking_changes) && asm.breaking_changes.length) {
-        lines.push(`\n**Breaking Changes:**`);
-        asm.breaking_changes.forEach(v => lines.push(`- ${v}`));
-    }
-    if (Array.isArray(asm.deployment_steps) && asm.deployment_steps.length) {
-        lines.push(`\n**Deployment-Schritte:**`);
-        asm.deployment_steps.forEach(v => lines.push(`- ${v}`));
-    }
-    if (asm.rollback_plan) {
-        lines.push(`\n**Rollback-Plan:**\n${asm.rollback_plan}`);
-    }
-    if (Array.isArray(asm.manual_verification) && asm.manual_verification.length) {
-        lines.push(`\n**Manuell pruefen vor Approve:**`);
-        asm.manual_verification.forEach(v => lines.push(`- ${v}`));
-    }
-    if (Array.isArray(asm.residual_risks) && asm.residual_risks.length) {
-        lines.push(`\n**Restrisiken:**`);
-        asm.residual_risks.forEach(v => lines.push(`- ${v}`));
-    }
-    return lines.join('\n');
-}
-
-async function execCodeReview(ctx, codingOutput) {
-    wfInfo(`Stage:CODE_REVIEW start | ticket=${ctx.ticket.id}`);
-    // Plan-Daten fuer Kontext (allowed_files, change_kind, plan-Markdown)
-    let allowedFiles = [];
-    let changeKind = 'extend';
-    try {
-        const planStep = await getRow(
-            `SELECT output_payload FROM ticket_workflow_steps
-             WHERE run_id IN (SELECT id FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1)
-               AND stage = 'planning' AND status = 'done'
-             ORDER BY id DESC LIMIT 1`, [ctx.ticket.id]);
-        if (planStep?.output_payload) {
-            const planOut = JSON.parse(planStep.output_payload);
-            if (Array.isArray(planOut.allowed_files)) allowedFiles = planOut.allowed_files;
-            if (planOut.change_kind) changeKind = planOut.change_kind;
-        }
-    } catch (e) { wfWarn(`Stage:CODE_REVIEW plan load failed`, e.message); }
-
-    const userPrompt = prompts.CODE_REVIEW.buildUser({
-        ticket: ctx.ticket,
-        plan: ctx.ticket.implementation_plan,
-        codingOutput,
-        codeChecks: codingOutput?.code_checks || null,
-        prInfo: {
-            pr_url: codingOutput?.pr_url,
-            pr_number: codingOutput?.pr_number,
-            branch: codingOutput?.branch,
-            pr_draft: codingOutput?.pr_draft
-        },
-        changedFiles: codingOutput?.files || [],
-        allowedFiles,
-        changeKind
-    }) + extraInfoSuffix(ctx);
-    wfInfo(`Stage:CODE_REVIEW prompt | userPrompt_len=${userPrompt.length} files=${(codingOutput?.files || []).length}`);
-
-    const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODE_REVIEW.system, userPrompt });
-    const out = r.parsed || {
-        verdict: 'merge_with_caution',
-        merge_summary: 'KI-Antwort nicht parsebar - bitte Diff manuell pruefen.',
-        code_quality: [],
-        db_migration: { required: false, included_in_pr: false, reversible: null, notes: '' },
-        backup_recommended: false,
-        backup_rationale: '',
-        breaking_changes: [],
-        deployment_steps: [],
-        rollback_plan: '',
-        manual_verification: [],
-        residual_risks: ['Antwort nicht parsebar']
-    };
-    if (!['ready_to_merge', 'merge_with_caution', 'not_ready'].includes(out.verdict)) {
-        out.verdict = 'merge_with_caution';
-    }
-    const md = renderCodeReviewMarkdown(out);
-    out.markdown = md;
-    ctx._artifacts = [
-        { kind: 'code_review', filename: 'code_review.md', content: md }
-    ];
-    wfInfo(`Stage:CODE_REVIEW done | verdict=${out.verdict} backup=${out.backup_recommended} migration=${out.db_migration?.required}`);
-    return { output: out, ai: r };
-}
-
-async function runCodeReviewStage(runId, ticket, codingOutput, sortOrder) {
-    // Reuse den Integration-Bot (selbe Rolle, gleicher Pool, aber eigener Prompt).
-    const reviewer = await pickStaff('integration', 'ai');
-    if (!reviewer) {
-        wfWarn(`runCodeReviewStage NO_STAFF | run=${runId} - skipping post-coding review`);
-        await skipStep(runId, 'code_review', sortOrder, 'no_integration_bot_available');
-        return;
-    }
-    const ctx = { ticket, staff: reviewer };
-    wfInfo(`runCodeReviewStage | run=${runId} ticket=${ticket.id} reviewer="${reviewer.name}"`);
-    const stepId = await startStep(runId, 'code_review', sortOrder, reviewer);
-    emit('workflow:step', { runId, stage: 'code_review', status: 'in_progress', staff_id: reviewer.id });
-    try {
-        const result = await execCodeReview(ctx, codingOutput);
-        await finishStep(stepId, { status: 'done', output: result.output, ai: result.ai });
-        if (Array.isArray(ctx._artifacts) && ctx._artifacts.length) {
-            for (const a of ctx._artifacts) {
-                try {
-                    await saveArtifact({
-                        ticketId: ctx.ticket.id, runId, stepId, stage: 'code_review',
-                        kind: a.kind, filename: a.filename,
-                        mimeType: a.mimeType || 'text/markdown', content: a.content
-                    });
-                } catch (e) { wfError('Artifact save failed', e.message); }
-            }
-            ctx._artifacts = [];
-        }
-        // Persistiere Ergebnis am Ticket fuer Briefing
-        try {
-            await run(`UPDATE tickets SET merge_review = ? WHERE id = ?`, [result.output.markdown, ctx.ticket.id]);
-        } catch (e) { /* Spalte koennte fehlen, nicht-fatal */ }
-        emit('workflow:step', { runId, stage: 'code_review', status: 'done' });
-    } catch (e) {
-        wfError(`Stage:CODE_REVIEW FAILED | run=${runId}`, e.message);
-        await failStep(stepId, e.message || String(e));
-    }
-}
 
 async function rerunStage(runId, stepId, extraInfo, actor) {
     wfInfo(`rerunStage | run=${runId} step=${stepId} extraInfo_len=${(extraInfo || '').length} actor=${actor}`);
