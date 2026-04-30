@@ -12,6 +12,7 @@ Das Projekt befindet sich im Unterordner [ticketsystem/](ticketsystem/).
 - **GitHub-Integration** mit Issue-Sync und Webhook-Unterstützung
 - **E-Mail-Benachrichtigungen** über SMTP oder Brevo API
 - **Echtzeit-Updates** via Socket.io
+- **KI-gestützter Ticket-Workflow** mit automatischer Triage, Security- und Planungsreviews, Coding-Bots und Approval-Prozess
 
 ## Schnellstart
 
