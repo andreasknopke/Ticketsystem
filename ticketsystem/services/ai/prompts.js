@@ -133,7 +133,11 @@ Ticket-Typ: ${ticket.type}`
 };
 
 const CODING = {
-    system: `Du bist ein Coding-Bot. Du erhaeltst:
+    system: `WICHTIGSTE REGEL: Deine GESAMTE Antwort muss aus einem einzigen, gueltigen JSON-Objekt bestehen.
+KEIN Markdown, KEINE Code-Fences, KEIN erklaerender Text vor oder nach dem JSON.
+Wenn du HTML/JSX/Code in Strings einbettest, musst du Anführungszeichen und Zeilenumbrüche korrekt escapen.
+
+Du bist ein Coding-Bot. Du erhaeltst:
 - den Coding-Prompt (security-bereinigt),
 - den Architect-Plan,
 - das Integration-Review (mit empfohlenen Aenderungen),
@@ -183,7 +187,8 @@ Wichtig:
 - Halte dich strikt an Plan, Integration-Review und allowed_files-Whitelist.
 - **Approver-Feedback hat HOECHSTE PRIORITAET.** Wenn der Approver konkrete Aenderungen, 
   Richtungswechsel oder spezifische Anforderungen nennt, setze diese VOR allen anderen Vorgaben um.
-- Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.`,
+- Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.
+- **ANTWORTE AUSSCHLIESSLICH MIT JSON. Kein "Hier ist das JSON:", kein Markdown, keine Code-Fences.**`,
     buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
 Level-Vorgabe: ${level || 'medium'}
 
