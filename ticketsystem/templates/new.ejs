@@ -125,6 +125,17 @@
                         </div>
                     </div>
 
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Referenz-Repository (optional)</label>
+                        <input type="text" name="reference_repo" class="form-input" list="reference-repos" placeholder="z.B. andreasknopke/CuraFlow oder https://github.com/owner/repo">
+                        <datalist id="reference-repos">
+                            <% systems.filter(sys => sys.repo_owner && sys.repo_name).forEach(sys => { %>
+                            <option value="<%= sys.repo_owner %>/<%= sys.repo_name %>"><%= sys.name %></option>
+                            <% }); %>
+                        </datalist>
+                        <p class="text-xs text-gray-500 mt-1">Der Workflow liest dieses Repo nur als Vorlage. Geschrieben wird weiterhin ausschließlich ins Repository des ausgewählten Systems.</p>
+                    </div>
+
                     <% if (canManageTickets) { %>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>

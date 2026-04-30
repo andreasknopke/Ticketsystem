@@ -76,7 +76,8 @@ Vorgeschlagene Handlung: ${ticket.triage_action || '-'}`
 const PLANNING = {
     system: `Du bist Solution Architect (Planner). Du erhaeltst Doku (README/docs), eine
 Repository-Tree-Liste, ggf. Boundary-Files (Schema, Routen, Entity-Registry) und
-bei Pass 2 die aktuellen Inhalte zuvor benannter candidate_files.
+bei Pass 2 die aktuellen Inhalte zuvor benannter candidate_files. Optional bekommst
+du zusaetzlich ein REFERENZ-REPOSITORY als read-only Vorlage.
 
 GROUNDING-REGELN (HART):
 - Quellcode (Repo-Tree, Boundary-Files, Current-Files) ist Source of Truth.
@@ -90,6 +91,9 @@ GROUNDING-REGELN (HART):
 WICHTIG fuer den nachgelagerten Coding-Bot:
 - "allowed_files" ist der EINZIGE Whitelist-Pfad-Satz, den der Coding-Bot anfassen darf.
   Halte ihn so klein wie moeglich (idealerweise 1-5 Dateien). Niemals "**" oder ganze Verzeichnisse.
+- Wenn ein Referenz-Repository vorhanden ist: Nutze es nur als Vorlage/Muster.
+  allowed_files, candidate_files und steps[].files muessen IMMER Pfade im Ziel-Repository sein,
+  niemals Pfade aus dem Referenz-Repository. Schreibe Abweichungen/uebernommene Muster in steps/risks.
 - "change_kind" steuert die erlaubte Aenderungstiefe:
   * "extend"   = bestehende Datei punktuell erweitern, oeffentliche Exports/Signaturen unveraendert
   * "new"      = nur neue Dateien anlegen (Pfade in allowed_files duerfen heute NICHT existieren)
@@ -114,7 +118,7 @@ verifizieren moechtest, bevor du allowed_files endgueltig festlegst. Liste
 gezielt Schema-, Routen-, Komponenten- oder Modell-Dateien, die deinen Plan
 bestaetigen oder widerlegen wuerden. In Pass 2 sind diese Inhalte bereits unter
 "AKTUELLE INHALTE" eingebettet; korrigiere dann ggf. allowed_files und steps.`,
-    buildUser: ({ ticket, repoContext, repoTree, boundaryFiles, currentFiles, passNote }) => `${passNote ? `[${passNote}]\n\n` : ''}Ticket-Typ: ${ticket.type}
+    buildUser: ({ ticket, repoContext, repoTree, boundaryFiles, referenceRepoContext, referenceRepoSource, referenceRepoTree, referenceBoundaryFiles, currentFiles, passNote }) => `${passNote ? `[${passNote}]\n\n` : ''}Ticket-Typ: ${ticket.type}
 Titel: ${ticket.title}
 
 Coding-Prompt (von Security-Stage):
@@ -130,6 +134,17 @@ ${repoTree}
 --- BOUNDARY-FILES (Schema/Routen/Entities, Source of Truth) ---
 ${boundaryFiles.map(f => `\nBOUNDARY FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
 --- ENDE BOUNDARY-FILES ---
+` : ''}${referenceRepoSource && referenceRepoSource !== 'none' ? `
+--- REFERENZ-REPOSITORY (READ-ONLY VORLAGE: ${referenceRepoSource}) ---
+Nutze diesen Kontext, um Muster/Architektur/UX nachzubauen. Schreibe NICHT in dieses Repo.
+
+Referenz-Doku:
+${referenceRepoContext || '(keine Doku gelesen)'}
+
+${referenceRepoTree ? `Referenz-Tree:\n${referenceRepoTree}\n` : ''}${referenceBoundaryFiles && referenceBoundaryFiles.length ? `
+Referenz-Boundary-Files:
+${referenceBoundaryFiles.map(f => `\nREFERENCE FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+` : ''}--- ENDE REFERENZ-REPOSITORY ---
 ` : ''}${currentFiles && currentFiles.length ? `
 --- AKTUELLE INHALTE DER VON DIR ANGEFRAGTEN DATEIEN (Pass 2 Grounding) ---
 ${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (existiert NICHT im Repo)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
@@ -172,7 +187,7 @@ Antworte als JSON:
   "recommended_complexity": "medium" | "high",
   "complexity_rationale": "kurze Begruendung (1-2 Saetze)"
 }`,
-    buildUser: ({ ticket, plan, projectDocs, repoDocs, repoTree, boundaryFiles, currentFiles }) => `Plan:
+    buildUser: ({ ticket, plan, projectDocs, repoDocs, repoTree, boundaryFiles, referenceRepoContext, referenceRepoSource, referenceRepoTree, referenceBoundaryFiles, currentFiles }) => `Plan:
 ${plan || '(leer)'}
 
 Projekt-Dokumente (DB):
@@ -188,6 +203,17 @@ ${repoTree}
 --- BOUNDARY-FILES (Schema/Routen/Entities, Source of Truth) ---
 ${boundaryFiles.map(f => `\nBOUNDARY FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
 --- ENDE BOUNDARY-FILES ---
+` : ''}${referenceRepoSource && referenceRepoSource !== 'none' ? `
+--- REFERENZ-REPOSITORY (READ-ONLY VORLAGE: ${referenceRepoSource}) ---
+Pruefe nur, ob der Plan die Vorlage sinnvoll adaptiert. Ziel-Repository bleibt Source of Truth fuer erlaubte Aenderungen.
+
+Referenz-Doku:
+${referenceRepoContext || '(keine Doku gelesen)'}
+
+${referenceRepoTree ? `Referenz-Tree:\n${referenceRepoTree}\n` : ''}${referenceBoundaryFiles && referenceBoundaryFiles.length ? `
+Referenz-Boundary-Files:
+${referenceBoundaryFiles.map(f => `\nREFERENCE FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+` : ''}--- ENDE REFERENZ-REPOSITORY ---
 ` : ''}${currentFiles && currentFiles.length ? `
 --- AKTUELLE INHALTE DER GEPLANTEN ZIELDATEIEN ---
 ${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (existiert NICHT - vermutlich change_kind=new)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
@@ -203,6 +229,7 @@ const CODING = {
 - den Architect-Plan,
 - das Integration-Review (mit empfohlenen Aenderungen),
 - relevanten Repository-Kontext,
+- optional ein REFERENZ-REPOSITORY als read-only Vorlage,
 - den AKTUELLEN Inhalt der Zieldateien (Block "CURRENT FILE: <pfad>"),
 - ggf. Feedback vom Approver (MENSCHLICHE ANWEISUNGEN – hoechste Prioritaet!).
 
@@ -212,6 +239,8 @@ aussagekraeftige Commit-Message und einen pruefbaren Test-Plan.
 HARTE REGELN (werden serverseitig erzwungen, Verstoss => kein PR):
 1. Du darfst AUSSCHLIESSLICH Dateien aus der Whitelist "allowed_files" anfassen.
    Jeder andere Pfad fuehrt zum Abbruch der Stage.
+  Das Referenz-Repository ist NIEMALS Schreibziel; uebernimm daraus nur Muster/Logik,
+  angepasst an Architektur und Dateien des Ziel-Repositories.
 2. Wenn ein "CURRENT FILE: <pfad>"-Block geliefert ist, ERWEITERE diese Datei.
    - Liefere VOLLSTAENDIGE Datei-Inhalte zurueck, die den CURRENT-Inhalt enthalten.
    - Entferne KEINE bestehenden \`export\`s, Funktionen, Klassen oder Routen,
@@ -249,7 +278,7 @@ Wichtig:
 - **Approver-Feedback hat HOECHSTE PRIORITAET.** Wenn der Approver konkrete Aenderungen, 
   Richtungswechsel oder spezifische Anforderungen nennt, setze diese VOR allen anderen Vorgaben um.
 - Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.`,
-    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
+    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, referenceRepoContext, referenceRepoSource, referenceRepoTree, referenceBoundaryFiles, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
 Level-Vorgabe: ${level || 'medium'}
 
 Scope-Contract (vom Architect-Plan, HART):
@@ -268,6 +297,18 @@ ${integrationAssessment || '(leer)'}
 
 Repository-Kontext (gekuerzt):
 ${repoContext || '(kein Repo verknuepft)'}
+
+${referenceRepoSource && referenceRepoSource !== 'none' ? `--- REFERENZ-REPOSITORY (READ-ONLY VORLAGE: ${referenceRepoSource}) ---
+Nutze diesen Kontext nur zum Nachbauen von Mustern/UX/Architektur. Aendere keine Pfade aus diesem Repo.
+
+Referenz-Doku:
+${referenceRepoContext || '(keine Doku gelesen)'}
+
+${referenceRepoTree ? `Referenz-Tree:\n${referenceRepoTree}\n` : ''}${referenceBoundaryFiles && referenceBoundaryFiles.length ? `
+Referenz-Boundary-Files:
+${referenceBoundaryFiles.map(f => `\nREFERENCE FILE: ${f.path}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
+` : ''}--- ENDE REFERENZ-REPOSITORY ---
+` : ''}
 
 ${currentFiles && currentFiles.length ? `--- AKTUELLE INHALTE DER ZIELDATEIEN (Source of Truth) ---
 ${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (NEU – existiert noch nicht)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}

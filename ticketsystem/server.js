@@ -371,6 +371,17 @@ function normalizeText(value, maxLength) {
     return text.slice(0, maxLength);
 }
 
+function parseGithubRepoReference(...values) {
+    const raw = values.map(v => normalizeText(v || '', 300)).find(Boolean) || '';
+    if (!raw) return { owner: null, name: null };
+    const cleaned = raw.replace(/^git@github\.com:/i, 'https://github.com/').replace(/\.git$/i, '').trim();
+    const urlMatch = cleaned.match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+)(?:[/?#].*)?$/i);
+    if (urlMatch) return { owner: urlMatch[1], name: urlMatch[2].replace(/\.git$/i, '') };
+    const shortMatch = cleaned.match(/^([^/\s]+)\/([^/\s#?]+)$/);
+    if (shortMatch) return { owner: shortMatch[1], name: shortMatch[2].replace(/\.git$/i, '') };
+    return { owner: null, name: null };
+}
+
 function loadCurrentUserAccount(req, callback) {
     if (!req.session || !req.session.authenticated || !req.session.user) {
         return callback(null, null);
@@ -712,6 +723,8 @@ function initDb() {
             { col: 'implementation_plan', sql: 'ALTER TABLE tickets ADD COLUMN implementation_plan TEXT' },
             { col: 'integration_assessment', sql: 'ALTER TABLE tickets ADD COLUMN integration_assessment TEXT' },
             { col: 'merge_review', sql: 'ALTER TABLE tickets ADD COLUMN merge_review TEXT' },
+            { col: 'reference_repo_owner', sql: 'ALTER TABLE tickets ADD COLUMN reference_repo_owner TEXT' },
+            { col: 'reference_repo_name', sql: 'ALTER TABLE tickets ADD COLUMN reference_repo_name TEXT' },
             { col: 'final_decision', sql: "ALTER TABLE tickets ADD COLUMN final_decision TEXT" }
         ];
 
@@ -1005,7 +1018,9 @@ function initTicketsTable() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             first_responded_at DATETIME,
             closed_at DATETIME,
-            feedback_requested INTEGER DEFAULT 0
+            feedback_requested INTEGER DEFAULT 0,
+            reference_repo_owner TEXT,
+            reference_repo_name TEXT
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -1976,6 +1991,13 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
     d.username = normalizeText(d.username || d.reporterName || d.userName || '', 120) || null;
     d.contact_email = normalizeText(d.contact_email || d.reporterEmail || d.userEmail || '', 254) || null;
     d.location = normalizeText(d.location || d.url || '', 200) || null;
+    const referenceRepo = parseGithubRepoReference(
+        d.reference_repo,
+        d.reference_repo_url,
+        d.referenceRepository,
+        d.referenceRepo,
+        d.reference_repo_owner && d.reference_repo_name ? `${d.reference_repo_owner}/${d.reference_repo_name}` : ''
+    );
 
     // System-Name in system_id auflösen
     if (!d.system_id && d.system) {
@@ -2011,14 +2033,15 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
         deadline = calculateDeadline(d.type || 'bug', d.urgency || 'normal', d.priority || 'mittel');
     }
 
-    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const vals = [
         d.type || 'bug', d.title || 'Unbenannt', d.description || '', d.username || null,
         d.console_logs || null, swInfo || null, 'offen', d.priority || 'mittel',
         d.system_id ? parseInt(d.system_id, 10) : null,
         d.assigned_to ? parseInt(d.assigned_to, 10) : null,
-        d.location || null, d.contact_email || null, d.urgency || 'normal', deadline
+        d.location || null, d.contact_email || null, d.urgency || 'normal', deadline,
+        referenceRepo.owner, referenceRepo.name
     ];
 
     db.run(stmt, vals, function(err) {
@@ -3522,6 +3545,7 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
 app.post('/ticket/:id/assign', requireAuth, requireAdmin, (req, res) => {
     const assignedTo = req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : null;
     const systemId = req.body.system_id ? parseInt(req.body.system_id, 10) : null;
+    const referenceRepo = parseGithubRepoReference(req.body.reference_repo);
     const ticketId = req.params.id;
     const actor = getActor(req);
     
@@ -3530,11 +3554,13 @@ app.post('/ticket/:id/assign', requireAuth, requireAdmin, (req, res) => {
 
         const updates = {
             assigned_to: assignedTo,
-            system_id: systemId
+            system_id: systemId,
+            reference_repo_owner: referenceRepo.owner,
+            reference_repo_name: referenceRepo.name
         };
 
-        db.run('UPDATE tickets SET assigned_to = ?, system_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
-            [assignedTo, systemId, ticketId], function(err) {
+        db.run('UPDATE tickets SET assigned_to = ?, system_id = ?, reference_repo_owner = ?, reference_repo_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [assignedTo, systemId, referenceRepo.owner, referenceRepo.name, ticketId], function(err) {
             if (err) return res.status(500).send('DB Error');
             
             const details = buildTicketChangeDetails(oldTicket, updates);
@@ -3603,6 +3629,7 @@ app.post('/ticket/new', requireAuth, (req, res) => {
     d.location = normalizeText(d.location || '', 200) || null;
     d.contact_email = normalizeText(d.contact_email || '', 254) || null;
     if (!canManageTickets(req)) d.assigned_to = null;
+    const referenceRepo = parseGithubRepoReference(d.reference_repo, d.reference_repo_owner && d.reference_repo_name ? `${d.reference_repo_owner}/${d.reference_repo_name}` : '');
     let swInfo = d.software_info;
     if (swInfo && typeof swInfo === 'object') swInfo = JSON.stringify(swInfo);
 
@@ -3611,14 +3638,15 @@ app.post('/ticket/new', requireAuth, (req, res) => {
         deadline = calculateDeadline(d.type || 'bug', d.urgency || 'normal', d.priority || 'mittel');
     }
 
-    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const vals = [
         d.type || 'bug', d.title || 'Unbenannt', d.description || '', d.username || null,
         d.console_logs || null, swInfo || null, 'offen', d.priority || 'mittel',
         d.system_id ? parseInt(d.system_id, 10) : null,
         d.assigned_to ? parseInt(d.assigned_to, 10) : null,
-        d.location || null, d.contact_email || null, d.urgency || 'normal', deadline
+        d.location || null, d.contact_email || null, d.urgency || 'normal', deadline,
+        referenceRepo.owner, referenceRepo.name
     ];
 
     db.run(stmt, vals, function(err) {

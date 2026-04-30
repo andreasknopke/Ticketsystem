@@ -282,6 +282,16 @@
                                 </select>
                             </div>
                             <div>
+                                <label class="block text-xs font-medium text-gray-500 mb-1">Referenz-Repository (optional)</label>
+                                <input type="text" name="reference_repo" class="form-input text-sm" list="reference-repos" value="<%= ticket.reference_repo_owner && ticket.reference_repo_name ? ticket.reference_repo_owner + '/' + ticket.reference_repo_name : '' %>" placeholder="owner/repo oder GitHub-URL">
+                                <datalist id="reference-repos">
+                                    <% systems.filter(sys => sys.repo_owner && sys.repo_name).forEach(sys => { %>
+                                    <option value="<%= sys.repo_owner %>/<%= sys.repo_name %>"><%= sys.name %></option>
+                                    <% }); %>
+                                </datalist>
+                                <p class="text-xs text-gray-500 mt-1">Nur Lesekontext/Vorlage; Ziel bleibt das System-Repository.</p>
+                            </div>
+                            <div>
                                 <label class="block text-xs font-medium text-gray-500 mb-1">Zugewiesen an</label>
                                 <select name="assigned_to" class="form-select text-sm">
                                     <option value="">Nicht zugewiesen</option>
@@ -336,6 +346,14 @@
                             <div>
                                 <dt class="text-sm font-medium text-gray-500">Erstellt von</dt>
                                 <dd class="mt-1 text-sm text-gray-900"><%= ticket.username || '-' %></dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Referenz-Repository</dt>
+                                <dd class="mt-1 text-sm text-gray-900">
+                                    <% if (ticket.reference_repo_owner && ticket.reference_repo_name) { %>
+                                    <a href="https://github.com/<%= ticket.reference_repo_owner %>/<%= ticket.reference_repo_name %>" target="_blank" class="text-primary-600 hover:text-primary-800"><%= ticket.reference_repo_owner %>/<%= ticket.reference_repo_name %></a>
+                                    <% } else { %>-<% } %>
+                                </dd>
                             </div>
                             <div>
                                 <dt class="text-sm font-medium text-gray-500">Deadline</dt>

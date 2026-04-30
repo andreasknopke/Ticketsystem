@@ -197,6 +197,39 @@ async function getGithubIntegrationForSystem(systemId) {
         WHERE p.system_id = ? LIMIT 1`, [systemId]);
 }
 
+async function getReferenceIntegrationForTicket(ticket) {
+    if (!ticket?.reference_repo_owner || !ticket?.reference_repo_name) return null;
+    const owner = String(ticket.reference_repo_owner).trim();
+    const repo = String(ticket.reference_repo_name).trim();
+    if (!owner || !repo) return null;
+
+    const systemMatch = await getRow(`SELECT repo_access_token AS access_token
+        FROM systems
+        WHERE repo_owner = ? AND repo_name = ? AND active = 1
+        LIMIT 1`, [owner, repo]);
+    if (systemMatch) {
+        return { repo_owner: owner, repo_name: repo, access_token: systemMatch.access_token || null, integration_scope: 'reference_system' };
+    }
+
+    const projectMatch = await getRow(`SELECT access_token
+        FROM github_integration
+        WHERE repo_owner = ? AND repo_name = ?
+        LIMIT 1`, [owner, repo]);
+    if (projectMatch) {
+        return { repo_owner: owner, repo_name: repo, access_token: projectMatch.access_token || null, integration_scope: 'reference_project' };
+    }
+
+    return { repo_owner: owner, repo_name: repo, access_token: null, integration_scope: 'reference_manual' };
+}
+
+async function fetchReferenceRepoContext(ticket, stageLabel) {
+    const refIntegration = await getReferenceIntegrationForTicket(ticket);
+    if (!refIntegration) return null;
+    wfInfo(`Stage:${stageLabel} reference repo | owner=${refIntegration.repo_owner} repo=${refIntegration.repo_name} token=${!!refIntegration.access_token || !!process.env.GITHUB_DEFAULT_TOKEN}`);
+    const refCtx = await fetchRepoContext(refIntegration);
+    return { integration: refIntegration, ...refCtx };
+}
+
 async function callAIWithStaff(staff, { systemPrompt, userPrompt, json = true, retries = MAX_RETRIES, maxTokensOverride = null }) {
     const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
     const model = staff.ai_model || undefined;
@@ -370,7 +403,13 @@ async function execPlanning(ctx) {
     ctx.repo_source = repoCtx.source;
     ctx.repo_tree = repoCtx.repoTree || '';
     ctx.boundary_files = Array.isArray(repoCtx.boundaryFiles) ? repoCtx.boundaryFiles : [];
+    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'PLANNING');
+    ctx.reference_repo_context = referenceCtx?.repoContext || '';
+    ctx.reference_repo_source = referenceCtx?.source || 'none';
+    ctx.reference_repo_tree = referenceCtx?.repoTree || '';
+    ctx.reference_boundary_files = Array.isArray(referenceCtx?.boundaryFiles) ? referenceCtx.boundaryFiles : [];
     wfInfo(`Stage:PLANNING repoContext | source=${repoCtx.source} doc_len=${repoCtx.repoContext.length} tree_len=${ctx.repo_tree.length} boundary_files=${ctx.boundary_files.length}`);
+    if (referenceCtx) wfInfo(`Stage:PLANNING referenceContext | source=${referenceCtx.source} doc_len=${referenceCtx.repoContext.length} tree_len=${ctx.reference_repo_tree.length} boundary_files=${ctx.reference_boundary_files.length}`);
 
     const baseTicket = { ...ctx.ticket, redacted_description: ctx.redacted_description, coding_prompt: ctx.coding_prompt };
 
@@ -380,6 +419,10 @@ async function execPlanning(ctx) {
         repoContext: repoCtx.repoContext,
         repoTree: ctx.repo_tree,
         boundaryFiles: ctx.boundary_files,
+        referenceRepoContext: ctx.reference_repo_context,
+        referenceRepoSource: ctx.reference_repo_source,
+        referenceRepoTree: ctx.reference_repo_tree,
+        referenceBoundaryFiles: ctx.reference_boundary_files,
         currentFiles: null,
         passNote: 'Pass 1 von 2 - liste in candidate_files Pfade, deren echten Inhalt du fuer einen verlaesslichen Plan brauchst.'
     }) + extraInfoSuffix(ctx);
@@ -414,6 +457,10 @@ async function execPlanning(ctx) {
             repoContext: repoCtx.repoContext,
             repoTree: ctx.repo_tree,
             boundaryFiles: ctx.boundary_files,
+            referenceRepoContext: ctx.reference_repo_context,
+            referenceRepoSource: ctx.reference_repo_source,
+            referenceRepoTree: ctx.reference_repo_tree,
+            referenceBoundaryFiles: ctx.reference_boundary_files,
             currentFiles,
             passNote: 'Pass 2 von 2 - die unten eingebetteten AKTUELLEN INHALTE sind verbindlich. Korrigiere allowed_files, steps und risks entsprechend. Halluziniere keine zusaetzlichen Pfade.'
         }) + extraInfoSuffix(ctx);
@@ -465,7 +512,7 @@ async function execPlanning(ctx) {
     if (!['extend', 'new', 'refactor'].includes(out.change_kind)) {
         out.change_kind = 'extend';
     }
-    const planMd = renderPlanMarkdown(out, repoCtx.source);
+    const planMd = renderPlanMarkdown(out, repoCtx.source, ctx.reference_repo_source);
     await run(`UPDATE tickets SET implementation_plan = ? WHERE id = ?`, [planMd, ctx.ticket.id]);
     ctx.implementation_plan = planMd;
     ctx.allowed_files = out.allowed_files;
@@ -477,7 +524,7 @@ async function execPlanning(ctx) {
         { kind: 'implementation_plan', filename: 'implementation_plan.md', content: planMd }
     ];
     if (r2 && out1) {
-        const pass1Md = `### Plan (Pass 1, vor Code-Grounding)\n\n${renderPlanMarkdown(out1, repoCtx.source)}`;
+        const pass1Md = `### Plan (Pass 1, vor Code-Grounding)\n\n${renderPlanMarkdown(out1, repoCtx.source, ctx.reference_repo_source)}`;
         ctx._artifacts.push({ kind: 'planning_pass1', filename: 'planning_pass1.md', content: pass1Md });
     }
     wfInfo(`Stage:PLANNING done | two_pass=${!!r2} candidates=${candidateUnion.length} steps=${out.steps?.length || 0} risks=${out.risks?.length || 0} estimated_effort=${out.estimated_effort || '-'} allowed_files=${out.allowed_files.length} change_kind=${out.change_kind}`);
@@ -491,6 +538,7 @@ async function execIntegration(ctx) {
         WHERE p.system_id = ? LIMIT 20`, [ctx.ticket.system_id]);
     const projectDocs = projectDocsRows.map(d => `### ${d.title}\n\n${d.content || ''}`).join('\n---\n').slice(0, 60_000);
     wfInfo(`Stage:INTEGRATION projectDocs | count=${projectDocsRows.length} combined_len=${projectDocs.length}`);
+    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'INTEGRATION');
 
     // Code-Grounding: tatsaechliche Inhalte der vom Plan vorgesehenen Zieldateien laden,
     // damit der Reviewer Doku-Behauptungen am Code pruefen kann statt zu raten.
@@ -528,6 +576,10 @@ async function execIntegration(ctx) {
         repoDocs: ctx.repo_context || '',
         repoTree: ctx.repo_tree || '',
         boundaryFiles: ctx.boundary_files || [],
+        referenceRepoContext: referenceCtx?.repoContext || ctx.reference_repo_context || '',
+        referenceRepoSource: referenceCtx?.source || ctx.reference_repo_source || 'none',
+        referenceRepoTree: referenceCtx?.repoTree || ctx.reference_repo_tree || '',
+        referenceBoundaryFiles: referenceCtx?.boundaryFiles || ctx.reference_boundary_files || [],
         currentFiles
     }) + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
@@ -547,11 +599,12 @@ async function execIntegration(ctx) {
     return { output: out, ai: r };
 }
 
-function renderPlanMarkdown(plan, repoSource) {
+function renderPlanMarkdown(plan, repoSource, referenceRepoSource) {
     if (!plan || typeof plan !== 'object') return String(plan || '');
     const lines = [];
     if (plan.summary) lines.push(`**Zusammenfassung:** ${plan.summary}`);
     if (repoSource && repoSource !== 'none') lines.push(`\n_Repo-Kontext aus: ${repoSource}_`);
+    if (referenceRepoSource && referenceRepoSource !== 'none') lines.push(`\n_Referenz-Repo gelesen: ${referenceRepoSource} (read-only Vorlage)_`);
     if (Array.isArray(plan.affected_areas) && plan.affected_areas.length) {
         lines.push(`\n**Betroffene Bereiche:**`);
         plan.affected_areas.forEach(a => lines.push(`- ${a}`));
@@ -1033,6 +1086,8 @@ async function execCoding(ctx, codingLevel) {
 
     const repoCtx = await fetchRepoContext(integration);
     wfInfo(`Stage:CODING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
+    const referenceCtx = await fetchReferenceRepoContext(ctx.ticket, 'CODING');
+    if (referenceCtx) wfInfo(`Stage:CODING referenceContext | source=${referenceCtx.source} doc_len=${referenceCtx.repoContext.length} tree_len=${(referenceCtx.repoTree || '').length} boundary_files=${(referenceCtx.boundaryFiles || []).length}`);
 
     const allowedFiles = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
     const changeKind = ctx.change_kind || 'extend';
@@ -1054,6 +1109,10 @@ async function execCoding(ctx, codingLevel) {
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
         repoContext: repoCtx.repoContext,
+        referenceRepoContext: referenceCtx?.repoContext || '',
+        referenceRepoSource: referenceCtx?.source || 'none',
+        referenceRepoTree: referenceCtx?.repoTree || '',
+        referenceBoundaryFiles: referenceCtx?.boundaryFiles || [],
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
