@@ -1,0 +1,75 @@
+<div class="container">
+  <h1>Assign Coding Bot</h1>
+  <form action="/assign" method="POST">
+    <input type="hidden" name="ticketId" value="<%= ticketId %>">
+    <div class="form-group">
+      <label for="botSelect">Select Bot:</label>
+      <select class="form-control" id="botSelect">
+        <option value="">-- Choose a bot --</option>
+        <% bots.forEach(function(bot) { %>
+        <option value="<%= bot._id %>" data-has-collision="<%= bot.hasCollision ? 'true' : 'false' %>">
+          <%= bot.name %> (Level: <%= bot.codingLevel %>)
+        </option>
+        <% }); %>
+      </select>
+    </div>
+    <input type="hidden" id="chosenBotId" name="userId">
+    <button type="submit" class="btn btn-primary" id="submitBtn">Assign</button>
+  </form>
+</div>
+
+<!-- Collision Modal (requires Bootstrap CSS/JS) -->
+<div class="modal fade" id="collisionModal" tabindex="-1" role="dialog" aria-labelledby="collisionModalLabel">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="collisionModalLabel">Select Specific Bot</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p>Multiple bots share this coding level. Please select one:</p>
+        <ul id="collisionBotList" class="list-unstyled"></ul>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const collisionMap = <%- collisionMapJSON || '{}' %>;
+
+  document.getElementById('botSelect').addEventListener('change', function() {
+    const selectedId = this.value;
+    if (!selectedId) return;
+    const collisionBots = collisionMap[selectedId];
+    if (collisionBots && collisionBots.length > 0) {
+      showCollisionModal(selectedId, collisionBots);
+    } else {
+      document.getElementById('chosenBotId').value = selectedId;
+    }
+  });
+
+  function showCollisionModal(selectedId, bots) {
+    const list = document.getElementById('collisionBotList');
+    list.innerHTML = '';
+    bots.forEach(bot => {
+      const item = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-link';
+      btn.textContent = bot.name + ' (ID: ' + bot._id + ')';
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        document.getElementById('chosenBotId').value = bot._id;
+        $('#collisionModal').modal('hide');
+        // To auto‑submit, uncomment: this.closest('form').submit();
+      });
+      item.appendChild(btn);
+      list.appendChild(item);
+    });
+    $('#collisionModal').modal('show');
+  }
+</script>
