@@ -71,10 +71,13 @@ async function seed() {
 
         // Workflow-Rollen für AI-Bots zuweisen
         const botRows = await getQuery("SELECT id, name, coding_level FROM staff WHERE kind = 'ai'");
-        const allRoles = ['triage', 'security', 'planning', 'integration', 'approval', 'coding'];
+        // Hinweis: 'approval' wird absichtlich nicht an AI-Bots vergeben (macht Mensch).
+        // 'clarifier' (Repo-Resolver) wird allen AI-Bots gegeben — guenstige Bots reichen
+        // hier voellig aus, das macht der Workflow-Engine bei Bedarf round-robin.
         for (const bot of botRows) {
-            // Coding-Bots bekommen passende Rollen, aber NICHT approval (macht Mensch)
-            const roles = bot.coding_level === 'high' ? ['triage','security','planning','integration','coding'] : ['triage','coding'];
+            const roles = bot.coding_level === 'high'
+                ? ['triage','security','planning','integration','coding','clarifier']
+                : ['triage','coding','clarifier'];
             for (const role of roles) {
                 try {
                     await runQuery(`INSERT OR IGNORE INTO staff_roles (staff_id, role) VALUES (?, ?)`, [bot.id, role]);

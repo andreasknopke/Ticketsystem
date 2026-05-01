@@ -38,7 +38,7 @@ Ein leichtgewichtiges, webbasiertes Ticketsystem mit integriertem Projektmanagem
 
 ### KI-gestuetzter Ticket-Workflow (NEU)
 - **Mensch oder KI-Bot:** Mitarbeiter koennen vom Typ `human` oder `ai` sein. KI-Bots werden pro Mitarbeiter mit Provider, Modell, Temperatur und optionalem System-Prompt-Override konfiguriert.
-- **Workflow-Profile (Rollen):** `triage` (Triage Reviewer), `security` (Security & Privacy Reviewer), `planning` (Solution Architect / Planner), `integration` (Integration / Architecture Reviewer), `approval` (Final Approver). Jeder Mitarbeiter kann mehrere Rollen uebernehmen.
+- **Workflow-Profile (Rollen):** `triage` (Triage Reviewer), `security` (Security & Privacy Reviewer), `planning` (Solution Architect / Planner), `integration` (Integration / Architecture Reviewer), `approval` (Final Approver), `coding` (Coding Bot), `clarifier` (Repo-Resolver — beantwortet technische Rueckfragen automatisch aus dem Repo). Jeder Mitarbeiter kann mehrere Rollen uebernehmen.
 - **Round-Robin-Zuweisung:** Bei mehreren Kandidaten pro Rolle wird die naechste Stage automatisch round-robin verteilt.
 - **Auto-Trigger:** Neue Bug-/Feature-Tickets starten automatisch den Standard-Workflow `triage -> security -> planning -> integration -> approval`. Pro System abschaltbar (`systems.ai_workflow_enabled`).
 - **Triage "unklar":** Bei unklarem Ticket wird direkt zur Final-Approver-Stage gesprungen; ein menschlicher Approver entscheidet ueber Rueckfrage / Reject / Handoff.
@@ -206,7 +206,7 @@ nicht erkannt"). Beim Re-Run wird:
 
 - `GET  /api/ai/providers/health` — Live-Test aller konfigurierten KI-Provider (Admin).
 - `GET  /api/staff` / `POST /api/staff` — erweitert um `kind`, `ai_provider`, `ai_model`, `ai_temperature`, `ai_max_tokens`, `ai_system_prompt`, `ai_extra_config`, `coding_level`, `auto_commit_enabled`, `roles[]`.
-- `POST /api/staff/:id/roles` — setzt die Workflow-Rollen eines Mitarbeiters (`triage` | `security` | `planning` | `integration` | `approval` | `coding`).
+- `POST /api/staff/:id/roles` — setzt die Workflow-Rollen eines Mitarbeiters (`triage` | `security` | `planning` | `integration` | `approval` | `coding` | `clarifier`).
 - `GET  /api/tickets/:id/workflow` — Run + alle Stage-Steps + Artefakte + Approver-Briefing.
 - `GET  /api/tickets/:id/workflow/artifacts/:artId` — Artefakt-Download (z.B. Plan, Commit-Message, Test-Plan, geänderte Dateien).
 - `POST /api/tickets/:id/workflow/restart` — Workflow neu starten (Admin).

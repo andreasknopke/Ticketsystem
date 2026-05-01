@@ -830,7 +830,7 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS staff_roles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         staff_id INTEGER NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding','clarifier')),
         priority INTEGER DEFAULT 100,
         active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -878,7 +878,7 @@ function initDb() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id INTEGER NOT NULL,
         sort_order INTEGER NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+        role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding','clarifier')),
         executor_kind TEXT CHECK(executor_kind IN ('ai','human','any')) DEFAULT 'any',
         auto_assign_strategy TEXT CHECK(auto_assign_strategy IN ('round_robin','least_loaded','fixed')) DEFAULT 'round_robin',
         fixed_staff_id INTEGER,
@@ -918,7 +918,7 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS ticket_workflow_steps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id INTEGER NOT NULL,
-        stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding')),
+        stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding','clarifier')),
         sort_order INTEGER NOT NULL,
         staff_id INTEGER,
         executor_kind TEXT,
@@ -956,21 +956,29 @@ function initDb() {
         FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
     )`);
 
-    // Migration fuer bestehende DBs: CHECK-Constraint um 'coding' erweitern
-    migrateCheckConstraintForCoding();
+    // Migration fuer bestehende DBs: CHECK-Constraint um neue Rollen erweitern
+    migrateWorkflowRoleConstraints();
 }
 
 // Bei aelteren DBs enthalten die CHECK-Constraints von staff_roles/workflow_stages/
-// ticket_workflow_steps den Wert 'coding' nicht. SQLite erlaubt CHECK-Aenderung nur
-// per Tabellen-Rebuild. Wir pruefen das DDL in sqlite_master und bauen bei Bedarf um.
-function migrateCheckConstraintForCoding() {
+// ticket_workflow_steps neue Rollen (z.B. 'coding', 'clarifier') noch nicht.
+// SQLite erlaubt CHECK-Aenderung nur per Tabellen-Rebuild. Wir pruefen das DDL
+// in sqlite_master und bauen bei Bedarf um.
+//
+// Strategie: Pruefung erfolgt anhand der NEUESTEN Rolle, die hinzugekommen ist.
+// Wenn diese im DDL fehlt, wird die Tabelle migriert. So funktioniert die
+// Funktion fuer jede zukuenftige Rollen-Erweiterung — die Liste der erwarteten
+// Rollen wird einfach in REQUIRED_ROLES aktualisiert.
+function migrateWorkflowRoleConstraints() {
+    // Aktuell juengste Rolle. Wenn sie im DDL fehlt -> Migration noetig.
+    const LATEST_ROLE = 'clarifier';
     const targets = [
         {
             table: 'staff_roles',
             create: `CREATE TABLE staff_roles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 staff_id INTEGER NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding','clarifier')),
                 priority INTEGER DEFAULT 100,
                 active INTEGER DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -985,7 +993,7 @@ function migrateCheckConstraintForCoding() {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 workflow_id INTEGER NOT NULL,
                 sort_order INTEGER NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding')),
+                role TEXT NOT NULL CHECK(role IN ('triage','security','planning','integration','approval','coding','clarifier')),
                 executor_kind TEXT CHECK(executor_kind IN ('ai','human','any')) DEFAULT 'any',
                 auto_assign_strategy TEXT CHECK(auto_assign_strategy IN ('round_robin','least_loaded','fixed')) DEFAULT 'round_robin',
                 fixed_staff_id INTEGER,
@@ -1000,7 +1008,7 @@ function migrateCheckConstraintForCoding() {
             create: `CREATE TABLE ticket_workflow_steps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
-                stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding')),
+                stage TEXT NOT NULL CHECK(stage IN ('triage','security','planning','integration','approval','coding','clarifier')),
                 sort_order INTEGER NOT NULL,
                 staff_id INTEGER,
                 executor_kind TEXT,
@@ -1026,8 +1034,8 @@ function migrateCheckConstraintForCoding() {
     targets.forEach(t => {
         db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", [t.table], (err, row) => {
             if (err || !row || !row.sql) return;
-            if (row.sql.includes("'coding'")) return; // schon migriert
-            console.log(`Migration: ${t.table} -> CHECK um 'coding' erweitern`);
+            if (row.sql.includes(`'${LATEST_ROLE}'`)) return; // schon migriert
+            console.log(`Migration: ${t.table} -> CHECK um '${LATEST_ROLE}' erweitern`);
             // Sequentielle Ausfuehrung ohne Transaktion (SQLite Auto-Commit pro Statement).
             // Mehrere parallele BEGIN ueber verschiedene serialize()-Bloecke wuerden konfligieren.
             db.serialize(() => {
@@ -3056,14 +3064,15 @@ app.post('/admin/systems/:id/delete', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
-const WORKFLOW_ROLES = ['triage', 'security', 'planning', 'integration', 'approval', 'coding'];
+const WORKFLOW_ROLES = ['triage', 'security', 'planning', 'integration', 'approval', 'coding', 'clarifier'];
 const WORKFLOW_ROLE_LABELS = {
     triage: 'Triage Reviewer',
     security: 'Security & Privacy Reviewer',
     planning: 'Solution Architect (Planner)',
     integration: 'Integration / Architecture Reviewer',
     approval: 'Final Approver',
-    coding: 'Coding Bot'
+    coding: 'Coding Bot',
+    clarifier: 'Repo-Resolver (Clarifier)'
 };
 const CODING_LEVELS = ['medium', 'high'];
 const CODING_LEVEL_LABELS = {
