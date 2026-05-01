@@ -121,7 +121,50 @@ async function fetchRepoContext(integration) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree };
+module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight };
+
+/**
+ * Light-Version des Repo-Trees: nutzt Git Trees API mit recursive=1
+ * (1 Aufruf statt N Verzeichnis-Abfragen). Liefert eine flache Liste von
+ * Pfaden, gefiltert auf relevante Source-Endungen, gecappt bei MAX-Eintraegen.
+ *
+ * Wird vom Architect (Planning), Integration und Clarifier verwendet, damit
+ * sie sehen, welche Files es ueberhaupt gibt — ohne pro Verzeichnis einen
+ * separaten API-Call.
+ */
+async function fetchRepoTreeLight(integration, opts = {}) {
+    if (!integration || !integration.repo_owner || !integration.repo_name) return '';
+    const client = getOctokit(integration.access_token);
+    const owner = integration.repo_owner;
+    const repo = integration.repo_name;
+    const maxEntries = opts.maxEntries || 400;
+    const includeExt = opts.includeExt || /\.(js|mjs|cjs|ts|tsx|jsx|json|ejs|md|sql|yml|yaml|css|html)$/i;
+    const skipDirs = opts.skipDirs || /(^|\/)(node_modules|dist|build|coverage|\.git|\.next|\.cache)(\/|$)/i;
+
+    let baseBranch = integration.default_branch || null;
+    try {
+        if (!baseBranch) {
+            const repoInfo = await client.repos.get({ owner, repo });
+            baseBranch = repoInfo.data.default_branch || 'main';
+        }
+        const refData = await client.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
+        const commitSha = refData.data.object.sha;
+        const commitData = await client.git.getCommit({ owner, repo, commit_sha: commitSha });
+        const treeSha = commitData.data.tree.sha;
+        const tree = await client.git.getTree({ owner, repo, tree_sha: treeSha, recursive: '1' });
+        const files = (tree.data.tree || [])
+            .filter(e => e.type === 'blob' && e.path)
+            .filter(e => !skipDirs.test(e.path))
+            .filter(e => includeExt.test(e.path))
+            .map(e => e.path)
+            .sort()
+            .slice(0, maxEntries);
+        return files.join('\n');
+    } catch (e) {
+        // Fallback: alter, langsamer Pfad
+        try { return await fetchRepoTree(integration, 3); } catch (_) { return ''; }
+    }
+}
 
 /**
  * Laedt den aktuellen Inhalt einer Liste von Dateien aus dem verknuepften Repo.
