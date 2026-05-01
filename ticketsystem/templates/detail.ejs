@@ -554,7 +554,7 @@
                 parts.push(`<p class="text-xs mt-1"><span class="font-semibold">Dossier:</span> <a href="${escapeHtml(o.dossier_branch_url)}" target="_blank" rel="noopener" class="text-emerald-700 hover:underline font-mono">${escapeHtml(o.dossier_branch)}</a>${o.dossier_commit_sha ? ` <span class="text-gray-400">(${escapeHtml(o.dossier_commit_sha.slice(0, 7))})</span>` : ''}</p>`);
             }
             if (step.output_html) {
-                parts.push(`<details class="mt-2" open><summary class="cursor-pointer text-xs font-semibold text-primary-700">Vollständige Ausgabe</summary><div class="prose prose-sm max-w-none mt-2 p-3 bg-gray-50 rounded border border-gray-200">${step.output_html}</div></details>`);
+                parts.push(`<details class="mt-2 workflow-output-details"><summary class="cursor-pointer text-xs font-semibold text-primary-700">Vollständige Ausgabe</summary><div class="mt-2 p-3 bg-gray-50 rounded border border-gray-200 overflow-hidden" style="contain:content">${step.output_html}</div></details>`);
             } else if (o.coding_prompt) {
                 parts.push(`<details class="mt-2"><summary class="cursor-pointer text-xs text-primary-700">Coding-Prompt</summary><pre class="mt-1 whitespace-pre-wrap text-xs bg-gray-50 p-2 rounded">${escapeHtml(o.coding_prompt)}</pre></details>`);
             }
@@ -766,13 +766,13 @@
                         <div class="text-xs text-emerald-700 mt-1">Externer Coding-Agent kann diesen Branch auschecken und mit dem Dossier unter <code>tickets/${ticketId}/</code> arbeiten.</div>
                     </div>`;
                 }
-                html += '<ol class="space-y-3">';
+                html += '<div class="space-y-3">';
                 const artifacts = data.artifacts || [];
                 data.steps.forEach(step => {
                     const badge = STATUS_BADGE[step.status] || 'bg-gray-100 text-gray-700';
                     const isApproverWaiting = step.stage === 'approval' && step.status === 'waiting_human';
                     const canRerun = canManageTickets && step.status === 'done' && ['triage','security','planning','integration','coding'].includes(step.stage);
-                    html += `<li class="rounded border border-gray-200 p-3" data-step-id="${step.id}">
+                    html += `<div class="rounded border border-gray-200 p-3" data-step-id="${step.id}">
                         <div class="flex items-center justify-between">
                             <div>
                                 <div class="text-sm font-medium text-gray-900">${escapeHtml(STAGE_LABELS[step.stage] || step.stage)}</div>
@@ -787,15 +787,15 @@
                         ${isApproverWaiting ? renderBriefing(data.ticket_briefing, artifacts) : ''}
                         ${step.status === 'waiting_human' ? renderApprover(step, run.id, data.steps, data.coding_bot_choices) : ''}
                         ${canRerun ? renderRerun(step) : ''}
-                    </li>`;
+                    </div>`;
                 });
-                html += '</ol>';
+                html += '</div>';
                 body.innerHTML = html;
                 restoreInputs(body, inputSnap);
 
                 body.querySelectorAll('.dec-btn').forEach(btn => {
                     btn.addEventListener('click', async (ev) => {
-                        const li = ev.target.closest('li');
+                        const li = ev.target.closest('[data-step-id]');
                         const stepId = li.dataset.stepId;
                         const decision = ev.target.dataset.decision;
                         const note = document.getElementById('dec-note-' + stepId)?.value || '';
@@ -844,7 +844,7 @@
 
                 body.querySelectorAll('.rerun-btn').forEach(btn => {
                     btn.addEventListener('click', async (ev) => {
-                        const li = ev.target.closest('li');
+                        const li = ev.target.closest('[data-step-id]');
                         const stepId = li.dataset.stepId;
                         const stage = ev.target.dataset.stage;
                         const extraInfo = document.getElementById('rerun-info-' + stepId)?.value || '';
