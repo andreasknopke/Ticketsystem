@@ -41,6 +41,54 @@ function applyEdits(originalContent, edits) {
     return { content, applied, failed };
 }
 
+/**
+ * Extrahiert Funktions-/Klassen-Signaturen mit Zeilennummern aus Datei-Inhalt.
+ * Gibt [{ line, signature }] zurueck.
+ */
+function extractSymbolIndex(content) {
+    if (!content || typeof content !== 'string') return [];
+    const lines = content.split('\n');
+    const symbols = [];
+    const symRe = /^(\s*)(async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function|(?:const|let|var)\s+(\w+)\s*=\s*\(.*\)\s*=>|^class\s+(\w+)|module\.exports\s*=\s*\{|module\.exports\.(\w+)\s*=|exports\.(\w+)\s*=|^(export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var))\s+(\w+)/;
+    for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(symRe);
+        if (m) {
+            const name = m[3] || m[4] || m[5] || m[6] || m[7] || m[8] || m[10] || '';
+            const sig = lines[i].trim().slice(0, 120);
+            if (name || sig.startsWith('module.exports =') || sig.startsWith('export ')) {
+                symbols.push({ line: i + 1, signature: sig });
+            }
+        }
+    }
+    return symbols;
+}
+
+/**
+ * Extrahiert Zeilenbereiche aus Datei-Inhalt als reinen Text (ohne Zeilennummern).
+ * ranges: [{ start, end }] — 1-basierte Zeilennummern.
+ * Gibt { content, startLine } zurueck — content OHNE Zeilennummern.
+ */
+function extractLineRanges(content, ranges, maxBytes = 15000) {
+    if (!content || typeof content !== 'string') return { content: '', startLine: 1 };
+    const lines = content.split('\n');
+    const included = [];
+    let startLine = Infinity;
+    let totalBytes = 0;
+    for (const r of ranges) {
+        const start = Math.max(1, r.start || 1);
+        const end = Math.min(lines.length, r.end || lines.length);
+        if (start < startLine) startLine = start;
+        for (let i = start - 1; i < end; i++) {
+            if (totalBytes + lines[i].length > maxBytes) {
+                return { content: included.join('\n'), startLine: startLine === Infinity ? 1 : startLine };
+            }
+            included.push(lines[i]);
+            totalBytes += lines[i].length;
+        }
+    }
+    return { content: included.join('\n'), startLine: startLine === Infinity ? 1 : startLine };
+}
+
 // Workflow-Engine v2 — typed JSON bundles, deterministisches Briefing,
 // Repo-Resolver fuer technische open_questions, Coding-Loop mit Self-Correction.
 //
@@ -1115,23 +1163,86 @@ function assembleFilesFromEdits(out, currentFiles) {
 }
 
 /**
- * Ein Coding-Pass: Briefing bauen, AI rufen, Edits anwenden, validieren.
+ * Ein Coding-Pass in 2 Phasen:
+ * Phase 1 (Explore): Bot sieht Plan + Symboldex → entscheidet welche Zeilen er braucht
+ * Phase 2 (Edit): Bot sieht geladene Zeilenbereiche → schreibt search/replace-Edits
  * Liefert { out, ai, scopeViolations, codeCheckViolations, assembledFiles }.
  */
 async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback, systemName, repoInfo }) {
-    const { userPrompt, stats } = buildCodingBriefing({
-        ticket, codingLevel, security, plan, integration,
-        currentFiles, approverNote, correctionFeedback, systemName, repoInfo
-    });
-    wfInfo(`Stage:CODING briefing | bytes=${stats.prompt_bytes} chars=${stats.prompt_chars} files=${stats.sections.current_files_count} hasApprover=${stats.sections.has_approver_note} hasCorrection=${stats.sections.has_correction}`);
+    const allowedFiles = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
+    const changeKind = plan?.change_kind || 'extend';
 
-    if (stats.over_budget) {
-        throw new Error(`Coding-Briefing zu gross: ${stats.prompt_bytes} bytes > MAX ${MAX_PROMPT_BYTES} bytes. Reduziere allowed_files im Plan.`);
+    // Symboldex fuer alle allowed_files aufbauen
+    const currentMap = new Map((currentFiles || []).map(f => [f.path, f]));
+    const symbolIndex = allowedFiles.map(path => {
+        const f = currentMap.get(path);
+        if (!f || !f.exists) return { path, exists: false, action: 'create', symbols: [] };
+        return {
+            path,
+            exists: true,
+            action: changeKind === 'new' ? 'create' : 'update',
+            symbols: extractSymbolIndex(f.content)
+        };
+    });
+
+    // Phase 1: Explore — Bot fordert Zeilenbereiche an
+    const explorePrompt = prompts.CODING_EXPLORE.buildUser({
+        ticket, codingLevel, security, plan, integration,
+        symbolIndex, approverNote, correctionFeedback, systemName, repoInfo
+    });
+    wfInfo(`Stage:CODING EXPLORE | bytes=${Buffer.byteLength(explorePrompt, 'utf-8')} symbols=${symbolIndex.reduce((s, f) => s + f.symbols.length, 0)}`);
+    const exploreResult = await callAIWithStaff(staff, { systemPrompt: prompts.CODING_EXPLORE.system, userPrompt: explorePrompt, json: true });
+    if (!exploreResult.parsed) {
+        throw new Error(`Coding-Explore: AI-Antwort nicht als JSON parsebar. Preview: ${(exploreResult.text || '').slice(0, 300)}`);
     }
 
-    const r = await callAIWithStaff(staff, { systemPrompt: prompts.CODING.system, userPrompt });
+    // Zeilenbereiche aus Explore-Ergebnis extrahieren + Content laden
+    const exploreOut = exploreResult.parsed;
+    const requestedFiles = Array.isArray(exploreOut.files) ? exploreOut.files : [];
+    const loadedRanges = [];
+    for (const rf of requestedFiles) {
+        if (!rf.path || !allowedFiles.includes(rf.path)) continue;
+        const cur = currentMap.get(rf.path);
+        if (!cur || !cur.exists) {
+            // Neue Datei — keine Zeilen laden
+            loadedRanges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
+            continue;
+        }
+        const ranges = Array.isArray(rf.read_ranges) ? rf.read_ranges : [];
+        if (!ranges.length && rf.action === 'create') {
+            loadedRanges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
+            continue;
+        }
+        // Fallback: wenn keine ranges angegeben aber action=update, nimm die Symbol-Zeilen + Kontext
+        const effectiveRanges = ranges.length ? ranges : [
+            { start: 1, end: Math.min(50, cur.content.split('\n').length), reason: 'default context' }
+        ];
+        const { content: rangeContent, startLine: rangeStart } = extractLineRanges(cur.content, effectiveRanges);
+        loadedRanges.push({
+            path: rf.path,
+            exists: true,
+            content: rangeContent,
+            startLine: rangeStart,
+            truncated: cur.truncated
+        });
+        wfInfo(`Stage:CODING EXPLORE | loaded ${rf.path} ranges=${effectiveRanges.length} bytes=${rangeContent.length}`);
+    }
+
+    // Phase 2: Edit — Bot sieht geladene Zeilenbereiche + schreibt Edits
+    const editPrompt = prompts.CODING_EDIT.buildUser({
+        ticket, codingLevel, plan, integration,
+        loadedRanges, approverNote, correctionFeedback, systemName, repoInfo
+    });
+    const editBytes = Buffer.byteLength(editPrompt, 'utf-8');
+    wfInfo(`Stage:CODING EDIT | bytes=${editBytes} ranges=${loadedRanges.length} hasApprover=${!!approverNote} hasCorrection=${!!correctionFeedback}`);
+
+    if (editBytes > MAX_PROMPT_BYTES) {
+        throw new Error(`Coding-Edit-Briefing zu gross: ${editBytes} bytes > MAX ${MAX_PROMPT_BYTES} bytes. Reduziere allowed_files im Plan.`);
+    }
+
+    const r = await callAIWithStaff(staff, { systemPrompt: prompts.CODING_EDIT.system, userPrompt: editPrompt });
     if (!r.parsed) {
-        throw new Error(`Coding-Bot: AI-Antwort nicht als JSON parsebar. Preview: ${(r.text || '').slice(0, 300)}`);
+        throw new Error(`Coding-Edit: AI-Antwort nicht als JSON parsebar. Preview: ${(r.text || '').slice(0, 300)}`);
     }
     const out = r.parsed;
     out.coding_level = codingLevel;
@@ -1143,10 +1254,7 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
     }
     out.assembled_files = assembledFiles;
 
-    const allowedFiles = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
-    const changeKind = plan?.change_kind || 'extend';
     const scopeViolations = validateCodingScope(out, allowedFiles, changeKind, currentFiles);
-    // Edit-Violations zu scope-Violations hinzufuegen
     scopeViolations.push(...editViolations);
 
     let codeCheckViolations = [];
@@ -1164,7 +1272,7 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
         }
     }
 
-    return { out, ai: r, scopeViolations, codeCheckViolations, codeCheckResult, prompt_bytes: stats.prompt_bytes, assembledFiles };
+    return { out, ai: r, scopeViolations, codeCheckViolations, codeCheckResult, prompt_bytes: editBytes, assembledFiles };
 }
 
 async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferredStaff) {

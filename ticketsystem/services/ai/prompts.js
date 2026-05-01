@@ -253,6 +253,202 @@ Hinweise:
 };
 
 // -----------------------------------------------------------------------------
+// CODING_EXPLORE — Pass 1: Bot sieht Plan + Symboldex, entscheidet welche Zeilen er sehen muss
+// -----------------------------------------------------------------------------
+const CODING_EXPLORE = {
+    system: `Du bist Coding-Bot (Exploration-Phase). Du siehst einen Plan und einen Symboldex
+der zu bearbeitenden Dateien. Deine Aufgabe: Entscheide welche Zeilenbereiche Du sehen musst,
+um die Aenderung chirurgisch mit search/replace-Edits durchzufuehren.
+
+WICHTIGSTE REGEL: Deine Antwort ist EIN gueltiges JSON-Objekt. KEIN Markdown, KEINE Code-Fences.
+
+Du siehst:
+- Aufgabe, Plan, Constraints, must_follow / must_avoid
+- "allowed_files" mit Symboldex (Funktionssignaturen + Zeilennummern)
+- change_kind (extend / new / refactor)
+
+Aufgabe: Gib an, welche Zeilenbereiche Du aus jeder Datei sehen moechtest.
+- Bei action="create": Du brauchst KEINE Zeilen — gib "read_ranges": [] an.
+- Bei action="update": Fordere nur die Zeilen, die Du voraussichtlich aendern wirst,
+  plus ~5 Zeilen Kontext davor/danach. Sei sparsam!
+  Typisch: 3-5 Ranges pro Datei, a 10-30 Zeilen.
+- Bei action="delete": Fordere nur die Zeilen um das zu loeschende Konstrukt.
+
+Antworte ausschliesslich als JSON:
+{
+  "files": [
+    {
+      "path": "src/foo.js",
+      "action": "update|create|delete",
+      "read_ranges": [
+        { "start": 1, "end": 50, "reason": "Imports und Modul-Setup" },
+        { "start": 120, "end": 160, "reason": "Funktion die angepasst werden muss" }
+      ]
+    }
+  ],
+  "summary": "Kurze Beschreibung was Du vorhast"
+}`,
+    buildUser: ({ ticket, codingLevel, security, plan, integration, symbolIndex, approverNote, correctionFeedback, systemName, repoInfo }) => {
+        const parts = [];
+        parts.push(`# Coding-Exploration — Ticket #${ticket.id}`);
+        parts.push(`Typ: ${ticket.type} | Titel: ${ticket.title} | Level: ${codingLevel || 'medium'}`);
+        if (systemName) parts.push(`System: ${systemName}`);
+        if (repoInfo) parts.push(`Repo: ${repoInfo}`);
+        parts.push('');
+        const codingPrompt = security?.coding_prompt || plan?.task || ticket.coding_prompt || ticket.redacted_description || ticket.description || '';
+        parts.push(`## Aufgabe`);
+        parts.push(codingPrompt || '(leer)');
+        parts.push('');
+        if (plan) {
+            parts.push(`## Plan`);
+            if (plan.summary) parts.push(`**Zusammenfassung:** ${plan.summary}`);
+            if (plan.task && plan.task !== codingPrompt) parts.push(`\n**Konkreter Auftrag:**\n${plan.task}`);
+            parts.push(`\n**change_kind:** \`${plan.change_kind || 'extend'}\``);
+            const allowed = Array.isArray(plan.allowed_files) ? plan.allowed_files : [];
+            parts.push(`\n**allowed_files (${allowed.length}):** ${allowed.map(p => '`' + p + '`').join(', ') || '(leer)'}`);
+            if (Array.isArray(plan.steps) && plan.steps.length) {
+                parts.push(`\n**Schritte:**`);
+                plan.steps.forEach((s, i) => { parts.push(`${i + 1}. **${s.title || ''}**${s.details ? ': ' + s.details : ''}`); });
+            }
+            if (Array.isArray(plan.constraints) && plan.constraints.length) parts.push(`\n**Constraints:**\n${plan.constraints.map(c => '- ' + c).join('\n')}`);
+            if (Array.isArray(plan.risks) && plan.risks.length) parts.push(`\n**Risiken:**\n${plan.risks.map(r => '- ' + r).join('\n')}`);
+            parts.push('');
+        }
+        if (integration) {
+            parts.push(`## Integration-Review`);
+            if (Array.isArray(integration.must_follow) && integration.must_follow.length) parts.push(`**MUST FOLLOW:**\n${integration.must_follow.map(m => '- ' + m).join('\n')}`);
+            if (Array.isArray(integration.must_avoid) && integration.must_avoid.length) parts.push(`**MUST AVOID:**\n${integration.must_avoid.map(m => '- ' + m).join('\n')}`);
+            parts.push('');
+        }
+        if (approverNote && String(approverNote).trim()) {
+            parts.push(`## Approver-Notiz (HOECHSTE PRIORITAET)`);
+            parts.push(String(approverNote).trim());
+            parts.push('');
+        }
+        if (correctionFeedback && String(correctionFeedback).trim()) {
+            parts.push(`## Self-Correction Feedback`);
+            parts.push(String(correctionFeedback).trim());
+            parts.push('');
+        }
+        // Symboldex
+        if (Array.isArray(symbolIndex) && symbolIndex.length) {
+            parts.push(`## SYMBOLDEX (Funktionssignaturen + Zeilennummern)`);
+            symbolIndex.forEach(f => {
+                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NEU — wird erstellt)'}`);
+                if (f.action) parts.push(`action: ${f.action}`);
+                if (f.symbols && f.symbols.length) {
+                    f.symbols.forEach(s => parts.push(`  L${s.line}: ${s.signature}`));
+                } else {
+                    parts.push(`  (keine Signaturen — vermutlich neue Datei)`);
+                }
+            });
+            parts.push('');
+        }
+        return parts.join('\n');
+    }
+};
+
+// -----------------------------------------------------------------------------
+// CODING_EDIT — Pass 2: Bot sieht Plan + geladene Zeilenbereiche, schreibt search/replace-Edits
+// -----------------------------------------------------------------------------
+const CODING_EDIT = {
+    system: `WICHTIGSTE REGEL: Deine GESAMTE Antwort ist EIN gueltiges JSON-Objekt.
+KEIN Markdown, KEINE Code-Fences um das JSON, KEIN Text davor oder danach.
+Code in Strings: Anfuehrungszeichen und Zeilenumbrueche korrekt escapen (\\n, \\").
+
+Du bist Coding-Bot (Edit-Phase). Du siehst:
+- Aufgabe, Plan, Constraints
+- Geladene Zeilenbereiche aus den zu bearbeitenden Dateien (mit Zeilennummern)
+- change_kind (extend / new / refactor)
+- ggf. Approver-Notiz (hoechste Prioritaet) und Self-Correction-Feedback
+
+Aufgabe: Liefere search/replace-Edits fuer jede Datei.
+
+HARTE REGELN:
+1. Du darfst AUSSCHLIESSLICH Dateien aus "allowed_files" bearbeiten.
+2. Bei action="update": Liefere "edits" mit search/replace.
+   - "search" muss EXAKT im geladenen Zeilenbereich vorkommen (inkl. Whitespace!)
+   - Verwende die Zeilennummern als Orientierung
+   - Nie mehr als ~20 Zeilen pro search-Block
+   - Jeder search-String muss EINDEUTIG sein (nur 1 Treffer im File)
+3. Bei action="create": Liefere "content" (vollstaendig). KEIN "edits"!
+4. Bei action="delete": Liefere nur path und action. KEIN content, KEIN edits!
+5. Erfinde KEINE Imports. Verwende nur Module, die im Code sichtbar sind.
+6. Halte die Aenderung minimal.
+
+Antworte ausschliesslich als JSON:
+{
+  "commit_message": "<Subject in Imperativ>\\n\\n<Body>",
+  "summary": "1-3 Saetze",
+  "branch_name": "feature/ticket-<id>-<slug>",
+  "files": [
+    {
+      "path": "src/foo.js",
+      "action": "create|update|delete",
+      "content": "<nur bei action=create>",
+      "edits": [
+        { "search": "exakter Text", "replace": "neuer Text" }
+      ]
+    }
+  ],
+  "removed_symbols": [],
+  "test_plan": [{ "step": "...", "expected": "..." }],
+  "manual_verification": "...",
+  "risks": ["..."]
+}`,
+    buildUser: ({ ticket, codingLevel, plan, integration, loadedRanges, approverNote, correctionFeedback, systemName, repoInfo }) => {
+        const parts = [];
+        parts.push(`# Coding-Edit — Ticket #${ticket.id}`);
+        parts.push(`Typ: ${ticket.type} | Titel: ${ticket.title} | Level: ${codingLevel || 'medium'}`);
+        if (systemName) parts.push(`System: ${systemName}`);
+        if (repoInfo) parts.push(`Repo: ${repoInfo}`);
+        parts.push('');
+        const allowed = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
+        parts.push(`**change_kind:** \`${plan?.change_kind || 'extend'}\``);
+        parts.push(`**allowed_files (${allowed.length}):** ${allowed.map(p => '`' + p + '`').join(', ')}`);
+        parts.push('');
+        if (plan?.task) {
+            parts.push(`## Aufgabe`);
+            parts.push(plan.task);
+            parts.push('');
+        }
+        if (Array.isArray(integration?.must_follow) && integration.must_follow.length) {
+            parts.push(`**MUST FOLLOW:**\n${integration.must_follow.map(m => '- ' + m).join('\n')}`);
+        }
+        if (Array.isArray(integration?.must_avoid) && integration.must_avoid.length) {
+            parts.push(`**MUST AVOID:**\n${integration.must_avoid.map(m => '- ' + m).join('\n')}`);
+        }
+        if (approverNote && String(approverNote).trim()) {
+            parts.push(`\n## Approver-Notiz (HOECHSTE PRIORITAET)\n${String(approverNote).trim()}`);
+        }
+        if (correctionFeedback && String(correctionFeedback).trim()) {
+            parts.push(`\n## Self-Correction Feedback\n${String(correctionFeedback).trim()}`);
+        }
+        // Geladene Zeilenbereiche
+        if (Array.isArray(loadedRanges) && loadedRanges.length) {
+            parts.push(`\n## GELADENE DATEIBEREICHE (mit Zeilennummern)`);
+            parts.push(`Verwende diese Zeilen fuer deine search-Strings.`);
+            loadedRanges.forEach(f => {
+                const marker = f.exists ? '' : ' (NEU — wird erstellt)';
+                const truncNote = f.truncated ? ' [TRUNCATED]' : '';
+                parts.push(`\n### CURRENT FILE: ${f.path}${marker}${truncNote}`);
+                if (f.content) {
+                    parts.push('```');
+                    const lines = f.content.split('\n');
+                    lines.forEach((line, i) => {
+                        parts.push(`${String(f.startLine + i).padStart(4)} | ${line}`);
+                    });
+                    parts.push('```');
+                } else {
+                    parts.push('(leer)');
+                }
+            });
+        }
+        return parts.join('\n');
+    }
+};
+
+// -----------------------------------------------------------------------------
 // CLARIFIER — Repo-Resolver-Agent: beantwortet open_questions aus Repo
 // -----------------------------------------------------------------------------
 const CLARIFIER = {
@@ -300,4 +496,4 @@ Regeln:
     }
 };
 
-module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING, CLARIFIER };
+module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING, CODING_EXPLORE, CODING_EDIT, CLARIFIER };
