@@ -117,13 +117,25 @@ function renderStageMarkdown(step, ticket) {
             lines.push(String(output.note));
             lines.push('');
         }
-        if (output.architect_explore && (output.architect_explore.findings?.length || output.architect_explore.tool_calls?.length)) {
+        if (output.architect_explore && (output.architect_explore.findings?.length || output.architect_explore.tool_calls?.length || output.architect_explore.non_existent?.length)) {
             const ax = output.architect_explore;
             lines.push('## Architect-Tool-Trace');
             lines.push('');
             if (ax.findings?.length) {
                 lines.push('**Verifizierte Fakten:**');
                 ax.findings.forEach(f => lines.push(`- ${f}`));
+                lines.push('');
+            }
+            if (ax.non_existent?.length) {
+                lines.push('**Verbotene Annahmen** (per Tool geprueft, NICHT vorhanden — nicht im Plan verwenden):');
+                ax.non_existent.forEach(n => lines.push(`- ${n}`));
+                lines.push('');
+            }
+            if (ax.consistency_violations?.length) {
+                lines.push('**⚠ Konsistenz-Warnungen** (Plan widerspricht eigenen Findings):');
+                ax.consistency_violations.forEach(v => {
+                    lines.push(`- Tokens \`${v.hit_tokens.join(', ')}\` im Plan, obwohl: _${v.entry}_`);
+                });
                 lines.push('');
             }
             if (ax.tool_calls?.length) {

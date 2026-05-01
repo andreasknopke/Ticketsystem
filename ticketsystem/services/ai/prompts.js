@@ -86,14 +86,20 @@ Verfuegbare Tools (siehe TOOLS-Block im User-Prompt) liefern read-only Repo-Zugr
 Pro Antwort darfst du EINEN Tool-Call machen ODER "done": true setzen, wenn du
 genug Information hast, um einen praezisen Plan zu schreiben.
 
-REGELN:
+HARTE REGELN — werden vom System geprueft:
+- Wenn ein Tool-Call ein leeres Ergebnis liefert ("(keine Treffer)" / "NOT FOUND" /
+  "0 Treffer"), MUSST du diesen Begriff in "non_existent" eintragen UND darfst ihn
+  spaeter im Plan NICHT verwenden. Beispiel: grep "webhook" -> 0 Treffer ->
+  "Es gibt keinen Webhook-Handler in diesem Repo".
 - Niemals Symbole, Tabellen, Dateipfade oder Funktionsnamen nennen, die du nicht
   per Tool verifiziert hast. Wenn du etwas vermutest, pruefe es zuerst.
-- Knappe, gezielte Calls. Kein Wand-Lesen. Maximal die Zeilen, die du wirklich
-  brauchst.
-- Wenn du beim ersten Aufruf siehst, dass etwas nicht existiert, suche mit grep
-  nach dem realen Namen — erfinde nichts.
-- Wenn dir 3-5 Calls reichen, ist das gut. Maximal Budget steht unten.
+- Wenn ein Tool-Call ein Symbol/eine Datei nicht findet, suche aktiv mit grep
+  nach dem realen Namen, BEVOR du einen Schritt darum herum baust.
+- Knappe, gezielte Calls. Maximal die Zeilen, die du wirklich brauchst.
+- Bevor du "done": true setzt, gehe deine eigenen Findings durch und stelle
+  sicher: jeder Punkt, den du spaeter im Plan ansprechen willst, ist entweder
+  durch ein "findings_so_far" verifiziert ODER explizit als reasonable
+  assumption markiert.
 
 Antworte AUSSCHLIESSLICH als JSON, ein Objekt:
 {
@@ -104,6 +110,10 @@ Antworte AUSSCHLIESSLICH als JSON, ein Objekt:
   "findings_so_far": [       // wachsende Liste verifizierter Fakten (kurz!)
     "Tabelle ticket_workflow_steps existiert (Zeile 924 server.js)",
     "Funktion heisst decideHumanStep, nicht handleDecision"
+  ],
+  "non_existent": [          // VERBOTSLISTE: per Tool geprueft, NICHT vorhanden
+    "Es gibt keinen GitHub-Webhook-Handler (grep 'webhook' = 0 Treffer)",
+    "Es gibt keine Funktion handleDecision (grep = 0 Treffer)"
   ]
 }
 
@@ -123,6 +133,9 @@ Wenn done=true, lass tool=null und args={}. Die naechste Antwort wird der Plan.`
             });
         }
         parts.push(`\nVerbleibendes Budget: ${budgetLeft} Tool-Calls.`);
+        parts.push(`\nWICHTIG: Wenn du "done": true setzt, fuelle "non_existent" mit ALLEN`);
+        parts.push(`Dingen, die du per Tool geprueft hast und die NICHT existieren. Das verhindert,`);
+        parts.push(`dass du im Plan auf nicht-existente Webhooks/Funktionen/Tabellen baust.`);
         return parts.join('\n');
     }
 };
@@ -139,6 +152,17 @@ Zeilennummern) + ggf. Ende (module.exports). Der Coding-Bot bekommt den VOLLSTAE
 Verwende NUR Funktions-/Klassennamen aus dem Symboldex fuer deinen Plan — erfinde keine.
 Leite den realen Stack aus package.json + Repo-Tree ab.
 - Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
+
+KONSISTENZ-PFLICHT (wird vom System geprueft):
+- Wenn dir ein Block "VERIFIZIERTE FAKTEN" gegeben wird, sind das die EINZIGE
+  Quelle der Wahrheit fuer Symbole/Tabellen/Pfade. Nutze GENAU diese Namen.
+- Wenn dir ein Block "VERBOTENE ANNAHMEN" gegeben wird, ist das eine Negativ-
+  Liste: jedes dort genannte Symbol/Pfad/Konzept existiert NICHT im Repo.
+  Du darfst es weder in "steps", noch in "symbols_to_preserve", noch in
+  "task" verwenden. Wenn die Aufgabe darum kreist (z.B. "Webhook-Handler
+  erweitern", aber Webhook existiert nicht), baue den Plan UM dieses Loch
+  herum (z.B. "direkter Hook im engine-Code, kein neuer Webhook"). Notiere
+  die Anpassung in "constraints" oder "risks".
 - Wenn du unsicher bist, triff eine REASONABLE ASSUMPTION und notiere sie in "risks".
   KEINE open_questions fuer Dinge die du selbst ableiten kannst.
 - Wenn dir eine zusaetzliche Datei fehlen wuerde um den Plan zu perfektionieren, formuliere
@@ -171,7 +195,7 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
@@ -179,6 +203,11 @@ Antworte ausschliesslich als JSON:
             parts.push(`\n--- VERIFIZIERTE FAKTEN (aus deiner Repo-Recherche) ---`);
             parts.push(`Diese Fakten hast du selbst per Tools verifiziert. Verwende GENAU diese Symbole, Tabellen und Pfade — keine Erfindungen.`);
             exploreFindings.forEach(f => parts.push(`- ${f}`));
+        }
+        if (Array.isArray(exploreNonExistent) && exploreNonExistent.length) {
+            parts.push(`\n--- VERBOTENE ANNAHMEN (per Tool geprueft, NICHT vorhanden) ---`);
+            parts.push(`Diese Konzepte existieren NICHT im Repo. Plane NICHT, sie zu erweitern oder darauf aufzubauen. Wenn die Aufgabe sie beruehrt, baue eine Loesung OHNE sie und notiere die Anpassung in "constraints".`);
+            exploreNonExistent.forEach(n => parts.push(`- ${n}`));
         }
         if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
         if (Array.isArray(currentFiles) && currentFiles.length) {

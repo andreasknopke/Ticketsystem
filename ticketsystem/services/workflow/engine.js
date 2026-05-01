@@ -548,6 +548,16 @@ function renderPlanMarkdown(out) {
         const calls = out.architect_explore.tool_calls?.length || 0;
         if (calls) lines.push(`\n_Basierend auf ${calls} Tool-Call(s)._`);
     }
+    if (out.architect_explore?.non_existent?.length) {
+        lines.push(`\n**Verbotene Annahmen (per Tool als nicht-existent verifiziert):**`);
+        out.architect_explore.non_existent.forEach(n => lines.push(`- ${n}`));
+    }
+    if (out.architect_explore?.consistency_violations?.length) {
+        lines.push(`\n**⚠ Konsistenz-Warnungen:**`);
+        out.architect_explore.consistency_violations.forEach(v => {
+            lines.push(`- Plan erwaehnt \`${v.hit_tokens.join(', ')}\` trotz Verifizierung: _${v.entry}_`);
+        });
+    }
     return lines.join('\n');
 }
 
@@ -606,6 +616,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     // Tabellen und Datei-Inhalte im Repo verifizieren. Verhindert die typischen
     // Halluzinationen (falsche Tabellennamen, erfundene Funktionen).
     let exploreFindings = [];
+    let exploreNonExistent = [];
     let toolTrace = [];
     let exploreTokens = { prompt: 0, completion: 0 };
     if (ARCHITECT_TOOLS_ENABLED && integration) {
@@ -614,9 +625,10 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             budget: ARCHITECT_TOOLS_BUDGET
         });
         exploreFindings = result.findings;
+        exploreNonExistent = result.nonExistent;
         toolTrace = result.trace;
         exploreTokens = result.tokens;
-        wfInfo(`Stage:PLANNING explore done | calls=${toolTrace.length} findings=${exploreFindings.length} prompt_tok=${exploreTokens.prompt} compl_tok=${exploreTokens.completion}`);
+        wfInfo(`Stage:PLANNING explore done | calls=${toolTrace.length} findings=${exploreFindings.length} non_existent=${exploreNonExistent.length} prompt_tok=${exploreTokens.prompt} compl_tok=${exploreTokens.completion}`);
     } else if (!integration) {
         wfInfo(`Stage:PLANNING explore skipped (no repo integration)`);
     }
@@ -639,7 +651,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         currentFiles: boundaryForOverview,
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo,
-        exploreFindings
+        exploreFindings, exploreNonExistent
     });
 
     let r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -660,7 +672,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 currentFiles: boundaryForOverview,
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo,
-                exploreFindings
+                exploreFindings, exploreNonExistent
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
@@ -677,10 +689,24 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
 
     normalizePlanningOutput(out);
 
+    // Konsistenz-Check: hat der Architect Begriffe verplant, die er selbst
+    // als nicht-existent markiert hatte? Verstoesse landen automatisch in
+    // out.risks und werden geloggt.
+    const consistencyViolations = checkPlanConsistency(out, exploreNonExistent);
+    if (consistencyViolations.length) {
+        out.risks = Array.isArray(out.risks) ? out.risks : [];
+        consistencyViolations.forEach(v => {
+            out.risks.push(`KONSISTENZ-WARNUNG: Plan erwaehnt "${v.hit_tokens.join(', ')}" obwohl der Architect zuvor verifiziert hatte: "${v.entry}". Reviewer/Approver bitte pruefen.`);
+            wfWarn(`PLANNING consistency violation`, `tokens=[${v.hit_tokens.join(',')}] entry="${v.entry.slice(0, 120)}"`);
+        });
+    }
+
     // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
-    if (toolTrace.length || exploreFindings.length) {
+    if (toolTrace.length || exploreFindings.length || exploreNonExistent.length) {
         out.architect_explore = {
             findings: exploreFindings,
+            non_existent: exploreNonExistent,
+            consistency_violations: consistencyViolations,
             tool_calls: toolTrace,
             tokens: exploreTokens
         };
@@ -707,6 +733,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
 async function runArchitectExplore({ ticket, staff, codingPrompt, integration, repoTree, systemName, budget }) {
     const trace = [];
     let findings = [];
+    let nonExistent = [];
     const tokens = { prompt: 0, completion: 0 };
     const repoInfo = `${integration.repo_owner}/${integration.repo_name}`;
     const toolDescriptions = architectTools.describeTools();
@@ -740,8 +767,12 @@ async function runArchitectExplore({ ticket, staff, codingPrompt, integration, r
         if (Array.isArray(parsed.findings_so_far)) {
             findings = parsed.findings_so_far.slice(0, 30).map(f => String(f).slice(0, 400));
         }
+        // Verbotsliste fortschreiben (Dinge, die der Architect per Tool als nicht-existent verifiziert hat)
+        if (Array.isArray(parsed.non_existent)) {
+            nonExistent = parsed.non_existent.slice(0, 20).map(f => String(f).slice(0, 400));
+        }
         if (parsed.done === true || !parsed.tool) {
-            wfInfo(`PLANNING_EXPLORE done after ${i} calls (model says done)`);
+            wfInfo(`PLANNING_EXPLORE done after ${i} calls (model says done) | findings=${findings.length} non_existent=${nonExistent.length}`);
             break;
         }
 
@@ -773,7 +804,42 @@ async function runArchitectExplore({ ticket, staff, codingPrompt, integration, r
             consecutiveErrors = 0;
         }
     }
-    return { findings, trace, tokens };
+    return { findings, nonExistent, trace, tokens };
+}
+
+/**
+ * Konsistenz-Check: prueft, ob der Plan Begriffe verwendet, die der Architect
+ * vorher selbst als 'non_existent' markiert hat. Liefert eine Liste von
+ * Verstoessen (z.B. 'Plan erwaehnt webhook trotz non_existent-Eintrag').
+ * Wir extrahieren aus jedem non_existent-Eintrag die zentralen Schluesselwoerter
+ * (Identifier-aehnliche Tokens) und scannen den Plan-Text danach.
+ */
+function checkPlanConsistency(out, nonExistent) {
+    if (!Array.isArray(nonExistent) || !nonExistent.length) return [];
+    // Plan in einen einzigen Text reduzieren (alle textuellen Felder).
+    const planText = [
+        out.task || '',
+        out.summary || '',
+        ...(Array.isArray(out.steps) ? out.steps.flatMap(s => [s.title || '', s.details || '', ...(Array.isArray(s.files) ? s.files : [])]) : []),
+        ...(Array.isArray(out.symbols_to_preserve) ? out.symbols_to_preserve.map(s => `${s.path || ''} ${s.symbol || ''}`) : []),
+        ...(Array.isArray(out.affected_areas) ? out.affected_areas : []),
+        ...(Array.isArray(out.allowed_files) ? out.allowed_files : [])
+    ].join('\n').toLowerCase();
+
+    const violations = [];
+    for (const entry of nonExistent) {
+        const lower = String(entry).toLowerCase();
+        // Ignoriere generische Negations-Floskeln, picke Identifier-Tokens raus.
+        const tokens = (lower.match(/[a-z_][a-z0-9_]{4,}/g) || [])
+            .filter(t => !['existiert', 'keine', 'kein', 'nicht', 'vorhanden', 'gefunden', 'treffer', 'webhook_handler', 'datei', 'funktion', 'tabelle', 'modul'].includes(t))
+            .filter((t, i, a) => a.indexOf(t) === i);
+        // Pruefe jedes Token einzeln. Hit, wenn das Token im Plan vorkommt.
+        const hits = tokens.filter(t => planText.includes(t));
+        if (hits.length) {
+            violations.push({ entry, hit_tokens: hits.slice(0, 5) });
+        }
+    }
+    return violations;
 }
 
 function renderIntegrationMarkdown(out) {
