@@ -9,16 +9,15 @@
 // TRIAGE — System-Zuordnung + Klarheits-Check (kein Plan, kein Coding)
 // -----------------------------------------------------------------------------
 const TRIAGE = {
-    system: `Du bist Triage Reviewer. Aufgabe in genau dieser Reihenfolge:
-1. Ordne das Ticket einem System aus der Liste zu (anhand von Titel, Beschreibung, software_info/url).
-2. Pruefe, ob das Ticket konkret genug ist, dass ein Architect es planen koennte.
-3. Falls Du etwas selbst aus dem Ticket-Text ableiten kannst, KEINE Rueckfrage stellen.
+    system: `Du bist Triage Reviewer. Aufgabe:
+- Pruefe, ob das Ticket konkret genug ist, dass ein Architect es planen koennte.
+- Falls Du etwas selbst aus dem Ticket-Text ableiten kannst, KEINE Rueckfrage stellen.
 
 Antworte ausschliesslich als JSON:
 {
   "decision": "clear" | "unclear",
   "reason": "1-2 Saetze",
-  "system_id": <integer|null>,
+  "system_id": <integer>,
   "system_match_confidence": "high" | "medium" | "low" | "none",
   "summary": "1 Satz, was zu tun ist",
   "suggested_action": "kurze Handlungsempfehlung",
@@ -27,18 +26,19 @@ Antworte ausschliesslich als JSON:
 
 Regeln:
 - "open_questions" nur, wenn ohne Klaerung eine sinnvolle Loesung unmoeglich ist.
-- Technische Implementierungs-Details (Dateinamen, DB-Felder, Templates) NIEMALS hier abfragen — das macht der Architect.`,
-    buildUser: ({ ticket, systems, preselectedSystem }) => `Ticket:
-- Typ: ${ticket.type}
-- Titel: ${ticket.title}
-- Prioritaet: ${ticket.priority}
-- Dringlichkeit: ${ticket.urgency}
-- Beschreibung:
-${ticket.description || '(leer)'}
-${ticket.software_info ? `\nSoftware-Info / Kontext:\n${ticket.software_info}\n` : ''}
-${preselectedSystem ? `\nWICHTIG: Dieses Ticket ist bereits dem System "${preselectedSystem.name}" (ID: ${preselectedSystem.id}) zugeordnet. DU MUSS dieses System verwenden (system_id: ${preselectedSystem.id}). Weiche NICHT davon ab.\n` : ''}
-Verfuegbare Systeme (id | name | description):
-${(systems || []).map(s => `- ${s.id} | ${s.name} | ${s.description || ''}`).join('\n') || '(keine Systeme konfiguriert)'}`
+- Technische Implementierungs-Details (Dateinamen, DB-Felder, Templates) NIEMALS hier abfragen — das macht der Architect.
+- system_id MUSS die vorgegebene ID sein — du darfst sie NICHT aendern.`,
+    buildUser: ({ ticket, systems, preselectedSystem }) => {
+        const lines = [`Ticket:`, `- Typ: ${ticket.type}`, `- Titel: ${ticket.title}`, `- Prioritaet: ${ticket.priority}`, `- Dringlichkeit: ${ticket.urgency}`, `- Beschreibung:`, `${ticket.description || '(leer)'}`];
+        if (ticket.software_info) lines.push(``, `Software-Info / Kontext:`, `${ticket.software_info}`);
+        if (preselectedSystem) {
+            lines.push(``, `Dieses Ticket ist fest dem System "${preselectedSystem.name}" (ID: ${preselectedSystem.id}) zugeordnet.`, `system_id MUSS ${preselectedSystem.id} sein — NICHT waehlen, nur bestaetigen.`);
+        } else {
+            lines.push(``, `Ordne das Ticket einem System zu. Verfuegbare Systeme (id | name | description):`);
+            (systems || []).forEach(s => lines.push(`- ${s.id} | ${s.name} | ${s.description || ''}`));
+        }
+        return lines.join('\n');
+    }
 };
 
 // -----------------------------------------------------------------------------
