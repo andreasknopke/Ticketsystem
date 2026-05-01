@@ -923,16 +923,8 @@ async function execCoding(ctx, codingLevel) {
     const integration = await resolveIntegration(ctx.ticket);
     wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
 
-    // Dateibaum statt vollem Repo-Kontext (spart Tokens)
-    let repoTree = '';
-    if (integration) {
-        try { repoTree = await fetchRepoTree(integration); } catch (e) { wfWarn(`Stage:CODING repoTree failed`, e.message); }
-    }
-    wfInfo(`Stage:CODING repoTree | lines=${repoTree.split('\n').length}`);
-
     const allowedFiles = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
     const changeKind = ctx.change_kind || 'extend';
-    // Nur existierende Dateien fetchen
     const existingPaths = [];
     let currentFiles = [];
     if (integration && allowedFiles.length) {
@@ -945,20 +937,14 @@ async function execCoding(ctx, codingLevel) {
         }
     }
 
-    // Nur existierende Dateien an den Prompt übergeben, Inhalt auf 15KB pro Datei kappen
-    const existingCurrentFiles = currentFiles.filter(f => f.exists).map(f => ({
-        ...f,
-        content: f.content ? f.content.slice(0, 15000) : '',
-        truncated: f.truncated || (f.content && f.content.length > 15000)
-    }));
+    // Nur existierende Dateien, kein Truncation
+    const existingCurrentFiles = currentFiles.filter(f => f.exists);
 
     let userPrompt = prompts.CODING.buildUser({
         ticket: ctx.ticket,
         codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
-        // Repo-Kontext: Dateibaum statt voller README/docs (spart ~20KB)
-        repoContext: repoTree ? `### Repository-Struktur (Dateibaum)\n\`\`\`\n${repoTree}\n\`\`\`` : '(kein Repo verknüpft)',
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
@@ -967,11 +953,6 @@ async function execCoding(ctx, codingLevel) {
         changeKind,
         currentFiles: existingCurrentFiles
     }) + previousStageContextSuffix(ctx, 'coding');
-    // Prompt auf max 60KB kürzen falls zu groß (Timeout-Gefahr)
-    if (userPrompt.length > 60000) {
-        wfWarn(`Stage:CODING prompt truncated | before=${userPrompt.length}`);
-        userPrompt = userPrompt.slice(0, 60000) + '\n\n[...Prompt truncated due to size limit...]';
-    }
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {

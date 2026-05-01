@@ -189,48 +189,34 @@ Wichtig:
   Richtungswechsel oder spezifische Anforderungen nennt, setze diese VOR allen anderen Vorgaben um.
 - Wenn etwas unklar ist, dokumentiere das in risks und liefere konservative Aenderungen.
 - **ANTWORTE AUSSCHLIESSLICH MIT JSON. Kein "Hier ist das JSON:", kein Markdown, keine Code-Fences.**`,
-    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, repoContext, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => `Ticket #${ticket.id} | Typ: ${ticket.type} | Titel: ${ticket.title}
-Level-Vorgabe: ${level || 'medium'}
-
-Scope-Contract (vom Architect-Plan, HART):
-- change_kind: ${changeKind || 'extend'}
-- allowed_files (Whitelist, ausschliesslich diese Pfade duerfen geaendert werden):
-${(allowedFiles && allowedFiles.length ? allowedFiles.map(p => `  - ${p}`).join('\n') : '  (leer – Coding-Bot MUSS abbrechen)')}
-
-Coding-Prompt:
-${codingPrompt || '(leer)'}
-
-Architect-Plan:
-${plan || '(leer)'}
-
-Integration-Review:
-${integrationAssessment || '(leer)'}
-
-Repository-Kontext (gekuerzt):
-${repoContext || '(kein Repo verknuepft)'}
-
-${currentFiles && currentFiles.length ? `--- AKTUELLE INHALTE DER ZIELDATEIEN (Source of Truth) ---
-${currentFiles.map(f => `\nCURRENT FILE: ${f.path}${f.exists ? '' : ' (NEU – existiert noch nicht)'}\n\`\`\`\n${f.content || ''}\n\`\`\``).join('\n')}
---- ENDE AKTUELLE INHALTE ---
-` : ''}${extraInfo ? `
-
---- Zusatzinformation vom menschlichen Reviewer ---
-${extraInfo}
---- Ende Zusatzinformation ---
-` : ''}${approverNote ? `
-
-============================================================
-⚠️  APPROVER-FEEDBACK (MENSCHLICHE ANWEISUNGEN – HOECHSTE PRIORITAET!)
-============================================================
-Entscheidung: ${approverDecision || 'dispatch'}
-Kommentar des Approvers:
-${approverNote}
-
-BEACHTE: Diese Anweisungen stammen vom menschlichen Approver und muessen
-VOR allen anderen Vorgaben (Plan, Integration-Review, Coding-Prompt)
-umgesetzt werden. Der Approver hat das letzte Wort.
-============================================================
-` : ''}`
+    buildUser: ({ ticket, codingPrompt, plan, integrationAssessment, level, approverNote, approverDecision, extraInfo, allowedFiles, changeKind, currentFiles }) => {
+        const parts = [];
+        parts.push(`Ticket #${ticket.id} | ${ticket.type} | ${ticket.title} | Level: ${level || 'medium'}`);
+        parts.push(`change_kind: ${changeKind || 'extend'}`);
+        if (allowedFiles && allowedFiles.length) {
+            parts.push(`allowed_files: ${allowedFiles.join(', ')}`);
+        }
+        if (codingPrompt) parts.push(`\nAUFGABE:\n${codingPrompt}`);
+        if (plan) {
+            parts.push(`\nPLAN:\n${plan.slice(0, 3000)}`);
+        }
+        if (integrationAssessment) {
+            parts.push(`\nINTEGRATION-REVIEW:\n${integrationAssessment.slice(0, 2000)}`);
+        }
+        if (currentFiles && currentFiles.length) {
+            parts.push(`\n--- SOURCE CODE (aktueller Stand) ---`);
+            currentFiles.forEach(f => {
+                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NEU)'}`);
+                if (f.content) parts.push('```\n' + f.content + '\n```');
+                else parts.push('(leer)');
+            });
+        }
+        if (extraInfo) parts.push(`\nZUSATZINFO:\n${extraInfo}`);
+        if (approverNote) {
+            parts.push(`\n⚠️ APPROVER (höchste Priorität!):\n${approverNote}`);
+        }
+        return parts.join('\n');
+    }
 };
 
 module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING };
