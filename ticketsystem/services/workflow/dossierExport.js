@@ -117,6 +117,41 @@ function renderStageMarkdown(step, ticket) {
             lines.push(String(output.note));
             lines.push('');
         }
+        if (output.architect_explore && (output.architect_explore.findings?.length || output.architect_explore.tool_calls?.length)) {
+            const ax = output.architect_explore;
+            lines.push('## Architect-Tool-Trace');
+            lines.push('');
+            if (ax.findings?.length) {
+                lines.push('**Verifizierte Fakten:**');
+                ax.findings.forEach(f => lines.push(`- ${f}`));
+                lines.push('');
+            }
+            if (ax.tool_calls?.length) {
+                lines.push(`**Tool-Calls (${ax.tool_calls.length}):**`);
+                lines.push('');
+                ax.tool_calls.forEach(c => {
+                    lines.push(`### #${c.iteration} — \`${c.tool}\``);
+                    if (c.thought) lines.push(`_${c.thought}_`);
+                    lines.push('');
+                    lines.push('Args:');
+                    lines.push(fmtJson(c.args || {}));
+                    if (c.error) {
+                        lines.push('Fehler:');
+                        lines.push('```');
+                        lines.push(String(c.error));
+                        lines.push('```');
+                    } else if (c.result) {
+                        lines.push('Result (gekuerzt):');
+                        lines.push('```');
+                        lines.push(String(c.result).slice(0, 1500));
+                        lines.push('```');
+                    }
+                    lines.push('');
+                });
+            }
+            if (ax.tokens) lines.push(`_Tokens: prompt=${ax.tokens.prompt || 0}, completion=${ax.tokens.completion || 0}_`);
+            lines.push('');
+        }
         // Volldump als Anhang
         lines.push('## Vollstaendiges Output-Payload');
         lines.push('');

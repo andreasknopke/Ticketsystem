@@ -73,6 +73,61 @@ Triage-Empfehlung: ${triageAction || '-'}`
 };
 
 // -----------------------------------------------------------------------------
+// PLANNING_EXPLORE (Architect, Pre-Plan) — ReAct-Loop mit Tools
+// Ziel: Bevor der Architect den finalen Plan schreibt, kann er gezielt
+// Symbole/Tabellen/Dateien im Repo nachschlagen, statt zu raten. Der Loop
+// laeuft so lange, bis der Architect "done": true antwortet (oder Budget aus).
+// -----------------------------------------------------------------------------
+const PLANNING_EXPLORE = {
+    system: `Du bist Solution Architect im Recherche-Modus. Bevor du einen Plan schreibst,
+verifizierst du ALLE technischen Annahmen mit den dir verfuegbaren Tools.
+
+Verfuegbare Tools (siehe TOOLS-Block im User-Prompt) liefern read-only Repo-Zugriff.
+Pro Antwort darfst du EINEN Tool-Call machen ODER "done": true setzen, wenn du
+genug Information hast, um einen praezisen Plan zu schreiben.
+
+REGELN:
+- Niemals Symbole, Tabellen, Dateipfade oder Funktionsnamen nennen, die du nicht
+  per Tool verifiziert hast. Wenn du etwas vermutest, pruefe es zuerst.
+- Knappe, gezielte Calls. Kein Wand-Lesen. Maximal die Zeilen, die du wirklich
+  brauchst.
+- Wenn du beim ersten Aufruf siehst, dass etwas nicht existiert, suche mit grep
+  nach dem realen Namen — erfinde nichts.
+- Wenn dir 3-5 Calls reichen, ist das gut. Maximal Budget steht unten.
+
+Antworte AUSSCHLIESSLICH als JSON, ein Objekt:
+{
+  "thought": "1-2 Saetze: was willst du jetzt verifizieren und warum",
+  "tool": "list_tree" | "list_dir" | "read_file" | "grep" | null,
+  "args": { ... },           // Tool-Argumente, oder {} wenn done
+  "done": false,             // true = du hast genug, faellst zurueck zum Plan-Schreiben
+  "findings_so_far": [       // wachsende Liste verifizierter Fakten (kurz!)
+    "Tabelle ticket_workflow_steps existiert (Zeile 924 server.js)",
+    "Funktion heisst decideHumanStep, nicht handleDecision"
+  ]
+}
+
+Wenn done=true, lass tool=null und args={}. Die naechste Antwort wird der Plan.`,
+    buildUser: ({ codingPrompt, repoTree, toolDescriptions, history, budgetLeft, systemName, repoInfo }) => {
+        const parts = [];
+        if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
+        parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+        parts.push(`\n--- TOOLS ---\n${toolDescriptions}`);
+        if (repoTree) parts.push(`\n--- REPO-TREE (zum Orientieren) ---\n${repoTree}`);
+        if (Array.isArray(history) && history.length) {
+            parts.push(`\n--- BISHERIGE TOOL-CALLS ---`);
+            history.forEach((h, i) => {
+                parts.push(`\n#${i + 1} ${h.tool}(${JSON.stringify(h.args || {})})`);
+                parts.push(`THOUGHT: ${h.thought || ''}`);
+                parts.push(`RESULT:\n${h.result || h.error || ''}`);
+            });
+        }
+        parts.push(`\nVerbleibendes Budget: ${budgetLeft} Tool-Calls.`);
+        return parts.join('\n');
+    }
+};
+
+// -----------------------------------------------------------------------------
 // PLANNING (Architect) — konkreter Plan + Whitelist + Symbol-Constraints
 // -----------------------------------------------------------------------------
 const PLANNING = {
@@ -116,10 +171,15 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+        if (Array.isArray(exploreFindings) && exploreFindings.length) {
+            parts.push(`\n--- VERIFIZIERTE FAKTEN (aus deiner Repo-Recherche) ---`);
+            parts.push(`Diese Fakten hast du selbst per Tools verifiziert. Verwende GENAU diese Symbole, Tabellen und Pfade — keine Erfindungen.`);
+            exploreFindings.forEach(f => parts.push(`- ${f}`));
+        }
         if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
         if (Array.isArray(currentFiles) && currentFiles.length) {
             parts.push(`\n--- AUSGEWAEHLTE SOURCE-FILES (read-only, ggf. gekuerzt) ---`);
@@ -511,4 +571,4 @@ Regeln:
     }
 };
 
-module.exports = { TRIAGE, SECURITY, PLANNING, INTEGRATION, CODING, CODING_EXPLORE, CODING_EDIT, CLARIFIER };
+module.exports = { TRIAGE, SECURITY, PLANNING_EXPLORE, PLANNING, INTEGRATION, CODING, CODING_EXPLORE, CODING_EDIT, CLARIFIER };

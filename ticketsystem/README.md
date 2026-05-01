@@ -183,6 +183,15 @@ GITHUB_DEFAULT_TOKEN=
 AI_PLANNER_TWO_PASS=1
 REPO_BOUNDARY_FILES=
 
+# Architect-Tools (Stage 3 / Planning)
+# Vor dem eigentlichen Plan-Schreiben darf der Solution-Architect das Repo via
+# Read-only-Tools (list_tree, list_dir, read_file, grep) gezielt verifizieren.
+# Verhindert Halluzinationen (falsche Tabellennamen, erfundene Funktionen).
+# - ARCHITECT_TOOLS_ENABLED=true (Default): ReAct-Loop aktiv
+# - ARCHITECT_TOOLS_BUDGET=6 (Default): max. Tool-Calls pro Planning-Run
+ARCHITECT_TOOLS_ENABLED=true
+ARCHITECT_TOOLS_BUDGET=6
+
 # Coding-Bots: Auto-PR (Schreibzugriff ins Repo)
 # - true (Default): Bots mit auto_commit_enabled=1 und Repo-Token oeffnen automatisch einen PR
 # - false: nur Artefakte (commit_message, test_plan, geaenderte Dateien) als Download

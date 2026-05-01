@@ -165,6 +165,10 @@ const {
 const { runCodeChecks } = require('./codeChecks');
 const { buildCodingBriefing, buildCorrectionFeedback, MAX_PROMPT_BYTES } = require('./briefing');
 const dossierExport = require('./dossierExport');
+const architectTools = require('../ai/architectTools');
+
+const ARCHITECT_TOOLS_ENABLED = process.env.ARCHITECT_TOOLS_ENABLED !== 'false';
+const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) || 6;
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = 1; // Aider-Style: 1 Versuch + 1 Korrektur
@@ -503,6 +507,12 @@ function renderPlanMarkdown(out) {
         out.risks.forEach(r => lines.push(`- ${r}`));
     }
     if (out.estimated_effort) lines.push(`\n**Aufwand:** ${out.estimated_effort}`);
+    if (out.architect_explore?.findings?.length) {
+        lines.push(`\n**Verifizierte Fakten (Architect-Tools):**`);
+        out.architect_explore.findings.forEach(f => lines.push(`- ${f}`));
+        const calls = out.architect_explore.tool_calls?.length || 0;
+        if (calls) lines.push(`\n_Basierend auf ${calls} Tool-Call(s)._`);
+    }
     return lines.join('\n');
 }
 
@@ -556,6 +566,26 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
 
     const codingPrompt = securityBundle?.coding_prompt || ticket.coding_prompt || ticket.redacted_description || ticket.description;
 
+    // ---- Architect-Tools (ReAct-Loop) -----------------------------------
+    // Vor dem eigentlichen Plan-Schreiben darf der Architect gezielt Symbole,
+    // Tabellen und Datei-Inhalte im Repo verifizieren. Verhindert die typischen
+    // Halluzinationen (falsche Tabellennamen, erfundene Funktionen).
+    let exploreFindings = [];
+    let toolTrace = [];
+    let exploreTokens = { prompt: 0, completion: 0 };
+    if (ARCHITECT_TOOLS_ENABLED && integration) {
+        const result = await runArchitectExplore({
+            ticket, staff, codingPrompt, integration, repoTree, systemName,
+            budget: ARCHITECT_TOOLS_BUDGET
+        });
+        exploreFindings = result.findings;
+        toolTrace = result.trace;
+        exploreTokens = result.tokens;
+        wfInfo(`Stage:PLANNING explore done | calls=${toolTrace.length} findings=${exploreFindings.length} prompt_tok=${exploreTokens.prompt} compl_tok=${exploreTokens.completion}`);
+    } else if (!integration) {
+        wfInfo(`Stage:PLANNING explore skipped (no repo integration)`);
+    }
+
     // Boundary-Files laden (kleiner Kontext, damit der Architect sich orientieren kann)
     const boundary = (process.env.REPO_BOUNDARY_FILES || 'ticketsystem/package.json,ticketsystem/server.js,ticketsystem/README.md').split(',').map(s => s.trim()).filter(Boolean);
     let currentFiles = [];
@@ -573,7 +603,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         codingPrompt, repoTree,
         currentFiles: boundaryForOverview,
         resolverAnswers: '',
-        systemName, repoInfo: planningRepoInfo
+        systemName, repoInfo: planningRepoInfo,
+        exploreFindings
     });
 
     let r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -593,7 +624,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 codingPrompt, repoTree,
                 currentFiles: boundaryForOverview,
                 resolverAnswers: resolverAnswersText,
-                systemName, repoInfo: planningRepoInfo
+                systemName, repoInfo: planningRepoInfo,
+                exploreFindings
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
@@ -610,6 +642,15 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
 
     normalizePlanningOutput(out);
 
+    // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
+    if (toolTrace.length || exploreFindings.length) {
+        out.architect_explore = {
+            findings: exploreFindings,
+            tool_calls: toolTrace,
+            tokens: exploreTokens
+        };
+    }
+
     const planMd = renderPlanMarkdown(out);
     await run(`UPDATE tickets SET implementation_plan = ? WHERE id = ?`, [planMd, ticket.id]);
     out.markdown = planMd;
@@ -618,6 +659,86 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     ];
     wfInfo(`Stage:PLANNING done | allowed_files=${out.allowed_files.length} change_kind=${out.change_kind} steps=${out.steps.length} open_q=${(out.open_questions || []).length}`);
     return { output: out, ai: r };
+}
+
+/**
+ * ReAct-Loop fuer den Architect: erlaubt gezielte Tool-Calls
+ * (list_tree, list_dir, read_file, grep) bevor der finale Plan geschrieben wird.
+ * Liefert eine Liste verifizierter Fakten ("findings") und einen Tool-Trace.
+ *
+ * Loop-Ende: model setzt "done": true ODER Budget aufgebraucht ODER zwei
+ * Fehlversuche in Folge.
+ */
+async function runArchitectExplore({ ticket, staff, codingPrompt, integration, repoTree, systemName, budget }) {
+    const trace = [];
+    let findings = [];
+    const tokens = { prompt: 0, completion: 0 };
+    const repoInfo = `${integration.repo_owner}/${integration.repo_name}`;
+    const toolDescriptions = architectTools.describeTools();
+    let consecutiveErrors = 0;
+
+    for (let i = 0; i < budget; i++) {
+        const userPrompt = prompts.PLANNING_EXPLORE.buildUser({
+            codingPrompt, repoTree, toolDescriptions,
+            history: trace, budgetLeft: budget - i,
+            systemName, repoInfo
+        });
+        let r;
+        try {
+            r = await callAIWithStaff(staff, {
+                systemPrompt: prompts.PLANNING_EXPLORE.system,
+                userPrompt,
+                json: true
+            });
+        } catch (e) {
+            wfWarn(`PLANNING_EXPLORE call failed`, e.message);
+            break;
+        }
+        tokens.prompt += r?.prompt_tokens || 0;
+        tokens.completion += r?.completion_tokens || 0;
+        const parsed = r?.parsed;
+        if (!parsed || typeof parsed !== 'object') {
+            wfWarn(`PLANNING_EXPLORE non-parseable response, aborting loop`);
+            break;
+        }
+        // Findings fortschreiben (jeder Schritt liefert eine wachsende Liste)
+        if (Array.isArray(parsed.findings_so_far)) {
+            findings = parsed.findings_so_far.slice(0, 30).map(f => String(f).slice(0, 400));
+        }
+        if (parsed.done === true || !parsed.tool) {
+            wfInfo(`PLANNING_EXPLORE done after ${i} calls (model says done)`);
+            break;
+        }
+
+        const toolName = String(parsed.tool || '').trim();
+        const toolArgs = parsed.args && typeof parsed.args === 'object' ? parsed.args : {};
+        const toolResult = await architectTools.runTool({
+            name: toolName, args: toolArgs, integration
+        });
+        // Result trunkieren fuer den Trace (sonst blaeht es den naechsten Prompt auf)
+        const resultStr = toolResult.result ? String(toolResult.result).slice(0, 4000) : null;
+        const errorStr = toolResult.error ? String(toolResult.error).slice(0, 400) : null;
+        trace.push({
+            iteration: i + 1,
+            thought: parsed.thought || '',
+            tool: toolName,
+            args: toolArgs,
+            result: resultStr,
+            error: errorStr
+        });
+        wfInfo(`PLANNING_EXPLORE call #${i + 1} | tool=${toolName} ok=${!errorStr}`);
+
+        if (errorStr) {
+            consecutiveErrors++;
+            if (consecutiveErrors >= 2) {
+                wfWarn(`PLANNING_EXPLORE 2 consecutive errors, aborting loop`);
+                break;
+            }
+        } else {
+            consecutiveErrors = 0;
+        }
+    }
+    return { findings, trace, tokens };
 }
 
 function renderIntegrationMarkdown(out) {
