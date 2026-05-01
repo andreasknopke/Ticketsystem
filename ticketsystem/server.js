@@ -3070,7 +3070,7 @@ const CODING_LEVEL_LABELS = {
     medium: 'Medium (GPT-5.4 / DeepSeek V4 / Kimi 2.6 Niveau)',
     high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
-const AI_PROVIDERS = ['deepseek', 'ollama', 'openai', 'openai_local', 'anthropic', 'copilot', 'mistral'];
+const AI_PROVIDERS = ['deepseek', 'ollama', 'openai', 'openai_local', 'anthropic', 'copilot', 'mistral', 'clarifai'];
 
 function parseRepoInput(repoUrlOrOwner, repoNameRaw) {
     let repo_owner = repoUrlOrOwner ? String(repoUrlOrOwner).trim() : '';

@@ -63,6 +63,14 @@ const CONFIG = {
         baseUrl: (env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, ''),
         apiKey: normalizeApiKey(env.MISTRAL_API_KEY),
         defaultModel: env.MISTRAL_MODEL || 'mistral-large-latest'
+    },
+    clarifai: {
+        // OpenAI-kompatibler Endpoint via https://api.clarifai.com/v2/ext/openai/v1
+        // Authentifizierung: Authorization: Key YOUR_PAT (nicht Bearer!)
+        // Verfügbare Modelle: Kimi-k2.6, GPT-OSS-120B, etc.
+        baseUrl: (env.CLARIFAI_BASE_URL || 'https://api.clarifai.com/v2/ext/openai/v1').replace(/\/$/, ''),
+        apiKey: normalizeApiKey(env.CLARIFAI_PAT),
+        defaultModel: env.CLARIFAI_MODEL || 'kimi-k2-6'
     }
 };
 
@@ -82,7 +90,8 @@ const PROVIDER_MAX_TOKENS = {
     // max_model_len = 32768 fahren. Per Env hochregeln, wenn das Modell
     // mehr kann.
     openai_local: parseInt(env.AI_OPENAI_LOCAL_MAX_TOKENS, 10) || 16384,
-    ollama: parseInt(env.AI_OLLAMA_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS
+    ollama: parseInt(env.AI_OLLAMA_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    clarifai: parseInt(env.AI_CLARIFAI_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS
 };
 
 function resolveMaxTokens(provider, requested) {
@@ -120,7 +129,9 @@ async function callOpenAICompatible(provider, opts) {
     const url = `${cfg.baseUrl}/chat/completions`;
     assertAllowed(url);
     const headers = { 'Content-Type': 'application/json' };
-    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    if (cfg.apiKey) {
+        headers['Authorization'] = provider === 'clarifai' ? `Key ${cfg.apiKey}` : `Bearer ${cfg.apiKey}`;
+    }
     const model = opts.model || cfg.defaultModel;
     const body = {
         model,
@@ -247,6 +258,9 @@ async function chat(opts) {
     }
     if (provider === 'mistral' && !CONFIG.mistral.apiKey) {
         throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
+    }
+    if (provider === 'clarifai' && !CONFIG.clarifai.apiKey) {
+        throw new Error('AI clarifai: CLARIFAI_PAT ist nicht gesetzt');
     }
     return callOpenAICompatible(provider, opts);
 }
@@ -542,7 +556,8 @@ function getConfigSummary() {
         openai_local: { base_url: CONFIG.openai_local.baseUrl, model: CONFIG.openai_local.defaultModel, configured: true },
         anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
         copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken },
-        mistral: { base_url: CONFIG.mistral.baseUrl, model: CONFIG.mistral.defaultModel, configured: !!CONFIG.mistral.apiKey }
+        mistral: { base_url: CONFIG.mistral.baseUrl, model: CONFIG.mistral.defaultModel, configured: !!CONFIG.mistral.apiKey },
+        clarifai: { base_url: CONFIG.clarifai.baseUrl, model: CONFIG.clarifai.defaultModel, configured: !!CONFIG.clarifai.apiKey }
     };
 }
 
