@@ -81,8 +81,10 @@ const PLANNING = {
 Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files).
 Leite den realen Stack aus package.json + Repo-Tree ab.
 - Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
-- Wenn du weitere Files brauchst, die du nicht siehst, formuliere eine Frage in "open_questions"
-  (sie wird automatisch von einem Repo-Resolver beantwortet — KEINE Frage an Menschen).
+- Wenn du unsicher bist, triff eine REASONABLE ASSUMPTION und notiere sie in "risks".
+  KEINE open_questions fuer Dinge die du selbst ableiten kannst.
+- Wenn dir eine zusaetzliche Datei fehlen wuerde um den Plan zu perfektionieren, formuliere
+  eine "open_questions"-Eintrag (wird automatisch vom Repo-Resolver beantwortet — KEINE Frage an Menschen).
 - Beispiele fuer gute Resolver-Fragen:
   * "Welche Spalten hat die Tabelle workflow_steps in services/db/schema.sql?"
   * "Wo ist die Funktion <foo> definiert?"
@@ -143,8 +145,10 @@ Bewertungskriterien:
   * "medium" = klassische Aufgabe, klare Anforderung, geringe Komplexitaet
   * "high" = komplexe Architekturentscheidung, mehrere Module, hohe Risiken
 
-Wenn dir Infos fehlen, formuliere eine "open_questions"-Eintrag — der wird automatisch
-vom Repo-Resolver beantwortet. KEINE Fragen an Menschen.
+Wenn dir Infos fehlen, triff eine reasonable assumption und notiere sie.
+Nur fuer TECHNISCHE Fakten die aus dem Repo beantwortbar sein koennten, formuliere
+eine "open_questions"-Eintrag — der wird automatisch vom Repo-Resolver beantwortet.
+KEINE Fragen an Menschen.
 
 Antworte ausschliesslich als JSON:
 {
@@ -248,13 +252,15 @@ Antworte ausschliesslich als JSON:
 }
 
 Regeln:
-- Sei konservativ: lieber 1-2 Files anfordern und dann antworten, als blind raten.
-- Wenn der Repo-Tree die Antwort schon zeigt (z.B. "existiert datei X" und der Tree listet sie), antworte direkt.
-- "unresolved" nur fuer Fragen, die fachliche/produktbezogene Entscheidungen brauchen — nicht
-  fuer technische Fakten.`,
-    buildUser: ({ questions, repoTree, loadedFiles, iteration, maxIterations }) => {
+- Sei EFFIZIENT: Wenn der Repo-Tree die Antwort zeigt (z.B. "existiert datei X"), antworte direkt OHNE Files zu laden.
+- Wenn Files geladen sind, antworte SOFORT — keine weitere Iteration fuer extra Files.
+- In der LETZTEN Iteration (iteration === maxIterations) MUSS action="answer" sein.
+- Antworte mit confidence="low" wenn du unsicher bist, aber antworte IMMER.
+- "unresolved" NUR fuer produktbezogene/fachliche Entscheidungen die kein Code-File beantworten kann.`,
+    buildUser: ({ questions, repoTree, loadedFiles, iteration, maxIterations, forceAnswer }) => {
         const parts = [];
         parts.push(`ITERATION ${iteration}/${maxIterations}`);
+        if (forceAnswer) parts.push(`\nWICHTIG: Du MUSST jetzt antworten (action="answer"). Keine weiteren Files anfordern. Antworte mit confidence="low" wenn unsicher.`);
         parts.push(`\nOFFENE FRAGEN:`);
         questions.forEach((q, i) => parts.push(`${i + 1}. ${q}`));
         if (repoTree) parts.push(`\n--- REPO-TREE ---\n${repoTree}`);

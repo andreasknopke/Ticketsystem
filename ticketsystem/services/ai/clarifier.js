@@ -14,8 +14,8 @@
 //     -> { answers: [...], unresolved: [...], filesLoaded: [...], iterations: N }
 
 const MAX_ITERATIONS = 3;
-const MAX_FILES_TOTAL = 5;
-const MAX_FILES_PER_ITERATION = 5;
+const MAX_FILES_TOTAL = parseInt(process.env.CLARIFIER_MAX_FILES, 10) || 10;
+const MAX_FILES_PER_ITERATION = parseInt(process.env.CLARIFIER_MAX_FILES_PER_ITER, 10) || 5;
 
 function log(msg, data) {
     const ts = new Date().toISOString();
@@ -62,13 +62,16 @@ async function resolveQuestions({ questions, integration, repoTree, staff, callA
     let unresolved = [];
     let iter = 0;
 
+    let forceAnswer = false;
+
     for (iter = 1; iter <= MAX_ITERATIONS; iter++) {
         const userPrompt = prompts.CLARIFIER.buildUser({
             questions,
             repoTree,
             loadedFiles: loaded,
             iteration: iter,
-            maxIterations: MAX_ITERATIONS
+            maxIterations: MAX_ITERATIONS,
+            forceAnswer: forceAnswer || iter === MAX_ITERATIONS
         });
         log(`Iter ${iter}/${MAX_ITERATIONS} | userPrompt_len=${userPrompt.length} loaded=${loaded.length}`);
 
@@ -102,9 +105,8 @@ async function resolveQuestions({ questions, integration, repoTree, staff, callA
             log(`Iter ${iter} REQUEST_FILES | requested=${parsed.request_paths.length} new=${want.length} fetch=${toFetch.length} budget_left=${remainingBudget}`);
 
             if (!toFetch.length) {
-                // Modell will weiter Files, aber Budget ist leer — letzten Versuch in
-                // einer "answer"-Iteration mit dem, was wir haben
                 log(`Iter ${iter} BUDGET_EXHAUSTED | force final answer next iter`);
+                forceAnswer = true;
                 continue;
             }
 
@@ -137,10 +139,19 @@ async function resolveQuestions({ questions, integration, repoTree, staff, callA
     }
 
     if (iter > MAX_ITERATIONS) {
-        log(`MAX_ITERATIONS_REACHED | questions=${questions.length} answers=${answers.length}`);
-        // Fragen, die noch keine Antwort haben, gelten als unresolved
+        log(`MAX_ITERATIONS_REACHED | questions=${questions.length} answers=${answers.length} — auto-answering remaining with low confidence`);
         const answered = new Set(answers.map(a => String(a.question || '').trim()));
-        unresolved = questions.filter(q => !answered.has(String(q).trim()));
+        questions.forEach(q => {
+            if (!answered.has(String(q).trim())) {
+                answers.push({
+                    question: String(q),
+                    answer: 'Keine abschliessende Antwort aus dem Repo ermittelbar — der Architect sollte eine angemessene Annahme treffen.',
+                    sources: loaded.map(f => f.path),
+                    confidence: 'low'
+                });
+            }
+        });
+        unresolved = [];
     }
 
     log(`DONE | iterations=${iter} answers=${answers.length} unresolved=${unresolved.length} filesLoaded=${loaded.length}`);

@@ -452,7 +452,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         });
         if (resolver.answers.length) {
             resolverAnswersText = formatAnswersForPrompt(resolver);
-            wfInfo(`Stage:PLANNING re-running with resolver answers | answered=${resolver.answers.length}`);
+            wfInfo(`Stage:PLANNING re-running with resolver answers | answered=${resolver.answers.length} unresolved=${resolver.unresolved.length}`);
             userPrompt = prompts.PLANNING.buildUser({
                 codingPrompt, repoTree,
                 currentFiles: currentFiles.filter(f => f.exists),
@@ -461,11 +461,14 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
-            // Nur tatsaechlich unloesbare Fragen weiterreichen
-            out.open_questions = normalizeQuestions(resolver.unresolved);
+            // Nach Resolver-Re-Run: keine offenen Fragen mehr.
+            // Verbleibende unresolved-Fragen sind fachlicher Natur —
+            // der Architect muss selbst entscheiden, nicht den Menschen fragen.
+            out.open_questions = [];
         } else {
-            // Resolver hat nicht geholfen — open_questions bleiben fuer den Mensch
-            out.open_questions = normalizeQuestions(resolver.unresolved.length ? resolver.unresolved : out.open_questions);
+            // Resolver hat gar nichts beantwortet — Architect ohne Zusatzinfos neu starten,
+            // ebenfalls ohne open_questions (selbst entscheiden)
+            out.open_questions = [];
         }
     }
 
@@ -540,16 +543,16 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
         });
         if (resolver.answers.length) {
             const ansText = formatAnswersForPrompt(resolver);
-            wfInfo(`Stage:INTEGRATION re-running with resolver answers | answered=${resolver.answers.length}`);
+            wfInfo(`Stage:INTEGRATION re-running with resolver answers | answered=${resolver.answers.length} unresolved=${resolver.unresolved.length}`);
             userPrompt = prompts.INTEGRATION.buildUser({
                 plan: planMd, projectDocs, resolverAnswers: ansText,
                 systemName, repoInfo: integrationRepoInfo
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
             out = r.parsed || out;
-            out.open_questions = normalizeQuestions(resolver.unresolved);
+            out.open_questions = [];
         } else {
-            out.open_questions = normalizeQuestions(resolver.unresolved.length ? resolver.unresolved : out.open_questions);
+            out.open_questions = [];
         }
     }
 
