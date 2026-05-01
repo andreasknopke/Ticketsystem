@@ -6,7 +6,7 @@ const aiClient = require('../ai/client');
 const prompts = require('../ai/prompts');
 const { redact } = require('../ai/redact');
 const { pickStaffForRole } = require('./assignment');
-const { fetchRepoContext, fetchFilesFromRepo, commitFilesAsPR } = require('./githubContext');
+const { fetchRepoContext, fetchFilesFromRepo, commitFilesAsPR, fetchRepoTree } = require('./githubContext');
 const { runCodeChecks } = require('./codeChecks');
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
@@ -923,37 +923,45 @@ async function execCoding(ctx, codingLevel) {
     const integration = await resolveIntegration(ctx.ticket);
     wfInfo(`Stage:CODING integration | found=${!!integration} owner=${integration?.repo_owner || '-'} repo=${integration?.repo_name || '-'} hasToken=${!!integration?.access_token} defaultToken=${!!process.env.GITHUB_DEFAULT_TOKEN}`);
 
-    const repoCtx = await fetchRepoContext(integration);
-    wfInfo(`Stage:CODING repoContext | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
+    // Dateibaum statt vollem Repo-Kontext (spart Tokens)
+    let repoTree = '';
+    if (integration) {
+        try { repoTree = await fetchRepoTree(integration); } catch (e) { wfWarn(`Stage:CODING repoTree failed`, e.message); }
+    }
+    wfInfo(`Stage:CODING repoTree | lines=${repoTree.split('\n').length}`);
 
     const allowedFiles = Array.isArray(ctx.allowed_files) ? ctx.allowed_files : [];
     const changeKind = ctx.change_kind || 'extend';
+    // Nur existierende Dateien fetchen
+    const existingPaths = [];
     let currentFiles = [];
     if (integration && allowedFiles.length) {
         try {
             currentFiles = await fetchFilesFromRepo(integration, allowedFiles);
-            wfInfo(`Stage:CODING currentFiles | requested=${allowedFiles.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
+            currentFiles.forEach(f => { if (f.exists) existingPaths.push(f.path); });
+            wfInfo(`Stage:CODING currentFiles | requested=${allowedFiles.length} existing=${existingPaths.length}`);
         } catch (e) {
             wfWarn(`Stage:CODING currentFiles fetch failed`, e.message);
         }
-    } else {
-        wfWarn(`Stage:CODING currentFiles SKIP | hasIntegration=${!!integration} allowedFiles=${allowedFiles.length}`);
     }
+
+    // Nur existierende Dateien an den Prompt übergeben
+    const existingCurrentFiles = currentFiles.filter(f => f.exists);
 
     const userPrompt = prompts.CODING.buildUser({
         ticket: ctx.ticket,
         codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
-        // Repo-Kontext auf max 3000 Zeichen kürzen – currentFiles hat die aktuellen Dateiinhalte
-        repoContext: (repoCtx.repoContext || '').slice(0, 3000),
+        // Repo-Kontext: Dateibaum statt voller README/docs (spart ~20KB)
+        repoContext: repoTree ? `### Repository-Struktur (Dateibaum)\n\`\`\`\n${repoTree}\n\`\`\`` : '(kein Repo verknüpft)',
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
         extraInfo: ctx.extra_info || null,
-        allowedFiles,
+        allowedFiles: existingPaths,
         changeKind,
-        currentFiles
+        currentFiles: existingCurrentFiles
     }) + previousStageContextSuffix(ctx, 'coding');
     // Prompt auf max 60KB kürzen falls zu groß (Timeout-Gefahr)
     if (userPrompt.length > 60000) {

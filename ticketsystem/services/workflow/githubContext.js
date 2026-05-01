@@ -121,7 +121,7 @@ async function fetchRepoContext(integration) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo };
+module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree };
 
 /**
  * Laedt den aktuellen Inhalt einer Liste von Dateien aus dem verknuepften Repo.
@@ -153,6 +153,52 @@ async function fetchFilesFromRepo(integration, paths) {
         out.push({ path, exists: true, content, truncated });
     }
     return out;
+}
+
+/**
+ * Lädt rekursiv die Verzeichnisstruktur (nur Dateinamen, keine Inhalte).
+ * Maximale Tiefe: 3 Ebenen. Ergebnis ist ein formatierter Text-Baum.
+ * Spart massiv Tokens im Vergleich zu fetchRepoContext für Coding-Prompts.
+ */
+async function fetchRepoTree(integration, maxDepth = 3) {
+    if (!integration || !integration.repo_owner || !integration.repo_name) return '';
+    const client = getOctokit(integration.access_token);
+    const owner = integration.repo_owner;
+    const repo = integration.repo_name;
+
+    async function listDir(prefix, depth) {
+        if (depth > maxDepth) return [];
+        const data = await safeGetContent(client, owner, repo, prefix);
+        if (!data || !Array.isArray(data)) return [];
+        const lines = [];
+        const dirs = data.filter(e => e.type === 'dir').sort((a, b) => a.name.localeCompare(b.name));
+        const files = data.filter(e => e.type === 'file').sort((a, b) => a.name.localeCompare(b.name));
+        for (const f of files.slice(0, 50)) {
+            const path = prefix ? `${prefix}/${f.name}` : f.name;
+            lines.push(path);
+        }
+        for (const d of dirs.slice(0, 10)) {
+            const path = prefix ? `${prefix}/${d.name}` : d.name;
+            const children = await listDir(path, depth + 1);
+            if (children.length) {
+                lines.push(`${path}/`);
+                children.forEach(c => lines.push(`  ${c}`));
+            } else {
+                lines.push(`${path}/`);
+            }
+        }
+        return lines;
+    }
+
+    const tree = await listDir('', 1);
+    // Suche nach Subdirectory wie ticketsystem/ und liste es ebenfalls
+    const subMatch = tree.find(l => SUBDIR_FALLBACKS.some(s => l === `${s}/`));
+    if (subMatch) {
+        const subName = subMatch.replace(/\/$/, '');
+        const subTree = await listDir(subName, 1);
+        subTree.forEach(l => tree.push(l.startsWith(subName) ? l : `  ${l}`));
+    }
+    return tree.join('\n');
 }
 
 /**
