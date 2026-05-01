@@ -18,14 +18,14 @@ Antworte ausschliesslich als JSON mit Feldern:
   "summary": "1-Satz-Zusammenfassung des Tickets",
   "open_questions": ["nur wenn fuer den naechsten Schritt zwingend menschliche Klaerung noetig ist"]
 }`,
-    buildUser: ({ ticket, systems }) => `Ticket:
+    buildUser: ({ ticket, systems, preselectedSystem }) => `Ticket:
 - Typ: ${ticket.type}
 - Titel: ${ticket.title}
 - Prioritaet: ${ticket.priority}
 - Dringlichkeit: ${ticket.urgency}
 - Beschreibung:
 ${ticket.description || '(leer)'}
-
+${preselectedSystem ? `\nVOM NUTZER VORAUSGEWAEHLTES SYSTEM (ID: ${preselectedSystem.id}, Name: ${preselectedSystem.name}). Dieses System MUSS verwendet werden, ausser es ist offensichtlich falsch (dann setze decision auf "unclear" und begruende).\n` : ''}
 Verfuegbare Systeme (id | name | description):
 ${(systems || []).map(s => `- ${s.id} | ${s.name} | ${s.description || ''}`).join('\n') || '(keine Systeme konfiguriert)'}`
 };

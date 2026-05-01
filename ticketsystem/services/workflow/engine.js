@@ -321,14 +321,25 @@ async function pauseForHumanQuestions(runId, ticket, stage, sortOrder, output) {
 async function execTriage(ctx) {
     wfInfo(`Stage:TRIAGE start | ticket=${ctx.ticket.id} title="${(ctx.ticket.title || '').slice(0, 80)}"`);
     const systems = await getAll('SELECT id, name, description FROM systems WHERE active = 1 ORDER BY id', []);
-    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems }) + previousStageContextSuffix(ctx, 'triage') + extraInfoSuffix(ctx);
+    const preselectedSystemId = ctx.ticket.system_id ? parseInt(ctx.ticket.system_id, 10) : null;
+    const preselectedSystem = preselectedSystemId
+        ? (systems.find(s => s.id === preselectedSystemId) || null)
+        : null;
+    const userPrompt = prompts.TRIAGE.buildUser({ ticket: ctx.ticket, systems, preselectedSystem }) + previousStageContextSuffix(ctx, 'triage') + extraInfoSuffix(ctx);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.TRIAGE.system, userPrompt });
     const out = r.parsed || { decision: 'unclear', reason: 'Antwort nicht parsebar', summary: '', suggested_action: '' };
-    if (out.system_id) {
+    // Vom Menschen vorausgewähltes System nicht überschreiben
+    if (preselectedSystemId) {
+        if (out.system_id && parseInt(out.system_id, 10) !== preselectedSystemId) {
+            wfWarn(`Stage:TRIAGE AI tried to override user-selected system_id ${preselectedSystemId} -> ${out.system_id}, ignoring`);
+        }
+        out.system_id = preselectedSystemId;
+        out._system_locked = true;
+    } else if (out.system_id) {
         await run('UPDATE tickets SET system_id = ? WHERE id = ?', [out.system_id, ctx.ticket.id]);
     }
     ctx.triage = out;
-    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'}`, out.reason);
+    wfInfo(`Stage:TRIAGE done | decision=${out.decision} system_id=${out.system_id || 'none'} preselected=${preselectedSystemId || 'no'}`, out.reason);
     return { output: out, ai: r };
 }
 
