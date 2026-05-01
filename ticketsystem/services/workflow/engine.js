@@ -1,5 +1,10 @@
 'use strict';
 
+function normalizeQuestions(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(q => typeof q === 'string' ? q : JSON.stringify(q));
+}
+
 // Workflow-Engine v2 — typed JSON bundles, deterministisches Briefing,
 // Repo-Resolver fuer technische open_questions, Coding-Loop mit Self-Correction.
 //
@@ -439,10 +444,10 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
             // Nur tatsaechlich unloesbare Fragen weiterreichen
-            out.open_questions = resolver.unresolved;
+            out.open_questions = normalizeQuestions(resolver.unresolved);
         } else {
             // Resolver hat nicht geholfen — open_questions bleiben fuer den Mensch
-            out.open_questions = resolver.unresolved.length ? resolver.unresolved : out.open_questions;
+            out.open_questions = normalizeQuestions(resolver.unresolved.length ? resolver.unresolved : out.open_questions);
         }
     }
 
@@ -522,9 +527,9 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
             out = r.parsed || out;
-            out.open_questions = resolver.unresolved;
+            out.open_questions = normalizeQuestions(resolver.unresolved);
         } else {
-            out.open_questions = resolver.unresolved.length ? resolver.unresolved : out.open_questions;
+            out.open_questions = normalizeQuestions(resolver.unresolved.length ? resolver.unresolved : out.open_questions);
         }
     }
 
@@ -723,7 +728,7 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
 
             // Nur wirklich unloesbare Fragen pausieren den Workflow
-            const stillOpen = Array.isArray(result.output?.open_questions) ? result.output.open_questions : [];
+            const stillOpen = normalizeQuestions(result.output?.open_questions);
             if (stillOpen.length) {
                 const paused = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, stillOpen);
                 if (paused) return;
@@ -778,7 +783,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         await finishStep(stepId, { status: 'done', output, ai: null });
         const wf = await loadDefaultWorkflow();
         const remaining = wf.stages.filter(s => s.sort_order > Number(stepOutput.resume_after_sort_order || 0));
-        const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus Stage "${stepOutput.source_stage}":\n${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nAntwort:\n${note}`;
+        const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus Stage "${stepOutput.source_stage}":\n${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${typeof q === 'string' ? q : JSON.stringify(q)}`).join('\n')}\n\nAntwort:\n${note}`;
         await run(`UPDATE ticket_workflow_runs SET status='running', current_stage=? WHERE id = ?`, [remaining[0]?.role || stepOutput.source_stage, runId]);
         emit('workflow:step', { runId, stage: 'approval', status: 'done', decision, phase: 'questions' });
         runStages(runId, ticket, remaining, { extra_info: answerContext }).catch(err => {
