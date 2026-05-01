@@ -614,17 +614,26 @@ async function startForTicket(ticketId) {
     return runId;
 }
 
-async function pauseForHumanQuestions(runId, ticket, stage, sortOrder, openQuestions) {
+async function pauseForHumanQuestions(runId, ticket, stage, sortOrder, openQuestions, systemName, integration) {
     if (!Array.isArray(openQuestions) || !openQuestions.length) return false;
     const approverStaff = await pickStaff('approval', 'human');
     const questionSort = sortOrder + 0.5;
     const stepId = await startStep(runId, 'approval', questionSort, approverStaff);
+    const ctxParts = [];
+    if (systemName || ticket.system_id) {
+        ctxParts.push(`System: ${systemName || ticket.system_id} (ID ${ticket.system_id})`);
+    }
+    if (integration) {
+        ctxParts.push(`Repo: ${integration.repo_owner}/${integration.repo_name}`);
+    }
+    const ctxHeader = ctxParts.length ? `\n\n> ${ctxParts.join(' · ')}` : '';
     const payload = {
         phase: 'questions',
         source_stage: stage,
         resume_after_sort_order: sortOrder,
         open_questions: openQuestions.slice(0, 10),
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        markdown: `**Rückfragen vom ${stage}-Bot**${ctxHeader}`
     };
     await run(`UPDATE ticket_workflow_steps SET status='waiting_human', output_payload=? WHERE id = ?`, [JSON.stringify(payload), stepId]);
     await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
@@ -724,6 +733,22 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
                 throw new Error(`Unbekannte Stage-Rolle: ${stage.role}`);
             }
 
+            // System-/Repo-Kontext in den Step-Output aufnehmen (sichtbar in der UI)
+            const ctxParts = [];
+            if (result.output?.system_id || ticket.system_id) {
+                const sid = result.output?.system_id || ticket.system_id;
+                ctxParts.push(`System: ${systemName || sid} (ID ${sid})`);
+            }
+            if (integration) {
+                ctxParts.push(`Repo: ${integration.repo_owner}/${integration.repo_name}`);
+            }
+            if (ctxParts.length && result.output) {
+                const ctxHeader = `> ${ctxParts.join(' · ')}`;
+                result.output.markdown = result.output.markdown
+                    ? `${ctxHeader}\n\n${result.output.markdown}`
+                    : ctxHeader;
+            }
+
             // ctx-extra-info (resume nach Mensch-Fragen) optional in den Plan-Output reinschreiben
             if (ctxExtras?.extra_info && (stage.role === 'planning' || stage.role === 'integration')) {
                 result.output._extra_info_used = ctxExtras.extra_info.slice(0, 500);
@@ -751,7 +776,7 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             // Nur wirklich unloesbare Fragen pausieren den Workflow
             const stillOpen = normalizeQuestions(result.output?.open_questions);
             if (stillOpen.length) {
-                const paused = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, stillOpen);
+                const paused = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, stillOpen, systemName, integration);
                 if (paused) return;
             }
 
