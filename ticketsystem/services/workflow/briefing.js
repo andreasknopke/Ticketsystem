@@ -114,19 +114,23 @@ function buildCodingBriefing({ ticket, codingLevel, security, plan, integration,
         parts.push('');
     }
 
-    // 7) CURRENT FILES (ggf. gekuerzt bei >30 KB)
+    // 7) CURRENT FILES (mit Zeilennummern fuer search/replace-Referenz)
     if (Array.isArray(currentFiles) && currentFiles.length) {
-        parts.push(`## CURRENT FILES (read-only Kontext)`);
+        parts.push(`## CURRENT FILES (read-only Kontext, mit Zeilennummern)`);
+        parts.push(`Verwende die Zeilennummern als Orientierung fuer deine "search"-Bloecke.`);
         currentFiles.forEach(f => {
             const marker = f.exists ? '' : ' (NEU — wird erstellt)';
-            const truncMarker = f.truncated ? ' (TRUNCATED — Original groesser als 30 KB, nur die ersten 30 KB gezeigt)' : '';
+            const truncMarker = f.truncated ? ' (TRUNCATED — Original groesser als 30 KB)' : '';
             parts.push(`\n### CURRENT FILE: ${f.path}${marker}${truncMarker}`);
             if (f.exists && f.content) {
                 parts.push('```');
-                parts.push(f.content);
+                const lines = f.content.split('\n');
+                lines.forEach((line, i) => {
+                    parts.push(`${String(i + 1).padStart(4)} | ${line}`);
+                });
                 parts.push('```');
             } else if (!f.exists) {
-                parts.push('(Datei existiert noch nicht)');
+                parts.push('(Datei existiert noch nicht — action="create" + "content" verwenden)');
             } else {
                 parts.push('(leer)');
             }
@@ -168,7 +172,8 @@ function buildCorrectionFeedback({ scopeViolations, codeCheckViolations }) {
         codeCheckViolations.forEach(v => parts.push(`- ${v}`));
     }
     if (!parts.length) return '';
-    parts.push(`\nLiefere KOMPLETTE Datei-Inhalte erneut, mit den oben genannten Problemen behoben.`);
+    parts.push(`\nKorrigiere deine edits[] (bei action=update) oder content (bei action=create).`);
+    parts.push(`Stelle sicher dass jeder search-String EXAKT im CURRENT FILE vorkommt und eindeutig ist.`);
     parts.push(`Fasse keine anderen Files an. Behalte alle bisher korrekten Aenderungen bei.`);
     return parts.join('\n');
 }

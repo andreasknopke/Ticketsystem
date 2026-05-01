@@ -5,6 +5,42 @@ function normalizeQuestions(arr) {
     return arr.map(q => typeof q === 'string' ? q : JSON.stringify(q));
 }
 
+/**
+ * Wendet search/replace-Edits auf einen Datei-Inhalt an.
+ * Gibt { content, applied, failed } zurueck.
+ * Jeder Edit: { search: string, replace: string }
+ * Die Edits werden nacheinander angewendet (Reihenfolge wichtig!).
+ * Wenn ein search-String nicht gefunden wird, wird der Edit uebersprungen und in failed[] aufgenommen.
+ */
+function applyEdits(originalContent, edits) {
+    if (!Array.isArray(edits) || !edits.length) {
+        return { content: originalContent, applied: [], failed: [] };
+    }
+    let content = originalContent;
+    const applied = [];
+    const failed = [];
+    for (const edit of edits) {
+        if (typeof edit.search !== 'string' || typeof edit.replace !== 'string') {
+            failed.push({ search: String(edit.search || '').slice(0, 80), reason: 'search oder replace ist kein String' });
+            continue;
+        }
+        const idx = content.indexOf(edit.search);
+        if (idx === -1) {
+            failed.push({ search: edit.search.slice(0, 80), reason: 'search-String nicht im aktuellen Datei-Inhalt gefunden' });
+            continue;
+        }
+        // Pruefe auf Mehrfach-Treffer — Edit muss eindeutig sein
+        const secondIdx = content.indexOf(edit.search, idx + 1);
+        if (secondIdx !== -1) {
+            failed.push({ search: edit.search.slice(0, 80), reason: 'search-String ist nicht eindeutig (mehrere Treffer)' });
+            continue;
+        }
+        content = content.slice(0, idx) + edit.replace + content.slice(idx + edit.search.length);
+        applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80) });
+    }
+    return { content, applied, failed };
+}
+
 // Workflow-Engine v2 — typed JSON bundles, deterministisches Briefing,
 // Repo-Resolver fuer technische open_questions, Coding-Loop mit Self-Correction.
 //
@@ -928,7 +964,16 @@ function renderCodingMarkdown(out, level) {
     if (out.commit_message) lines.push(`\n**Commit-Message:**\n\n\`\`\`\n${out.commit_message}\n\`\`\``);
     if (Array.isArray(out.files) && out.files.length) {
         lines.push(`\n**Dateien (${out.files.length}):**`);
-        out.files.forEach(f => lines.push(`- \`${f.action || 'update'}\` ${f.path}`));
+        out.files.forEach(f => {
+            const editCount = Array.isArray(f.edits) ? f.edits.length : 0;
+            if (editCount) {
+                lines.push(`- \`${f.action || 'update'}\` ${f.path} — ${editCount} Edit(s)`);
+            } else if (f.content) {
+                lines.push(`- \`${f.action || 'create'}\` ${f.path} — vollstaendig`);
+            } else {
+                lines.push(`- \`${f.action || 'update'}\` ${f.path}`);
+            }
+        });
     }
     if (Array.isArray(out.test_plan) && out.test_plan.length) {
         lines.push(`\n**Test-Plan:**`);
@@ -952,7 +997,7 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
         violations.push('Kein allowed_files-Whitelist aus PLANNING vorhanden — Coding-Stage erfordert Scope-Contract.');
         return violations;
     }
-    if (!files.length) {
+    if (!files.length && !(Array.isArray(out.assembled_files) && out.assembled_files.length)) {
         violations.push('Keine Files in der Antwort enthalten (out.files leer).');
         return violations;
     }
@@ -965,53 +1010,113 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
         }
         const action = f.action || 'update';
         const cur = currentMap.get(f.path);
-        if (changeKind === 'new' && cur && cur.exists) {
+
+        if (changeKind === 'new' && cur && cur.exists && action !== 'update') {
             violations.push(`change_kind=new, aber Datei existiert bereits: ${f.path}`);
-        }
-        if (changeKind === 'extend' && cur && cur.exists && action === 'update' && typeof f.content === 'string' && cur.content) {
-            const removed = new Set(
-                (Array.isArray(out.removed_symbols) ? out.removed_symbols : [])
-                    .filter(r => r && r.path === f.path && r.symbol)
-                    .map(r => r.symbol)
-            );
-            const symRe = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)|\bmodule\.exports\.([A-Za-z_$][\w$]*)\s*=|\bexports\.([A-Za-z_$][\w$]*)\s*=/g;
-            const oldSymbols = new Set();
-            let m;
-            while ((m = symRe.exec(cur.content)) !== null) {
-                const name = m[1] || m[2] || m[3];
-                if (name) oldSymbols.add(name);
-            }
-            symRe.lastIndex = 0;
-            const newSymbols = new Set();
-            while ((m = symRe.exec(f.content)) !== null) {
-                const name = m[1] || m[2] || m[3];
-                if (name) newSymbols.add(name);
-            }
-            for (const sym of oldSymbols) {
-                if (!newSymbols.has(sym) && !removed.has(sym)) {
-                    violations.push(`Symbol entfernt ohne Begruendung: ${sym} in ${f.path} (change_kind=extend)`);
-                }
-            }
-            const oldLines = cur.content.split('\n');
-            const newLines = f.content.split('\n');
-            const minLen = Math.min(oldLines.length, newLines.length);
-            let same = 0;
-            for (let i = 0; i < minLen; i++) if (oldLines[i] === newLines[i]) same++;
-            const ratio = oldLines.length ? same / oldLines.length : 1;
-            if (oldLines.length > 20 && ratio < 0.3) {
-                violations.push(`Datei zu stark umgebaut (nur ${(ratio * 100).toFixed(0)}% Zeilen erhalten) bei change_kind=extend: ${f.path}`);
-            }
         }
         if (action === 'delete' && changeKind !== 'refactor') {
             violations.push(`Datei-Delete erlaubt nur bei change_kind=refactor: ${f.path}`);
+        }
+
+        // Bei extend+edits: Symbol-Preservation wird durch assembleFilesFromEdits garantiert
+        // (Edits aendern nur die search-Bloecke, der Rest der Datei bleibt unangetastet).
+        // Nur beim Legacy-Fallback (action=update + content) pruefen wir Symbol-Erhaltung.
+        if (changeKind === 'extend' && action === 'update' && typeof f.content === 'string' && !Array.isArray(f.edits)) {
+            if (cur && cur.exists && cur.content) {
+                const removed = new Set(
+                    (Array.isArray(out.removed_symbols) ? out.removed_symbols : [])
+                        .filter(r => r && r.path === f.path && r.symbol)
+                        .map(r => r.symbol)
+                );
+                const symRe = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)|\bmodule\.exports\.([A-Za-z_$][\w$]*)\s*=|\bexports\.([A-Za-z_$][\w$]*)\s*=/g;
+                const oldSymbols = new Set();
+                let m;
+                while ((m = symRe.exec(cur.content)) !== null) {
+                    const name = m[1] || m[2] || m[3];
+                    if (name) oldSymbols.add(name);
+                }
+                symRe.lastIndex = 0;
+                const newSymbols = new Set();
+                while ((m = symRe.exec(f.content)) !== null) {
+                    const name = m[1] || m[2] || m[3];
+                    if (name) newSymbols.add(name);
+                }
+                for (const sym of oldSymbols) {
+                    if (!newSymbols.has(sym) && !removed.has(sym)) {
+                        violations.push(`Symbol entfernt ohne Begruendung: ${sym} in ${f.path} (change_kind=extend)`);
+                    }
+                }
+            }
         }
     }
     return violations;
 }
 
 /**
- * Ein Coding-Pass: Briefing bauen, AI rufen, validieren.
- * Liefert { out, ai, scopeViolations, codeCheckViolations }.
+ * Wendet search/replace-Edits aus Bot-Antwort auf currentFiles an.
+ * Ersetzt out.files[].edits durch den resultierenden content.
+ * Gibt { editViolations, assembledFiles } zurueck.
+ * assembledFiles = [{ path, action, content }] — bereit fuer PR-Upload.
+ */
+function assembleFilesFromEdits(out, currentFiles) {
+    const violations = [];
+    const currentMap = new Map((currentFiles || []).map(f => [f.path, f]));
+    const assembledFiles = [];
+    const files = Array.isArray(out.files) ? out.files : [];
+
+    for (const f of files) {
+        if (!f || !f.path) { violations.push('files[] enthaelt Eintrag ohne path'); continue; }
+        const cur = currentMap.get(f.path);
+        const action = f.action || 'update';
+
+        if (action === 'create') {
+            // Neue Datei: braucht content, KEIN edits
+            if (!f.content && f.content !== '') {
+                violations.push(`action=create aber kein content fuer: ${f.path}`);
+                continue;
+            }
+            if (Array.isArray(f.edits) && f.edits.length) {
+                violations.push(`action=create aber edits[] geliefert fuer: ${f.path} — bei create content verwenden`);
+                continue;
+            }
+            assembledFiles.push({ path: f.path, action: 'create', content: f.content });
+        } else if (action === 'update') {
+            // Bestehende Datei: braucht edits[] oder content als Fallback
+            if (Array.isArray(f.edits) && f.edits.length) {
+                // Search/Replace-Modus
+                if (!cur || !cur.exists) {
+                    violations.push(`action=update aber Datei existiert nicht im Repo: ${f.path}`);
+                    continue;
+                }
+                const original = cur.content || '';
+                const result = applyEdits(original, f.edits);
+                if (result.failed.length) {
+                    result.failed.forEach(e => violations.push(`Edit fehlgeschlagen in ${f.path}: ${e.reason} — search: "${e.search}"`));
+                }
+                wfInfo(`assembleEdits | ${f.path} applied=${result.applied.length} failed=${result.failed.length}`);
+                assembledFiles.push({ path: f.path, action: 'update', content: result.content });
+                // Metadaten fuer Nachvollziehbarkeit
+                f._appliedEdits = result.applied.length;
+                f._failedEdits = result.failed.length;
+            } else if (typeof f.content === 'string') {
+                // Fallback: Bot hat trotzdem content geliefert (altes Format)
+                assembledFiles.push({ path: f.path, action: 'update', content: f.content });
+                wfInfo(`assembleEdits | ${f.path} using full-content fallback (no edits)`);
+            } else {
+                violations.push(`action=update aber weder edits[] noch content fuer: ${f.path}`);
+            }
+        } else if (action === 'delete') {
+            assembledFiles.push({ path: f.path, action: 'delete', content: '' });
+        } else {
+            violations.push(`Unbekannte action "${action}" fuer: ${f.path}`);
+        }
+    }
+    return { editViolations: violations, assembledFiles };
+}
+
+/**
+ * Ein Coding-Pass: Briefing bauen, AI rufen, Edits anwenden, validieren.
+ * Liefert { out, ai, scopeViolations, codeCheckViolations, assembledFiles }.
  */
 async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback, systemName, repoInfo }) {
     const { userPrompt, stats } = buildCodingBriefing({
@@ -1031,17 +1136,26 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
     const out = r.parsed;
     out.coding_level = codingLevel;
 
+    // Search/Replace-Edits anwenden und finale Dateien assemblieren
+    const { editViolations, assembledFiles } = assembleFilesFromEdits(out, currentFiles);
+    if (editViolations.length) {
+        wfWarn(`Stage:CODING edit-assembly violations | count=${editViolations.length}`);
+    }
+    out.assembled_files = assembledFiles;
+
     const allowedFiles = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
     const changeKind = plan?.change_kind || 'extend';
     const scopeViolations = validateCodingScope(out, allowedFiles, changeKind, currentFiles);
+    // Edit-Violations zu scope-Violations hinzufuegen
+    scopeViolations.push(...editViolations);
 
     let codeCheckViolations = [];
     let codeCheckResult = null;
-    if (!scopeViolations.length && Array.isArray(out.files) && out.files.length) {
+    if (!scopeViolations.length && assembledFiles.length) {
         const wantLint = (process.env.AI_CODING_VERIFY_LINT || 'false').toLowerCase() === 'true';
         const wantBuild = (process.env.AI_CODING_VERIFY_BUILD || 'false').toLowerCase() === 'true';
         try {
-            codeCheckResult = await runCodeChecks(out.files, integrationCfg, { syntax: true, lint: wantLint, build: wantBuild });
+            codeCheckResult = await runCodeChecks(assembledFiles, integrationCfg, { syntax: true, lint: wantLint, build: wantBuild });
             if (!codeCheckResult.ok) {
                 codeCheckViolations = codeCheckResult.violations.map(v => `[${v.type}]${v.file ? ' ' + v.file : ''}: ${v.message}`);
             }
@@ -1050,7 +1164,7 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
         }
     }
 
-    return { out, ai: r, scopeViolations, codeCheckViolations, codeCheckResult, prompt_bytes: stats.prompt_bytes };
+    return { out, ai: r, scopeViolations, codeCheckViolations, codeCheckResult, prompt_bytes: stats.prompt_bytes, assembledFiles };
 }
 
 async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferredStaff) {
@@ -1188,31 +1302,30 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
         }
         if (lastResult.codeCheckResult) out.code_checks = lastResult.codeCheckResult;
 
-        // Artifacts vorbereiten
+        // Artifacts vorbereiten (assembled files mit vollem Inhalt)
+        const assembledFiles = lastResult.assembledFiles || [];
         const artifacts = [];
         if (out.commit_message) artifacts.push({ kind: 'commit_message', filename: 'COMMIT_MSG.md', content: out.commit_message });
         if (Array.isArray(out.test_plan) && out.test_plan.length) {
             const tp = out.test_plan.map((t, i) => `${i + 1}. ${t.step || ''}\n   Erwartet: ${t.expected || ''}`).join('\n\n');
             artifacts.push({ kind: 'test_plan', filename: 'TEST_PLAN.md', content: tp });
         }
-        if (Array.isArray(out.files)) {
-            out.files.forEach(f => {
-                if (f.path && (f.content || f.action === 'delete')) {
-                    const safe = String(f.path).replace(/[^a-zA-Z0-9._/\-]/g, '_').slice(0, 200);
-                    artifacts.push({
-                        kind: 'code_file', filename: 'files/' + safe,
-                        mimeType: 'text/plain', content: f.content || `(deleted: ${f.path})`
-                    });
-                }
-            });
-        }
+        assembledFiles.forEach(f => {
+            if (f.path && (f.content || f.action === 'delete')) {
+                const safe = String(f.path).replace(/[^a-zA-Z0-9._/\-]/g, '_').slice(0, 200);
+                artifacts.push({
+                    kind: 'code_file', filename: 'files/' + safe,
+                    mimeType: 'text/plain', content: f.content || `(deleted: ${f.path})`
+                });
+            }
+        });
 
-        // PR erstellen, wenn alles ok
+        // PR erstellen, wenn alles ok (using assembled files with full content)
         const autoPrEnabled = (process.env.AI_CODING_AUTO_PR || 'true').toLowerCase() !== 'false';
         const tokenSource = integration?.access_token ? 'system.repo_access_token' : (process.env.GITHUB_DEFAULT_TOKEN ? 'GITHUB_DEFAULT_TOKEN' : 'none');
-        wfInfo(`Stage:CODING PR-CHECK | autoPr=${autoPrEnabled} integration=${!!integration} auto_commit=${!!staff.auto_commit_enabled} files=${out.files?.length || 0} tokenSource=${tokenSource}`);
+        wfInfo(`Stage:CODING PR-CHECK | autoPr=${autoPrEnabled} integration=${!!integration} auto_commit=${!!staff.auto_commit_enabled} files=${assembledFiles.length} tokenSource=${tokenSource}`);
 
-        if (!allFailed && autoPrEnabled && integration && staff.auto_commit_enabled && Array.isArray(out.files) && out.files.length) {
+        if (!allFailed && autoPrEnabled && integration && staff.auto_commit_enabled && assembledFiles.length) {
             try {
                 const slug = String(ticket.title || 'change').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
                 const pr = await commitFilesAsPR(integration, {
@@ -1220,7 +1333,7 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
                     commitMessage: out.commit_message,
                     prTitle: `[Ticket #${ticket.id}] ${ticket.title || 'Coding-Bot Changes'}`.slice(0, 200),
                     prBody: `Automatisch erstellt vom Coding-Bot (Level: \`${codingLevel}\`).\n\n${out.summary || ''}\n\n---\nManuelle Pruefung: ${out.manual_verification || '-'}\n\nScope: change_kind=\`${bundles.planning.change_kind || 'extend'}\`, allowed_files=${(bundles.planning.allowed_files || []).length}`,
-                    files: out.files,
+                    files: assembledFiles,
                     draft: true,
                     labels: ['bot-generated', 'needs-human-review', `coding-${codingLevel}`]
                 });
@@ -1241,7 +1354,7 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
             if (!autoPrEnabled) reasons.push('AI_CODING_AUTO_PR=false');
             if (!integration) reasons.push(`Kein Repo am System konfiguriert (system_id=${ticket.system_id || 'null'})`);
             if (!staff.auto_commit_enabled) reasons.push(`auto_commit_enabled=0 fuer Bot "${staff.name}" (id=${staff.id})`);
-            if (!Array.isArray(out.files) || !out.files.length) reasons.push('Coding-Antwort enthielt keine Dateien');
+            if (!assembledFiles.length) reasons.push('Keine assemblierte Dateien nach Edit-Anwendung');
             if (reasons.length) {
                 out.markdown += `\n\n_PR-Erstellung uebersprungen: ${reasons.join('; ')}_`;
                 wfWarn(`Stage:CODING PR-SKIPPED`, reasons.join(' | '));
