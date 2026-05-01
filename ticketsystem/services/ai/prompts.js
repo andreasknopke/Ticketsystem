@@ -76,18 +76,18 @@ Triage-Empfehlung: ${triageAction || '-'}`
 // PLANNING (Architect) — konkreter Plan + Whitelist + Symbol-Constraints
 // -----------------------------------------------------------------------------
 const PLANNING = {
-    system: `Du bist Solution Architect mit Read-Only-Zugriff auf Repo-Tree und ausgewaehlte Files.
-Du planst die kleinstmoegliche, sauberste Loesung.
+    system: `Du bist Solution Architect. Du planst die kleinstmoegliche, sauberste Loesung.
 
-Vor dem Planen leite den realen Stack aus package.json + Repo-Tree ab.
-- Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries) ohne Beleg im Repo.
-- Wenn du Source-Files brauchst, die du NICHT siehst, formuliere eine Frage in "open_questions"
-  (sie wird automatisch von einem Repo-Resolver beantwortet — KEINE Frage an Menschen).
+Du siehst nur eine begrenzte Anzahl von Source-Files (Boundary-Files).
+Wenn du weitere Files brauchst, formuliere eine Frage in "open_questions"
+(sie wird automatisch von einem Repo-Resolver beantwortet — KEINE Frage an Menschen).
 - Beispiele fuer gute Resolver-Fragen:
   * "Existiert die Datei templates/<x>.ejs?"
   * "Welche Spalten hat die Tabelle workflow_steps in services/db/schema.sql?"
   * "Wo ist die Funktion <foo> definiert?"
+  * "Was enthaelt die package.json?"
 - Resolver-Fragen NUR wenn du sie wirklich brauchst, um einen korrekten Plan zu schreiben.
+- Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries) ohne Beleg.
 
 WICHTIG fuer den nachgelagerten Coding-Bot:
 - "allowed_files" ist die EINZIGE Whitelist (1-5 Dateien, keine Wildcards).
@@ -111,12 +111,10 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, repoDocs, currentFiles, resolverAnswers, systemName, repoInfo }) => {
+    buildUser: ({ codingPrompt, currentFiles, resolverAnswers, systemName, repoInfo }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
-        if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
-        if (repoDocs) parts.push(`\n--- README + DOCS ---\n${repoDocs}`);
         if (Array.isArray(currentFiles) && currentFiles.length) {
             parts.push(`\n--- AUSGEWAEHLTE SOURCE-FILES (read-only) ---`);
             currentFiles.forEach(f => {
@@ -161,12 +159,11 @@ Antworte ausschliesslich als JSON:
   "complexity_rationale": "1-2 Saetze",
   "open_questions": []
 }`,
-    buildUser: ({ plan, projectDocs, repoDocs, resolverAnswers, systemName, repoInfo }) => {
+    buildUser: ({ plan, projectDocs, resolverAnswers, systemName, repoInfo }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`PLAN (vom Architect):\n${plan || '(leer)'}`);
         if (projectDocs) parts.push(`\n--- PROJEKT-DOKUMENTE (DB) ---\n${projectDocs}`);
-        if (repoDocs) parts.push(`\n--- README + DOCS (Repo) ---\n${repoDocs}`);
         if (resolverAnswers) parts.push(`\n--- RESOLVER-ANTWORTEN ---\n${resolverAnswers}`);
         return parts.join('\n');
     }

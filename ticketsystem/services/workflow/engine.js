@@ -418,13 +418,12 @@ async function runResolverIfNeeded({ runId, stage, openQuestions, integration, r
     return { ...result, ran: true };
 }
 
-async function execPlanning({ ticket, staff, runId, securityBundle, integration, repoTree, repoDocs, systemName }) {
-    wfInfo(`Stage:PLANNING start | ticket=${ticket.id} system_id=${ticket.system_id || 'none'} treeLen=${(repoTree || '').length}`);
+async function execPlanning({ ticket, staff, runId, securityBundle, integration, repoTree, systemName }) {
+    wfInfo(`Stage:PLANNING start | ticket=${ticket.id} system_id=${ticket.system_id || 'none'}`);
 
     const codingPrompt = securityBundle?.coding_prompt || ticket.coding_prompt || ticket.redacted_description || ticket.description;
 
-    // Planung darf den Architect mit ein paar bekannten Files starten lassen
-    // (boundary files), damit er sich orientieren kann ohne zuerst Resolver-Calls zu machen.
+    // Boundary-Files laden (kleiner Kontext, damit der Architect sich orientieren kann)
     const boundary = (process.env.REPO_BOUNDARY_FILES || 'package.json,server.js,README.md').split(',').map(s => s.trim()).filter(Boolean);
     let currentFiles = [];
     if (integration && boundary.length) {
@@ -435,7 +434,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     let resolverAnswersText = '';
     const planningRepoInfo = integration ? `${integration.repo_owner}/${integration.repo_name}` : null;
     let userPrompt = prompts.PLANNING.buildUser({
-        codingPrompt, repoTree, repoDocs,
+        codingPrompt,
         currentFiles: currentFiles.filter(f => f.exists),
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo
@@ -455,7 +454,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             resolverAnswersText = formatAnswersForPrompt(resolver);
             wfInfo(`Stage:PLANNING re-running with resolver answers | answered=${resolver.answers.length}`);
             userPrompt = prompts.PLANNING.buildUser({
-                codingPrompt, repoTree, repoDocs,
+                codingPrompt,
                 currentFiles: currentFiles.filter(f => f.exists),
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo
@@ -511,7 +510,7 @@ function renderIntegrationMarkdown(out) {
     return lines.join('\n');
 }
 
-async function execIntegration({ ticket, staff, runId, planningBundle, integration, repoTree, repoDocs, systemName }) {
+async function execIntegration({ ticket, staff, runId, planningBundle, integration, repoTree, systemName }) {
     wfInfo(`Stage:INTEGRATION start | ticket=${ticket.id}`);
 
     const projectDocsRows = await getAll(`SELECT pd.title, pd.content FROM project_documents pd
@@ -526,7 +525,6 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
     let userPrompt = prompts.INTEGRATION.buildUser({
         plan: planMd,
         projectDocs,
-        repoDocs,
         resolverAnswers: '',
         systemName, repoInfo: integrationRepoInfo
     });
@@ -544,7 +542,7 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
             const ansText = formatAnswersForPrompt(resolver);
             wfInfo(`Stage:INTEGRATION re-running with resolver answers | answered=${resolver.answers.length}`);
             userPrompt = prompts.INTEGRATION.buildUser({
-                plan: planMd, projectDocs, repoDocs, resolverAnswers: ansText,
+                plan: planMd, projectDocs, resolverAnswers: ansText,
                 systemName, repoInfo: integrationRepoInfo
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
@@ -654,10 +652,9 @@ async function pauseForHumanQuestions(runId, ticket, stage, sortOrder, openQuest
 async function runStages(runId, initialTicket, stages, ctxExtras) {
     wfInfo(`runStages start | run=${runId} ticket=${initialTicket.id} stages=${stages.map(s => s.role).join('->')} extraInfo=${ctxExtras?.extra_info ? 'yes' : 'no'}`);
 
-    // Repo-Context EINMAL pro Run: Tree + Docs (read-only)
+    // Repo-Context: Tree fuer Resolver (Docs werden nicht mehr in Prompts gepackt)
     let integration = null;
     let repoTree = '';
-    let repoDocs = '';
     let systemName = null;
     if (initialTicket.system_id) {
         const sys = await getRow('SELECT name FROM systems WHERE id = ?', [initialTicket.system_id]);
@@ -666,13 +663,8 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     try {
         integration = await resolveIntegration(initialTicket);
         if (integration) {
-            const [tree, ctx] = await Promise.all([
-                fetchRepoTreeLight(integration).catch(() => ''),
-                fetchRepoContext(integration).catch(() => ({ repoContext: '', repoDocs: '' }))
-            ]);
-            repoTree = tree;
-            repoDocs = ctx.repoContext || ctx.repoDocs || '';
-            wfInfo(`Repo-Kontext geladen | treeLen=${repoTree.length} docsLen=${repoDocs.length}`);
+            repoTree = await fetchRepoTreeLight(integration).catch(() => '');
+            wfInfo(`Repo-Kontext geladen | treeLen=${repoTree.length}`);
         }
     } catch (e) { wfWarn(`Repo-Kontext laden fehlgeschlagen`, e.message); }
 
@@ -724,13 +716,13 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
                 result = await execPlanning({
                     ticket, staff, runId,
                     securityBundle: bundles.security,
-                    integration, repoTree, repoDocs, systemName
+                    integration, repoTree, systemName
                 });
             } else if (stage.role === 'integration') {
                 result = await execIntegration({
                     ticket, staff, runId,
                     planningBundle: bundles.planning,
-                    integration, repoTree, repoDocs, systemName
+                    integration, repoTree, systemName
                 });
             } else if (stage.role === 'approval') {
                 result = { output: { verdict: 'approved', note: 'AI auto-approval' }, ai: null };
