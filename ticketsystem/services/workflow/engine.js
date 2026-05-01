@@ -305,7 +305,7 @@ async function startStep(runId, stage, sortOrder, staff) {
     return r.lastID;
 }
 
-async function finishStep(stepId, { status, output, ai }) {
+async function finishStep(stepId, { status, output, ai, actualApproverId }) {
     await run(`UPDATE ticket_workflow_steps SET
         status = ?, output_payload = ?, provider = ?, model = ?,
         prompt_tokens = ?, completion_tokens = ?, duration_ms = ?,
@@ -317,6 +317,13 @@ async function finishStep(stepId, { status, output, ai }) {
          ai?.prompt_tokens || null, ai?.completion_tokens || null,
          ai?.duration_ms || null,
          stepId]);
+    if (actualApproverId != null) {
+        // Audit: wer hat tatsaechlich entschieden, falls != staff_id der Zuweisung.
+        // Bewusst separates UPDATE, damit die bestehende staff_id (Audit-Trail
+        // der urspruenglichen Zuweisung) unangetastet bleibt.
+        await run('UPDATE ticket_workflow_steps SET actual_approver_id = ? WHERE id = ?',
+            [actualApproverId, stepId]);
+    }
 }
 
 async function failStep(stepId, message) {
@@ -939,6 +946,17 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
     if (!step || step.run_id !== runId) throw new Error('Step nicht gefunden');
     if (step.status !== 'waiting_human') throw new Error('Step erwartet keine menschliche Entscheidung');
 
+    // Audit: wer hat tatsaechlich entschieden? Wir persistieren die Staff-ID des
+    // eingeloggten Users in actual_approver_id, sobald sie != step.staff_id ist.
+    // Wenn der zugewiesene Approver selbst entscheidet, lassen wir das Feld NULL
+    // (Default-Fall = wie bisher). Fallback: actor_staff_id fehlt -> NULL, also
+    // weiterhin Anzeige ueber output.decided_by + step.staff_id.
+    const actorStaffId = Number.isInteger(options.actor_staff_id) ? options.actor_staff_id : null;
+    const stepStaffId = step.staff_id != null ? Number(step.staff_id) : null;
+    const actualApproverId = (actorStaffId && stepStaffId && actorStaffId !== stepStaffId)
+        ? actorStaffId
+        : null;
+
     const run_ = await getRow('SELECT * FROM ticket_workflow_runs WHERE id = ?', [runId]);
     const ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [run_.ticket_id]);
     let stepOutput = null;
@@ -956,7 +974,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
             decided_by: actor || null,
             decided_at: new Date().toISOString()
         };
-        await finishStep(stepId, { status: 'done', output, ai: null });
+        await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
         const wf = await loadDefaultWorkflow();
         const remaining = wf.stages.filter(s => s.sort_order > Number(stepOutput.resume_after_sort_order || 0));
         const answerContext = `Antworten des menschlichen Approvers auf offene Fragen aus Stage "${stepOutput.source_stage}":\n${(stepOutput.open_questions || []).map((q, i) => `${i + 1}. ${typeof q === 'string' ? q : JSON.stringify(q)}`).join('\n')}\n\nAntwort:\n${note}`;
@@ -992,7 +1010,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
                 selected_staff_name: selectedStaff ? selectedStaff.name : null,
                 decided_by: actor || null, decided_at: new Date().toISOString()
             };
-            await finishStep(stepId, { status: 'done', output, ai: null });
+            await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
             await run(`UPDATE ticket_workflow_runs SET status='running', current_stage='coding' WHERE id = ?`, [runId]);
             emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
             wfInfo(`DISPATCH CODING | run=${runId} ticket=${ticket.id} level=${codingLevel}`);
@@ -1022,7 +1040,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
                     dossier_branch_url: dossier.branchUrl,
                     decided_by: actor || null, decided_at: new Date().toISOString()
                 };
-                await finishStep(stepId, { status: 'done', output, ai: null });
+                await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
                 await run(`UPDATE ticket_workflow_runs
                            SET status='completed', finished_at=CURRENT_TIMESTAMP, result='dispatched_external',
                                dossier_branch=?, dossier_commit_sha=?, dossier_exported_at=CURRENT_TIMESTAMP
@@ -1046,7 +1064,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         if (!isDispatchPhase && decision === 'rework') {
             wfInfo(`decideHumanStep REWORK | run=${runId} ticket=${ticket.id}`);
             const output = { decision: 'rework', note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
-            await finishStep(stepId, { status: 'done', output, ai: null });
+            await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
             await run(`UPDATE ticket_workflow_steps SET status='skipped'
                        WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
             const approverStaff = await pickStaff('approval', 'human');
@@ -1062,7 +1080,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         if (!finalDecisions.includes(decision)) throw new Error('Entscheidung in dieser Phase nicht erlaubt');
         wfInfo(`decideHumanStep FINAL | run=${runId} decision=${decision}`);
         const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
-        await finishStep(stepId, { status: 'done', output, ai: null });
+        await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
         await dbRef.run('UPDATE tickets SET final_decision = ? WHERE id = ?', [decision, ticket.id]);
         await run(`UPDATE ticket_workflow_runs SET status='completed', finished_at=CURRENT_TIMESTAMP, result=? WHERE id = ?`,
             [decision, runId]);
@@ -1072,7 +1090,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
 
     // Andere Stages mit Mensch (selten)
     const output = { decision, note: note || null, decided_by: actor || null, decided_at: new Date().toISOString() };
-    await finishStep(stepId, { status: 'done', output, ai: null });
+    await finishStep(stepId, { status: 'done', output, ai: null, actualApproverId });
     const wf = await loadDefaultWorkflow();
     const remaining = wf.stages.filter(s => s.sort_order > step.sort_order);
     await run(`UPDATE ticket_workflow_runs SET status='running' WHERE id = ?`, [runId]);

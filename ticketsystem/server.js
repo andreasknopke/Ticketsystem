@@ -982,6 +982,24 @@ function initDb() {
 
     // Migration fuer bestehende DBs: CHECK-Constraint um neue Rollen erweitern
     migrateWorkflowRoleConstraints();
+
+    // Migration: ticket_workflow_steps um actual_approver_id (Audit: wer hat
+    // tatsaechlich entschieden, falls != staff_id der Zuweisung).
+    db.all('PRAGMA table_info(ticket_workflow_steps)', (pragmaErr, rows) => {
+        if (pragmaErr) {
+            console.error('Fehler beim Pruefen der ticket_workflow_steps-Struktur:', pragmaErr.message);
+            return;
+        }
+        const cols = (rows || []).map(r => r.name);
+        if (!cols.includes('actual_approver_id')) {
+            // SQLite erlaubt FK in ALTER TABLE — sie wird referenz-haft eingetragen,
+            // aber ohne harten Check (PRAGMA foreign_keys ist ohnehin Default off
+            // in dieser App). Bewusst kein Default, damit Alt-Daten NULL bleiben.
+            db.run('ALTER TABLE ticket_workflow_steps ADD COLUMN actual_approver_id INTEGER REFERENCES staff(id) ON DELETE SET NULL', (e) => {
+                if (e) console.error('Fehler beim Hinzufuegen von ticket_workflow_steps.actual_approver_id:', e.message);
+            });
+        }
+    });
 }
 
 // Bei aelteren DBs enthalten die CHECK-Constraints von staff_roles/workflow_stages/
@@ -1847,9 +1865,11 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
         db.get('SELECT * FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', [ticketId], (err2, run) => {
             if (err2) return res.status(500).json({ error: err2.message });
             if (!run) return res.json({ run: null, steps: [], artifacts: [], ticket_briefing: null, system_name: ticket.system_name || null, repo: (ticket.repo_owner && ticket.repo_name) ? `${ticket.repo_owner}/${ticket.repo_name}` : null });
-            db.all(`SELECT s.*, st.name AS staff_name, st.kind AS staff_kind
+            db.all(`SELECT s.*, st.name AS staff_name, st.kind AS staff_kind,
+                    ast.name AS actual_approver_name
                 FROM ticket_workflow_steps s
                 LEFT JOIN staff st ON st.id = s.staff_id
+                LEFT JOIN staff ast ON ast.id = s.actual_approver_id
                 WHERE s.run_id = ? ORDER BY s.sort_order, s.id`, [run.id], (err3, steps) => {
                 if (err3) return res.status(500).json({ error: err3.message });
                 steps = steps.map(s => {
@@ -1964,7 +1984,8 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
         try {
             const result = await workflowEngine.decideHumanStep(row.run_id, stepId, decision, note, getActor(req), {
                 split_tickets: Array.isArray(req.body.split_tickets) ? req.body.split_tickets : null,
-                selected_staff_id: selectedStaffId
+                selected_staff_id: selectedStaffId,
+                actor_staff_id: req.session.staff_id || null
             });
             res.json(result);
         } catch (e) {

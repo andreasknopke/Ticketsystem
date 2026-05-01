@@ -772,6 +772,7 @@
                             <div>
                                 <div class="text-sm font-medium text-gray-900">${escapeHtml(STAGE_LABELS[step.stage] || step.stage)}</div>
                                 <div class="text-xs text-gray-500">${escapeHtml(step.staff_name || '–')} ${step.executor_kind ? `· ${escapeHtml(step.executor_kind)}` : ''} ${step.provider ? `· ${escapeHtml(step.provider)}` : ''}</div>
+                                ${step.actual_approver_name && step.actual_approver_name !== step.staff_name ? `<div class="text-xs text-amber-700 mt-0.5" title="Stellvertretende Genehmigung">↳ entschieden von <span class="font-semibold">${escapeHtml(step.actual_approver_name)}</span> (statt ${escapeHtml(step.staff_name || '–')})</div>` : ''}
                             </div>
                             <span class="badge ${badge}">${step.status}</span>
                         </div>
