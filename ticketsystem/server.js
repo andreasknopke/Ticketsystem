@@ -4039,6 +4039,25 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+app.post('/tickets/:id/verify', requireAuth, (req, res) => {
+    if (!canManageTickets(req)) return res.status(403).json({ error: 'Keine Berechtigung.' });
+    const ticketId = req.params.id;
+    const actor = getActor(req);
+
+    workflowEngine.markTicketUeberprueft(ticketId, actor).then(ok => {
+        if (!ok) return res.status(409).json({ error: 'Verifizierung nicht möglich – Ticket nicht im Status "umgesetzt".' });
+        db.get('SELECT status FROM tickets WHERE id = ?', [ticketId], (err, row) => {
+            if (err) return res.status(500).json({ error: 'DB-Fehler' });
+            logAction(ticketId, actor, 'verify', `Status: umgesetzt → überprüft (Verifizierung)`);
+            addActivity(ticketId, actor, 'verified', 'Ticket verifiziert', { from: 'umgesetzt', to: 'überprüft' });
+            io.to(`ticket-${ticketId}`).emit('ticket-updated', { ticketId, updates: { status: 'überprüft' }, actor });
+            res.json({ success: true });
+        });
+    }).catch(err => {
+        res.status(500).json({ error: 'Verifizierung fehlgeschlagen.' });
+    });
+});
+
 // Merge-Endpunkt: Nur für Approver oder Admins verfügbar
 // Setzt den Ticketstatus automatisch auf "geschlossen" nach erfolgreichem Merge
 app.post('/ticket/:id/merge', requireAuth, (req, res) => {

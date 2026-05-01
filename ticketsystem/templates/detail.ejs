@@ -305,6 +305,31 @@
                     </div>
                 </div>
                 <% } %>
+                <% if (canManageTickets && ticket.status === 'umgesetzt') { %>
+                <div class="card border-indigo-200">
+                    <div class="card-header bg-indigo-50 border-indigo-200">
+                        <h3 class="text-lg font-semibold text-indigo-900">Verifizierung</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="space-y-2">
+                            <label class="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" id="check-deploy" class="verify-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                                Deploy erfolgreich
+                            </label>
+                            <label class="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" id="check-testrun" class="verify-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                                Testrun erfolgreich
+                            </label>
+                            <label class="flex items-center gap-2 text-sm text-gray-700">
+                                <input type="checkbox" id="check-reviewed" class="verify-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                                Ticket Umsetzung geprüft
+                            </label>
+                        </div>
+                        <div id="verify-error" class="mt-2 text-sm text-red-600 hidden"></div>
+                        <button type="button" id="btn-verify" disabled class="btn-primary w-full text-sm mt-3 opacity-50 cursor-not-allowed">Verifizierung anstoßen</button>
+                    </div>
+                </div>
+                <% } %>
 
                 <!-- Ticket Info -->
                 <div class="card">
@@ -958,6 +983,47 @@
 
         loadWorkflow();
         setInterval(loadWorkflow, 15000);
+
+        const btnVerify = document.getElementById('btn-verify');
+        if (btnVerify) {
+            const checks = document.querySelectorAll('.verify-check');
+            const verifyError = document.getElementById('verify-error');
+            function updateVerifyBtn() {
+                const allChecked = Array.from(checks).every(c => c.checked);
+                btnVerify.disabled = !allChecked;
+                btnVerify.classList.toggle('opacity-50', !allChecked);
+                btnVerify.classList.toggle('cursor-not-allowed', !allChecked);
+            }
+            checks.forEach(c => c.addEventListener('change', updateVerifyBtn));
+            btnVerify.addEventListener('click', async () => {
+                if (btnVerify.disabled) return;
+                btnVerify.disabled = true;
+                btnVerify.textContent = 'Verifizierung läuft…';
+                verifyError.classList.add('hidden');
+                try {
+                    const resp = await fetch('/tickets/<%= ticket.id %>/verify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }
+                    });
+                    if (resp.ok) {
+                        window.location.reload();
+                    } else {
+                        const data = await resp.json().catch(() => ({}));
+                        verifyError.textContent = data.error || 'Verifizierung fehlgeschlagen.';
+                        verifyError.classList.remove('hidden');
+                        btnVerify.disabled = false;
+                        btnVerify.textContent = 'Verifizierung anstoßen';
+                        updateVerifyBtn();
+                    }
+                } catch (err) {
+                    verifyError.textContent = 'Netzwerkfehler: ' + err.message;
+                    verifyError.classList.remove('hidden');
+                    btnVerify.disabled = false;
+                    btnVerify.textContent = 'Verifizierung anstoßen';
+                    updateVerifyBtn();
+                }
+            });
+        }
     </script>
 </body>
 </html>

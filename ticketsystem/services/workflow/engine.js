@@ -263,6 +263,33 @@ async function markTicketUmgesetzt(ticketId, reason) {
     }
 }
 
+async function markTicketUeberprueft(ticketId, reason) {
+    try {
+        const t = await getRow('SELECT id, status FROM tickets WHERE id = ?', [ticketId]);
+        if (!t) return false;
+        if (t.status !== 'umgesetzt') {
+            wfInfo(`markTicketUeberprueft SKIP | ticket=${ticketId} status=${t.status}`);
+            return false;
+        }
+        await run(
+            `UPDATE tickets SET status='überprüft', updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
+            [ticketId]
+        );
+        try {
+            await run(
+                `INSERT INTO audit_log (ticket_id, user, action, details) VALUES (?, ?, ?, ?)`,
+                [ticketId, 'workflow', 'status_change', `Status: ${t.status} -> überprüft (${reason || 'manual_verify'})`]
+            );
+        } catch (_) {}
+        emit('ticket:status', { ticketId, status: 'überprüft', reason });
+        wfInfo(`markTicketUeberprueft OK | ticket=${ticketId} from=${t.status} reason=${reason}`);
+        return true;
+    } catch (e) {
+        wfWarn(`markTicketUeberprueft FAILED ticket=${ticketId}`, e.message);
+        return false;
+    }
+}
+
 // ---------- Repo-Aufloesung (NUR systems.repo_*) ----------
 async function resolveIntegration(ticket) {
     if (!ticket || !ticket.system_id) {
@@ -1889,4 +1916,4 @@ async function rerunStage(runId, stepId, extraInfo, actor) {
     return { status: 'rerun_started', stage: step.stage };
 }
 
-module.exports = { init, startForTicket, decideHumanStep, rerunStage };
+module.exports = { init, startForTicket, decideHumanStep, rerunStage, markTicketUeberprueft };
