@@ -23,7 +23,9 @@ module.exports = {
           offen: '#f59e0b',
           in_bearbeitung: '#3b82f6',
           wartend: '#8b5cf6',
+          umgesetzt: '#14b8a6',
           geschlossen: '#10b981',
+          überprüft: '#6366f1',
         },
         priority: {
           niedrig: '#6b7280',

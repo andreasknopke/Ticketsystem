@@ -71,6 +71,10 @@
   .badge-status-geschlossen {
     @apply badge bg-green-100 text-green-800;
   }
+
+  .badge-status-überprüft {
+    @apply badge bg-indigo-100 text-indigo-800;
+  }
   
   .badge-priority-niedrig {
     @apply badge bg-gray-100 text-gray-800;

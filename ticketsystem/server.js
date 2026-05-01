@@ -306,7 +306,7 @@ app.use((req, res, next) => {
 // Hilfsfunktionen fuer EJS
 app.locals.toTitle = (str) => {
     if (!str) return '';
-    return str.replace(/_/g, ' ').replace(/\w\S*/g, txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+    return str.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
 };
 
 app.locals.formatDateTime = (value) => {
@@ -879,6 +879,42 @@ function initDb() {
         });
     });
 
+    // Migration: tickets.status CHECK-Constraint um 'überprüft' erweitern.
+    db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'", (sqlErr, row) => {
+        if (sqlErr || !row || !row.sql) return;
+        if (row.sql.includes("'überprüft'")) return;
+        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
+        console.log('[migration] tickets.status CHECK erweitern (überprüft)…');
+        db.serialize(() => {
+            db.run('PRAGMA foreign_keys=OFF');
+            db.run('BEGIN TRANSACTION');
+            const newDdl = row.sql.replace(
+                /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
+                "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen'"
+            ).replace(/CREATE TABLE\s+tickets/i, 'CREATE TABLE tickets__new');
+            db.run(newDdl, (e1) => {
+                if (e1) { console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                db.all('PRAGMA table_info(tickets)', (e2, cols) => {
+                    if (e2) { console.error('[migration] PRAGMA fehlgeschlagen:', e2.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                    const colList = cols.map(c => c.name).join(', ');
+                    db.run(`INSERT INTO tickets__new (${colList}) SELECT ${colList} FROM tickets`, (e3) => {
+                        if (e3) { console.error('[migration] Datenkopie fehlgeschlagen:', e3.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                        db.run('DROP TABLE tickets', (e4) => {
+                            if (e4) { console.error('[migration] DROP fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                            db.run('ALTER TABLE tickets__new RENAME TO tickets', (e5) => {
+                                if (e5) { console.error('[migration] RENAME fehlgeschlagen:', e5.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                                db.run('COMMIT', () => {
+                                    db.run('PRAGMA foreign_keys=ON');
+                                    console.log('[migration] tickets.status erfolgreich erweitert (überprüft)');
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    });
+
     // --- KI-Workflow: Erweiterungen Mitarbeiter & Systeme ---
 
     // n:m Mitarbeiter <-> Workflow-Rollen
@@ -1198,7 +1234,7 @@ function initTicketsTable() {
             username TEXT,
             console_logs TEXT,
             software_info TEXT,
-            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen')) DEFAULT 'offen',
+            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen',
             priority TEXT CHECK(priority IN ('niedrig', 'mittel', 'hoch', 'kritisch')) DEFAULT 'mittel',
             system_id INTEGER,
             assigned_to INTEGER,
