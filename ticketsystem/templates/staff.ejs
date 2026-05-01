@@ -54,7 +54,7 @@
         <div class="card mb-8">
             <div class="card-header flex items-center justify-between">
                 <h2 class="text-lg font-semibold text-gray-900">Mitarbeiter und KI-Bots</h2>
-                <button type="button" class="btn-primary text-sm" onclick='openStaffModal(null)'>+ Mitarbeiter / KI-Bot</button>
+                <button type="button" id="newStaffBtn" class="btn-primary text-sm">+ Mitarbeiter / KI-Bot</button>
             </div>
             <div class="card-body text-sm text-slate-600">
                 Mitarbeiter können <strong>Menschen</strong> oder <strong>KI-Bots</strong> sein. Jeder kann eine oder
@@ -83,7 +83,7 @@
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
-                            <% staff.forEach(s => { %>
+                            <% staff.forEach((s, index) => { %>
                             <tr>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">#<%= s.id %></td>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900"><%= s.name %></td>
@@ -127,8 +127,7 @@
                                     <% } %>
                                 </td>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm">
-                                    <button type="button" class="mr-3 text-primary-600 hover:text-primary-800"
-                                        onclick='openStaffModal(<%- JSON.stringify(s) %>)'>Bearbeiten</button>
+                                    <button type="button" class="mr-3 text-primary-600 hover:text-primary-800 edit-staff-btn" data-index="<%= index %>">Bearbeiten</button>
                                     <form method="post" action="/admin/staff/<%= s.id %>/delete" style="display:inline;" onsubmit="return confirm('Mitarbeiter <%= s.name %> wirklich löschen?');">
                                         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                         <button type="submit" class="text-red-600 hover:text-red-900">Löschen</button>
@@ -148,7 +147,7 @@
         </div>
     </main>
 
-    <div id="staffModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+    <div id="staffModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="staffModalTitle" aria-hidden="true">
         <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200">
             <div class="border-b border-slate-200 px-6 py-4">
                 <div class="flex items-start justify-between gap-4">
@@ -157,7 +156,7 @@
                         <h3 id="staffModalTitle" class="mt-1 text-xl font-semibold text-slate-900">Neuer Mitarbeiter</h3>
                         <p class="mt-1 text-sm text-slate-500">Mensch oder KI-Bot mit einem oder mehreren Workflow-Profilen.</p>
                     </div>
-                    <button type="button" class="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onclick="closeStaffModal()" aria-label="Dialog schließen">
+                    <button type="button" id="closeModalHeaderBtn" class="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" aria-label="Dialog schließen">
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
@@ -188,8 +187,8 @@
                 <fieldset>
                     <legend class="text-sm font-semibold text-slate-700">Typ</legend>
                     <div class="mt-2 flex gap-4">
-                        <label class="inline-flex items-center gap-2"><input type="radio" name="kind" value="human" id="staff_kind_human" checked onchange="onKindChange()"> <span>Mensch</span></label>
-                        <label class="inline-flex items-center gap-2"><input type="radio" name="kind" value="ai" id="staff_kind_ai" onchange="onKindChange()"> <span>KI-Bot</span></label>
+                        <label class="inline-flex items-center gap-2"><input type="radio" name="kind" value="human" id="staff_kind_human" checked> <span>Mensch</span></label>
+                        <label class="inline-flex items-center gap-2"><input type="radio" name="kind" value="ai" id="staff_kind_ai"> <span>KI-Bot</span></label>
                     </div>
                 </fieldset>
 
@@ -282,7 +281,7 @@
                 </fieldset>
 
                 <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">
-                    <button type="button" onclick="closeStaffModal()" class="btn-secondary">Abbrechen</button>
+                    <button type="button" id="cancelModalBtn" class="btn-secondary">Abbrechen</button>
                     <button type="submit" class="btn-primary">Speichern</button>
                 </div>
             </form>
@@ -290,6 +289,7 @@
     </div>
 
     <script>
+    const staffList = <%- JSON.stringify(staff) %>;
     const staffModal = document.getElementById('staffModal');
 
     function onKindChange() {
@@ -366,14 +366,33 @@
         document.getElementById('staffEditForm').action = isNew ? '/admin/staff' : ('/admin/staff/' + staff.id + '/update');
         staffModal.classList.remove('hidden');
         staffModal.classList.add('flex');
+        staffModal.setAttribute('aria-hidden', 'false');
         document.body.classList.add('overflow-hidden');
+        document.getElementById('staff_name').focus();
     }
 
     function closeStaffModal() {
         staffModal.classList.add('hidden');
         staffModal.classList.remove('flex');
+        staffModal.setAttribute('aria-hidden', 'true');
         document.body.classList.remove('overflow-hidden');
     }
+
+    // Event listeners to replace inline handlers
+    document.getElementById('newStaffBtn').addEventListener('click', () => openStaffModal(null));
+
+    document.querySelectorAll('.edit-staff-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const index = parseInt(this.dataset.index);
+            openStaffModal(staffList[index]);
+        });
+    });
+
+    document.getElementById('closeModalHeaderBtn').addEventListener('click', closeStaffModal);
+    document.getElementById('cancelModalBtn').addEventListener('click', closeStaffModal);
+
+    document.getElementById('staff_kind_human').addEventListener('change', onKindChange);
+    document.getElementById('staff_kind_ai').addEventListener('change', onKindChange);
 
     staffModal.addEventListener('click', function(event) {
         if (event.target === staffModal) closeStaffModal();
@@ -382,6 +401,26 @@
     document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape' && !staffModal.classList.contains('hidden')) {
             closeStaffModal();
+        }
+    });
+
+    // Focus trap
+    staffModal.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+            const focusable = staffModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey) {
+                if (document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else {
+                if (document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
         }
     });
     </script>
