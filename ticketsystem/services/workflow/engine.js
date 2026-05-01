@@ -225,61 +225,44 @@ function previousStageContextSuffix(ctx, stageName) {
         if (!cleaned.length) return;
         blocks.push(`### ${label}\n${cleaned.join('\n')}`);
     };
+    const t = ctx.ticket || {};
 
-    if (stageName !== 'triage' && ctx.triage) {
-        addBlock('Vorherige Stage: Triage', [
-            `- Entscheidung: ${ctx.triage.decision || '-'}`,
-            `- Zusammenfassung: ${ctx.triage.summary || '-'}`,
-            `- Begründung: ${ctx.triage.reason || '-'}`,
-            `- Vorgeschlagene Handlung: ${ctx.triage.suggested_action || '-'}`,
-            Array.isArray(ctx.triage.open_questions) && ctx.triage.open_questions.length
-                ? `- Offene Fragen: ${ctx.triage.open_questions.join(' | ')}`
-                : ''
-        ]);
+    if (stageName !== 'triage') {
+        const triageSummary = (ctx.triage?.summary) || t.triage_summary || '';
+        if (triageSummary) {
+            addBlock('Vorherige Stage: Triage', [
+                `- Entscheidung: ${ctx.triage?.decision || t.triage_decision || '-'}`,
+                `- Zusammenfassung: ${triageSummary}`,
+            ]);
+        }
     }
 
-    if (['planning', 'integration', 'coding'].includes(stageName) && ctx.security) {
-        addBlock('Vorherige Stage: Security', [
-            `- Coding-Prompt: ${ctx.security.coding_prompt || ctx.coding_prompt || '-'}`,
-            Array.isArray(ctx.security.findings) && ctx.security.findings.length
-                ? `- Findings: ${ctx.security.findings.map(f => `${f.type || 'finding'}: ${f.note || ''}`).join(' | ')}`
-                : '',
-            Array.isArray(ctx.security.open_questions) && ctx.security.open_questions.length
-                ? `- Offene Fragen: ${ctx.security.open_questions.join(' | ')}`
-                : ''
-        ]);
+    if (['planning', 'integration', 'coding'].includes(stageName)) {
+        const cp = ctx.security?.coding_prompt || ctx.coding_prompt || t.coding_prompt || '';
+        if (cp) {
+            addBlock('Vorherige Stage: Security', [`- Coding-Prompt: ${cp}`]);
+        }
     }
 
-    if (['integration', 'coding'].includes(stageName) && ctx.planning) {
-        addBlock('Vorherige Stage: Planning', [
-            `- Zusammenfassung: ${ctx.planning.summary || '-'}`,
-            `- Aufwand: ${ctx.planning.estimated_effort || '-'}`,
-            Array.isArray(ctx.planning.allowed_files) && ctx.planning.allowed_files.length
-                ? `- Allowed Files: ${ctx.planning.allowed_files.join(', ')}`
-                : '',
-            Array.isArray(ctx.planning.risks) && ctx.planning.risks.length
-                ? `- Risiken: ${ctx.planning.risks.join(' | ')}`
-                : '',
-            Array.isArray(ctx.planning.open_questions) && ctx.planning.open_questions.length
-                ? `- Offene Fragen: ${ctx.planning.open_questions.join(' | ')}`
-                : ''
-        ]);
+    if (['integration', 'coding'].includes(stageName)) {
+        const plan = ctx.planning || (t.implementation_plan ? { summary: '(siehe Markdown unten)' } : null);
+        if (plan || ctx.implementation_plan || t.implementation_plan) {
+            addBlock('Vorherige Stage: Planning', [
+                `- Zusammenfassung: ${plan?.summary || '(siehe Architect Plan)'}`,
+                ctx.allowed_files?.length ? `- Allowed Files: ${ctx.allowed_files.join(', ')}` : '',
+                t.change_kind ? `- Change-Kind: ${t.change_kind}` : ''
+            ]);
+        }
     }
 
-    if (stageName === 'coding' && ctx.integration) {
-        addBlock('Vorherige Stage: Integration', [
-            `- Verdict: ${ctx.integration.verdict || '-'}`,
-            `- Empfohlener Coding-Level: ${ctx.integration.recommended_complexity || '-'}`,
-            Array.isArray(ctx.integration.recommended_changes) && ctx.integration.recommended_changes.length
-                ? `- Empfohlene Änderungen: ${ctx.integration.recommended_changes.join(' | ')}`
-                : '',
-            Array.isArray(ctx.integration.integration_risks) && ctx.integration.integration_risks.length
-                ? `- Integrationsrisiken: ${ctx.integration.integration_risks.join(' | ')}`
-                : '',
-            Array.isArray(ctx.integration.open_questions) && ctx.integration.open_questions.length
-                ? `- Offene Fragen: ${ctx.integration.open_questions.join(' | ')}`
-                : ''
-        ]);
+    if (stageName === 'coding') {
+        const integ = ctx.integration || (t.integration_assessment ? { verdict: '(siehe Markdown)' } : null);
+        if (integ || ctx.integration_assessment || t.integration_assessment) {
+            addBlock('Vorherige Stage: Integration', [
+                `- Verdict: ${integ?.verdict || ctx.integration?.verdict || '(siehe Integration Review)'}`,
+                `- Empfohlener Level: ${ctx.recommended_complexity || integ?.recommended_complexity || '-'}`
+            ]);
+        }
     }
 
     if (!blocks.length) return '';
@@ -471,6 +454,15 @@ async function execIntegration(ctx) {
     const projectDocs = projectDocsRows.map(d => `### ${d.title}\n\n${d.content || ''}`).join('\n---\n').slice(0, 60_000);
     wfInfo(`Stage:INTEGRATION projectDocs | count=${projectDocsRows.length} combined_len=${projectDocs.length}`);
 
+    // Repo-Kontext wiederherstellen falls nach Questions-Pause verloren
+    if (!ctx.repo_context) {
+        const integration = await resolveIntegration(ctx.ticket);
+        const repoCtx = await fetchRepoContext(integration);
+        ctx.repo_context = repoCtx.repoContext;
+        ctx.repo_source = repoCtx.source;
+        wfInfo(`Stage:INTEGRATION repoContext restored | source=${repoCtx.source} len=${repoCtx.repoContext.length}`);
+    }
+
     const userPrompt = prompts.INTEGRATION.buildUser({
         ticket: ctx.ticket,
         plan: ctx.implementation_plan,
@@ -612,8 +604,19 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     let triageDecision = null;
     wfInfo(`runStages start | run=${runId} ticket=${initialTicket.id} stages=${stages.map(s => s.role).join('→')} extraInfo=${ctx.extra_info ? 'yes' : 'no'}`);
 
+    // Context aus vorherigen Runs wiederherstellen (bei Resume nach Questions-Pause)
+    function restoreContextFromTicket(ticket) {
+        if (!ctx.implementation_plan && ticket.implementation_plan) ctx.implementation_plan = ticket.implementation_plan;
+        if (!ctx.integration_assessment && ticket.integration_assessment) ctx.integration_assessment = ticket.integration_assessment;
+        if (!ctx.coding_prompt && ticket.coding_prompt) ctx.coding_prompt = ticket.coding_prompt;
+        if (!ctx.redacted_description && ticket.redacted_description) ctx.redacted_description = ticket.redacted_description;
+        // Triage/Security/Planning outputs können wir nicht aus DB wiederherstellen,
+        // aber der previousStageContextSuffix bekommt sie über ctx.ticket.*
+    }
+
     for (const stage of stages) {
         ctx.ticket = await getRow('SELECT * FROM tickets WHERE id = ?', [initialTicket.id]);
+        restoreContextFromTicket(ctx.ticket);
 
         if (triageDecision === 'unclear' && ['security', 'planning', 'integration'].includes(stage.role)) {
             await skipStep(runId, stage.role, stage.sort_order, 'triage_unclear');
