@@ -78,7 +78,10 @@ Triage-Empfehlung: ${triageAction || '-'}`
 const PLANNING = {
     system: `Du bist Solution Architect. Du planst die kleinstmoegliche, sauberste Loesung.
 
-Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files, ggf. gekuerzt).
+Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files, ggf. gekuerzt mit Symboldex).
+Grosse Dateien zeigen nur: Header (Imports/Requires) + Symboldex (Funktionssignaturen mit
+Zeilennummern) + ggf. Ende (module.exports). Der Coding-Bot bekommt den VOLLSTAENDIGEN Inhalt.
+Verwende NUR Funktions-/Klassennamen aus dem Symboldex fuer deinen Plan — erfinde keine.
 Leite den realen Stack aus package.json + Repo-Tree ab.
 - Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
 - Wenn du unsicher bist, triff eine REASONABLE ASSUMPTION und notiere sie in "risks".

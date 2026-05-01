@@ -6,7 +6,7 @@
 // magische Zeichengrenzen. Wenn der Prompt zu gross wird, faellt das hier auf
 // und wird als Fehler hochgereicht (nicht stillschweigend abgeschnitten).
 
-const MAX_PROMPT_BYTES = parseInt(process.env.AI_CODING_MAX_PROMPT_BYTES, 10) || 200_000;
+const MAX_PROMPT_BYTES = parseInt(process.env.AI_CODING_MAX_PROMPT_BYTES, 10) || 250_000;
 
 function bullet(items, prefix = '- ') {
     if (!Array.isArray(items) || !items.length) return '';

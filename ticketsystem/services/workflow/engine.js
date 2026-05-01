@@ -1205,8 +1205,8 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
     }
     if (integration && allowedFiles.length) {
         try {
-            currentFiles = await fetchFilesFromRepo(integration, allowedFiles);
-            wfInfo(`runCodingLoop currentFiles | requested=${allowedFiles.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length}`);
+            currentFiles = await fetchFilesFromRepo(integration, allowedFiles, { maxBytes: 200 * 1024 });
+            wfInfo(`runCodingLoop currentFiles | requested=${allowedFiles.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length} totalBytes=${currentFiles.reduce((s, f) => s + (f.content?.length || 0), 0)}`);
         } catch (e) { wfWarn(`runCodingLoop fetchFiles failed`, e.message); }
     }
 

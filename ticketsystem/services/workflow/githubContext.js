@@ -125,9 +125,8 @@ async function fetchRepoContext(integration) {
 
 /**
  * Kuerzt eine Datei auf Overview-Groesse (z.B. fuer Architect/Clarifier).
- * Nimmt die ersten MAX_OVERVIEW_LINES Zeilen und cappt bei MAX_OVERVIEW_BYTES.
- * Markiert das Ergebnis mit truncated=true wenn gekuerzt wurde.
- * package.json wird nicht gekuerzt (meist < 4KB).
+ * Struktur: Header (Imports/Requires) + Symboldex (Funktionssignaturen + Zeilennummern)
+ * + ggf. die letzten Zeilen (module.exports). package.json wird nicht gekuerzt.
  */
 function truncateForOverview(file) {
     if (!file || !file.exists || !file.content) return file;
@@ -135,10 +134,54 @@ function truncateForOverview(file) {
     if (file.content.length <= MAX_OVERVIEW_BYTES) return { ...file, truncated: false };
 
     const lines = file.content.split('\n');
-    const trimmed = lines.slice(0, MAX_OVERVIEW_LINES).join('\n');
+    const parts = [];
+
+    // 1) Header: Zeilen die mit import/require/'use strict'/Kommentaren beginnen
+    const headerLines = [];
+    let pastHeader = false;
+    for (let i = 0; i < lines.length && !pastHeader; i++) {
+        const line = lines[i];
+        if (/^\s*$/.test(line) || /^['"]use strict['"]/.test(line) ||
+            /^(\/\/|#|\/\*|\*\s)/.test(line.trim()) ||
+            /^\s*(const|let|var|import|export)\s.*require\s*\(/.test(line) ||
+            /^import\s/.test(line.trim()) || /^export\s.*from\s/.test(line.trim())) {
+            headerLines.push(line);
+        } else if (/^(async\s+)?function\s|^(const|let|var)\s+\w+\s*=\s*(async\s+)?function|^(class\s|module\.exports|exports\.)/.test(line.trim())) {
+            pastHeader = true;
+        } else {
+            headerLines.push(line);
+        }
+    }
+    parts.push(headerLines.join('\n'));
+
+    // 2) Symboldex: Alle Top-Level-Funktionen/Klassen/Exports mit Zeilennummern
+    parts.push('\n// === SYMBOL-INDEX ===');
+    const symRe = /^(\s*)(async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function|(?:const|let|var)\s+(\w+)\s*=\s*\(.*\)\s*=>|^class\s+(\w+)|module\.exports\s*=\s*\{|module\.exports\.(\w+)\s*=|exports\.(\w+)\s*=|^(export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var))\s+(\w+)/;
+    const symbols = [];
+    for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(symRe);
+        if (m) {
+            const name = m[3] || m[4] || m[5] || m[6] || m[7] || m[8] || m[10] || '';
+            const sig = lines[i].trim().slice(0, 120);
+            if (name || sig.startsWith('module.exports =') || sig.startsWith('export ')) {
+                symbols.push(`L${i + 1}: ${sig}`);
+            }
+        }
+    }
+    parts.push(symbols.join('\n'));
+
+    // 3) Letzte Zeilen: module.exports-Block falls vorhanden
+    const lastSection = lines.slice(-20).join('\n');
+    const hasExports = /module\.exports|exports\.|=.*require\(/.test(lastSection);
+    if (hasExports) {
+        parts.push('\n// === END OF FILE (last 20 lines) ===');
+        parts.push(lastSection);
+    }
+
+    const result = parts.join('\n');
     return {
         ...file,
-        content: trimmed.slice(0, MAX_OVERVIEW_BYTES) + '\n// ... [truncated for overview]',
+        content: result.slice(0, MAX_OVERVIEW_BYTES * 2) + '\n// ... [truncated for overview — full file available to Coding-Bot]',
         truncated: true
     };
 }
@@ -193,7 +236,8 @@ async function fetchRepoTreeLight(integration, opts = {}) {
  * Read-only. Gibt fuer jede Pfad-Eingabe ein Objekt { path, exists, content, truncated } zurueck.
  * Existierende Dateien > MAX_FILE_BYTES werden gekuerzt und mit truncated=true markiert.
  */
-async function fetchFilesFromRepo(integration, paths) {
+async function fetchFilesFromRepo(integration, paths, { maxBytes } = {}) {
+    const limit = maxBytes || MAX_FILE_BYTES;
     const safePaths = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p && !p.includes('..')) : [];
     if (!integration || !integration.repo_owner || !integration.repo_name || !safePaths.length) {
         return safePaths.map(p => ({ path: p, exists: false, content: '', truncated: false }));
@@ -212,7 +256,7 @@ async function fetchFilesFromRepo(integration, paths) {
         let truncated = false;
         if (data.content && data.encoding === 'base64') {
             const full = Buffer.from(data.content, 'base64').toString('utf-8');
-            if (full.length > MAX_FILE_BYTES) { content = full.slice(0, MAX_FILE_BYTES); truncated = true; }
+            if (full.length > limit) { content = full.slice(0, limit); truncated = true; }
             else content = full;
         }
         out.push({ path, exists: true, content, truncated });
