@@ -1822,7 +1822,7 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
         if (!canViewTicket(req, ticket)) return res.status(403).json({ error: 'Keine Berechtigung' });
         db.get('SELECT * FROM ticket_workflow_runs WHERE ticket_id = ? ORDER BY id DESC LIMIT 1', [ticketId], (err2, run) => {
             if (err2) return res.status(500).json({ error: err2.message });
-            if (!run) return res.json({ run: null, steps: [], artifacts: [], ticket_briefing: null });
+            if (!run) return res.json({ run: null, steps: [], artifacts: [], ticket_briefing: null, system_name: ticket.system_name || null, repo: (ticket.repo_owner && ticket.repo_name) ? `${ticket.repo_owner}/${ticket.repo_name}` : null });
             db.all(`SELECT s.*, st.name AS staff_name, st.kind AS staff_kind
                 FROM ticket_workflow_steps s
                 LEFT JOIN staff st ON st.id = s.staff_id
@@ -1855,7 +1855,7 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
                         briefing.integration_assessment_html = ticket.integration_assessment ? marked.parse(ticket.integration_assessment) : '';
                         briefing.merge_review_html = ticket.merge_review ? marked.parse(ticket.merge_review) : '';
                     } catch (_) {}
-                        res.json({ run, steps, artifacts, ticket_briefing: briefing, coding_bot_choices: codingBotChoices || {} });
+                        res.json({ run, steps, artifacts, ticket_briefing: briefing, coding_bot_choices: codingBotChoices || {}, system_name: ticket.system_name || null, repo: (ticket.repo_owner && ticket.repo_name) ? `${ticket.repo_owner}/${ticket.repo_name}` : null });
                     };
 
                     if (!isAdminRole(req.session.role)) {
@@ -3952,7 +3952,7 @@ app.post('/ticket/:id/merge', requireAuth, (req, res) => {
                     db.run('UPDATE tickets SET feedback_requested = 1 WHERE id = ?', [ticketId]);
                     
                     // Benachrichtigungen senden
-                    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
+    db.get('SELECT t.*, s.name as system_name, s.repo_owner, s.repo_name FROM tickets t LEFT JOIN systems s ON t.system_id = s.id WHERE t.id = ?', [ticketId], (err, ticket) => {
                         if (ticket) {
                             mailStatusChange(ticket, oldTicket.status);
                         }

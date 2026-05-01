@@ -745,7 +745,10 @@
 
                 const run = data.run;
                 let html = `<div class="mb-3 flex items-center justify-between">
-                    <div class="text-xs text-gray-500">Run #${run.id} · gestartet ${new Date(run.started_at + 'Z').toLocaleString('de-DE')}</div>
+                    <div>
+                        <div class="text-xs text-gray-500">Run #${run.id} · gestartet ${new Date(run.started_at + 'Z').toLocaleString('de-DE')}</div>
+                        ${data.system_name ? `<div class="text-xs text-gray-400 mt-0.5">System: <span class="font-medium text-gray-600">${escapeHtml(data.system_name)}</span>${data.repo ? ` · Repo: <span class="font-medium text-gray-600">${escapeHtml(data.repo)}</span>` : ''}</div>` : ''}
+                    </div>
                     <span class="badge ${STATUS_BADGE[run.status] || 'bg-gray-100 text-gray-700'}">${run.status}</span>
                 </div>`;
                 html += '<ol class="space-y-3">';
