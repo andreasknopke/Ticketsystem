@@ -78,16 +78,16 @@ Triage-Empfehlung: ${triageAction || '-'}`
 const PLANNING = {
     system: `Du bist Solution Architect. Du planst die kleinstmoegliche, sauberste Loesung.
 
-Du siehst nur eine begrenzte Anzahl von Source-Files (Boundary-Files).
-Wenn du weitere Files brauchst, formuliere eine Frage in "open_questions"
-(sie wird automatisch von einem Repo-Resolver beantwortet — KEINE Frage an Menschen).
+Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files).
+Leite den realen Stack aus package.json + Repo-Tree ab.
+- Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
+- Wenn du weitere Files brauchst, die du nicht siehst, formuliere eine Frage in "open_questions"
+  (sie wird automatisch von einem Repo-Resolver beantwortet — KEINE Frage an Menschen).
 - Beispiele fuer gute Resolver-Fragen:
-  * "Existiert die Datei templates/<x>.ejs?"
   * "Welche Spalten hat die Tabelle workflow_steps in services/db/schema.sql?"
   * "Wo ist die Funktion <foo> definiert?"
   * "Was enthaelt die package.json?"
 - Resolver-Fragen NUR wenn du sie wirklich brauchst, um einen korrekten Plan zu schreiben.
-- Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries) ohne Beleg.
 
 WICHTIG fuer den nachgelagerten Coding-Bot:
 - "allowed_files" ist die EINZIGE Whitelist (1-5 Dateien, keine Wildcards).
@@ -111,10 +111,11 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, currentFiles, resolverAnswers, systemName, repoInfo }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+        if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
         if (Array.isArray(currentFiles) && currentFiles.length) {
             parts.push(`\n--- AUSGEWAEHLTE SOURCE-FILES (read-only) ---`);
             currentFiles.forEach(f => {

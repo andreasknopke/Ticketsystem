@@ -434,7 +434,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     let resolverAnswersText = '';
     const planningRepoInfo = integration ? `${integration.repo_owner}/${integration.repo_name}` : null;
     let userPrompt = prompts.PLANNING.buildUser({
-        codingPrompt,
+        codingPrompt, repoTree,
         currentFiles: currentFiles.filter(f => f.exists),
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo
@@ -454,7 +454,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             resolverAnswersText = formatAnswersForPrompt(resolver);
             wfInfo(`Stage:PLANNING re-running with resolver answers | answered=${resolver.answers.length}`);
             userPrompt = prompts.PLANNING.buildUser({
-                codingPrompt,
+                codingPrompt, repoTree,
                 currentFiles: currentFiles.filter(f => f.exists),
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo
