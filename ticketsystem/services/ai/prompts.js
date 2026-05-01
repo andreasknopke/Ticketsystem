@@ -111,8 +111,9 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, repoDocs, currentFiles, resolverAnswers }) => {
+    buildUser: ({ codingPrompt, repoTree, repoDocs, currentFiles, resolverAnswers, systemName, repoInfo }) => {
         const parts = [];
+        if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
         if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
         if (repoDocs) parts.push(`\n--- README + DOCS ---\n${repoDocs}`);
@@ -160,8 +161,9 @@ Antworte ausschliesslich als JSON:
   "complexity_rationale": "1-2 Saetze",
   "open_questions": []
 }`,
-    buildUser: ({ plan, projectDocs, repoDocs, resolverAnswers }) => {
+    buildUser: ({ plan, projectDocs, repoDocs, resolverAnswers, systemName, repoInfo }) => {
         const parts = [];
+        if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`PLAN (vom Architect):\n${plan || '(leer)'}`);
         if (projectDocs) parts.push(`\n--- PROJEKT-DOKUMENTE (DB) ---\n${projectDocs}`);
         if (repoDocs) parts.push(`\n--- README + DOCS (Repo) ---\n${repoDocs}`);

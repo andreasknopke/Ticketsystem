@@ -35,12 +35,14 @@ function symbolList(symbols) {
  * @param {string} args.correctionFeedback      Optional: Feedback aus vorheriger Coding-Iteration (Self-Correction)
  * @returns {{ userPrompt: string, stats: Object }}
  */
-function buildCodingBriefing({ ticket, codingLevel, security, plan, integration, currentFiles, approverNote, correctionFeedback }) {
+function buildCodingBriefing({ ticket, codingLevel, security, plan, integration, currentFiles, approverNote, correctionFeedback, systemName, repoInfo }) {
     const parts = [];
 
     // 1) Header
     parts.push(`# Coding-Briefing — Ticket #${ticket.id}`);
     parts.push(`Typ: ${ticket.type} | Titel: ${ticket.title} | Level: ${codingLevel || 'medium'}`);
+    if (systemName) parts.push(`System: ${systemName}`);
+    if (repoInfo) parts.push(`Repo: ${repoInfo}`);
     parts.push('');
 
     // 2) Aufgabe (aus Security oder Plan)

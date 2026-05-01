@@ -418,7 +418,7 @@ async function runResolverIfNeeded({ runId, stage, openQuestions, integration, r
     return { ...result, ran: true };
 }
 
-async function execPlanning({ ticket, staff, runId, securityBundle, integration, repoTree, repoDocs }) {
+async function execPlanning({ ticket, staff, runId, securityBundle, integration, repoTree, repoDocs, systemName }) {
     wfInfo(`Stage:PLANNING start | ticket=${ticket.id} system_id=${ticket.system_id || 'none'} treeLen=${(repoTree || '').length}`);
 
     const codingPrompt = securityBundle?.coding_prompt || ticket.coding_prompt || ticket.redacted_description || ticket.description;
@@ -433,10 +433,12 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     }
 
     let resolverAnswersText = '';
+    const planningRepoInfo = integration ? `${integration.repo_owner}/${integration.repo_name}` : null;
     let userPrompt = prompts.PLANNING.buildUser({
         codingPrompt, repoTree, repoDocs,
         currentFiles: currentFiles.filter(f => f.exists),
-        resolverAnswers: ''
+        resolverAnswers: '',
+        systemName, repoInfo: planningRepoInfo
     });
 
     let r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -455,7 +457,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             userPrompt = prompts.PLANNING.buildUser({
                 codingPrompt, repoTree, repoDocs,
                 currentFiles: currentFiles.filter(f => f.exists),
-                resolverAnswers: resolverAnswersText
+                resolverAnswers: resolverAnswersText,
+                systemName, repoInfo: planningRepoInfo
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
@@ -508,7 +511,7 @@ function renderIntegrationMarkdown(out) {
     return lines.join('\n');
 }
 
-async function execIntegration({ ticket, staff, runId, planningBundle, integration, repoTree, repoDocs }) {
+async function execIntegration({ ticket, staff, runId, planningBundle, integration, repoTree, repoDocs, systemName }) {
     wfInfo(`Stage:INTEGRATION start | ticket=${ticket.id}`);
 
     const projectDocsRows = await getAll(`SELECT pd.title, pd.content FROM project_documents pd
@@ -519,11 +522,13 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
     // Plan als kompaktes Markdown an den Reviewer geben (volle JSON-Struktur ist redundant)
     const planMd = ticket.implementation_plan || (planningBundle ? renderPlanMarkdown(planningBundle) : '');
 
+    const integrationRepoInfo = integration ? `${integration.repo_owner}/${integration.repo_name}` : null;
     let userPrompt = prompts.INTEGRATION.buildUser({
         plan: planMd,
         projectDocs,
         repoDocs,
-        resolverAnswers: ''
+        resolverAnswers: '',
+        systemName, repoInfo: integrationRepoInfo
     });
 
     let r = await callAIWithStaff(staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
@@ -539,7 +544,8 @@ async function execIntegration({ ticket, staff, runId, planningBundle, integrati
             const ansText = formatAnswersForPrompt(resolver);
             wfInfo(`Stage:INTEGRATION re-running with resolver answers | answered=${resolver.answers.length}`);
             userPrompt = prompts.INTEGRATION.buildUser({
-                plan: planMd, projectDocs, repoDocs, resolverAnswers: ansText
+                plan: planMd, projectDocs, repoDocs, resolverAnswers: ansText,
+                systemName, repoInfo: integrationRepoInfo
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.INTEGRATION.system, userPrompt });
             out = r.parsed || out;
@@ -718,13 +724,13 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
                 result = await execPlanning({
                     ticket, staff, runId,
                     securityBundle: bundles.security,
-                    integration, repoTree, repoDocs
+                    integration, repoTree, repoDocs, systemName
                 });
             } else if (stage.role === 'integration') {
                 result = await execIntegration({
                     ticket, staff, runId,
                     planningBundle: bundles.planning,
-                    integration, repoTree, repoDocs
+                    integration, repoTree, repoDocs, systemName
                 });
             } else if (stage.role === 'approval') {
                 result = { output: { verdict: 'approved', note: 'AI auto-approval' }, ai: null };
@@ -1008,10 +1014,10 @@ function validateCodingScope(out, allowedFiles, changeKind, currentFiles) {
  * Ein Coding-Pass: Briefing bauen, AI rufen, validieren.
  * Liefert { out, ai, scopeViolations, codeCheckViolations }.
  */
-async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback }) {
+async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback, systemName, repoInfo }) {
     const { userPrompt, stats } = buildCodingBriefing({
         ticket, codingLevel, security, plan, integration,
-        currentFiles, approverNote, correctionFeedback
+        currentFiles, approverNote, correctionFeedback, systemName, repoInfo
     });
     wfInfo(`Stage:CODING briefing | bytes=${stats.prompt_bytes} chars=${stats.prompt_chars} files=${stats.sections.current_files_count} hasApprover=${stats.sections.has_approver_note} hasCorrection=${stats.sections.has_correction}`);
 
@@ -1075,6 +1081,15 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
     const integration = await resolveIntegration(ticket);
     const allowedFiles = Array.isArray(bundles.planning.allowed_files) ? bundles.planning.allowed_files : [];
     let currentFiles = [];
+    let systemName = null;
+    let repoInfo = null;
+    if (ticket.system_id) {
+        const sys = await getRow('SELECT name FROM systems WHERE id = ?', [ticket.system_id]);
+        systemName = sys?.name || null;
+    }
+    if (integration) {
+        repoInfo = `${integration.repo_owner}/${integration.repo_name}`;
+    }
     if (integration && allowedFiles.length) {
         try {
             currentFiles = await fetchFilesFromRepo(integration, allowedFiles);
@@ -1119,7 +1134,9 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
                     currentFiles,
                     integrationCfg: integration,
                     approverNote,
-                    correctionFeedback
+                    correctionFeedback,
+                    systemName,
+                    repoInfo
                 });
                 passLog.push({
                     pass, prompt_bytes: res.prompt_bytes,
@@ -1155,7 +1172,12 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
         const out = lastResult.out;
         const allFailed = lastResult.scopeViolations.length || lastResult.codeCheckViolations.length;
 
-        out.markdown = renderCodingMarkdown(out, codingLevel);
+         out.markdown = renderCodingMarkdown(out, codingLevel);
+            // System-/Repo-Kontext zum Coding-Markdown hinzufuegen
+            const codingCtxParts = [];
+            if (systemName) codingCtxParts.push(`System: ${systemName}`);
+            if (repoInfo) codingCtxParts.push(`Repo: ${repoInfo}`);
+            if (codingCtxParts.length) out.markdown = `> ${codingCtxParts.join(' · ')}\n\n${out.markdown}`;
         out.passes = passLog;
         if (allFailed) {
             out.scope_violations = lastResult.scopeViolations;
