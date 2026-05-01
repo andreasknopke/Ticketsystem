@@ -3995,7 +3995,7 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
             }
 
             io.to(`ticket-${ticketId}`).emit('ticket-updated', { ticketId, updates: { status }, actor });
-            res.redirect('/ticket/' + ticketId);
+            res.redirect(status === 'geschlossen' ? '/' : '/ticket/' + ticketId);
         });
     });
 });
