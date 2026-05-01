@@ -945,10 +945,14 @@ async function execCoding(ctx, codingLevel) {
         }
     }
 
-    // Nur existierende Dateien an den Prompt übergeben
-    const existingCurrentFiles = currentFiles.filter(f => f.exists);
+    // Nur existierende Dateien an den Prompt übergeben, Inhalt auf 15KB pro Datei kappen
+    const existingCurrentFiles = currentFiles.filter(f => f.exists).map(f => ({
+        ...f,
+        content: f.content ? f.content.slice(0, 15000) : '',
+        truncated: f.truncated || (f.content && f.content.length > 15000)
+    }));
 
-    const userPrompt = prompts.CODING.buildUser({
+    let userPrompt = prompts.CODING.buildUser({
         ticket: ctx.ticket,
         codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
         plan: ctx.ticket.implementation_plan,
