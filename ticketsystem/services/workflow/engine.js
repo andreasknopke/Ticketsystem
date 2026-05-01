@@ -945,7 +945,8 @@ async function execCoding(ctx, codingLevel) {
         codingPrompt: ctx.ticket.coding_prompt || ctx.ticket.redacted_description || ctx.ticket.description,
         plan: ctx.ticket.implementation_plan,
         integrationAssessment: ctx.ticket.integration_assessment,
-        repoContext: repoCtx.repoContext,
+        // Repo-Kontext auf max 3000 Zeichen kürzen – currentFiles hat die aktuellen Dateiinhalte
+        repoContext: (repoCtx.repoContext || '').slice(0, 3000),
         level: codingLevel,
         approverNote: ctx.approverNote || null,
         approverDecision: ctx.approverDecision || null,
@@ -954,6 +955,11 @@ async function execCoding(ctx, codingLevel) {
         changeKind,
         currentFiles
     }) + previousStageContextSuffix(ctx, 'coding');
+    // Prompt auf max 60KB kürzen falls zu groß (Timeout-Gefahr)
+    if (userPrompt.length > 60000) {
+        wfWarn(`Stage:CODING prompt truncated | before=${userPrompt.length}`);
+        userPrompt = userPrompt.slice(0, 60000) + '\n\n[...Prompt truncated due to size limit...]';
+    }
     wfInfo(`Stage:CODING prompt | userPrompt_len=${userPrompt.length}`);
     const r = await callAIWithStaff(ctx.staff, { systemPrompt: prompts.CODING.system, userPrompt });
     const out = r.parsed || {
