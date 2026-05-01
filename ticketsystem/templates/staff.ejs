@@ -150,6 +150,9 @@
         </div>
     </main>
 
+    <!-- MODAL TEST: visible red box for debugging -->
+    <div id="modalTestBox" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:9999; background:red; color:white; padding:40px; font-size:24px; font-weight:bold;">MODAL TEST BOX VISIBLE</div>
+
     <!-- Modal Overlay -->
     <div id="staffModal" class="fixed inset-0 z-50 items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm" style="display:none" onclick="if(event.target === this) closeStaffModal()">
         <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200" onclick="event.stopPropagation()">
@@ -380,6 +383,7 @@
         
         document.getElementById('staffEditForm').action = isNew ? '/admin/staff' : ('/admin/staff/' + staff.id + '/update');
         
+        document.getElementById('modalTestBox').style.display = 'block';
         staffModal.style.display = 'flex';
         document.body.classList.add('overflow-hidden');
     }
