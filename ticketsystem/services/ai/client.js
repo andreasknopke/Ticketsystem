@@ -70,7 +70,7 @@ const CONFIG = {
         // Verfügbare Modelle: Kimi-k2.6, GPT-OSS-120B, etc.
         baseUrl: (env.CLARIFAI_BASE_URL || 'https://api.clarifai.com/v2/ext/openai/v1').replace(/\/$/, ''),
         apiKey: normalizeApiKey(env.CLARIFAI_PAT),
-        defaultModel: env.CLARIFAI_MODEL || 'kimi-k2-6'
+        defaultModel: env.CLARIFAI_MODEL || ''
     }
 };
 
