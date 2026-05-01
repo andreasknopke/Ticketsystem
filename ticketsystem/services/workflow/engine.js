@@ -424,7 +424,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     const codingPrompt = securityBundle?.coding_prompt || ticket.coding_prompt || ticket.redacted_description || ticket.description;
 
     // Boundary-Files laden (kleiner Kontext, damit der Architect sich orientieren kann)
-    const boundary = (process.env.REPO_BOUNDARY_FILES || 'package.json,server.js,README.md').split(',').map(s => s.trim()).filter(Boolean);
+    const boundary = (process.env.REPO_BOUNDARY_FILES || 'ticketsystem/package.json,ticketsystem/server.js,ticketsystem/README.md').split(',').map(s => s.trim()).filter(Boolean);
     let currentFiles = [];
     if (integration && boundary.length) {
         try { currentFiles = await fetchFilesFromRepo(integration, boundary); }
