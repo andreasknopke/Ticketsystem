@@ -10,12 +10,12 @@ const {
     fetchFilesFromRepo
 } = require('../workflow/githubContext');
 
-const MAX_GREP_BYTES_PER_FILE = 60 * 1024;     // 60 KB Cap je Datei beim Grep
-const MAX_GREP_HITS = 25;                       // max. Treffer im Ergebnis
-const MAX_GREP_FILES = 8;                       // max. Dateien je grep-Aufruf
+const MAX_GREP_BYTES_PER_FILE = 120 * 1024;    // 120 KB Cap je Datei beim Grep
+const MAX_GREP_HITS = 200;                      // max. Treffer im Ergebnis
+const MAX_GREP_FILES = 200;                     // max. Dateien je grep-Aufruf
 const MAX_READ_LINES = 200;                     // max. Zeilen per read_file
-const MAX_LIST_ENTRIES = 60;                    // max. Eintraege in list_dir
-const MAX_TREE_ENTRIES = 200;                   // max. Eintraege in list_tree
+const MAX_LIST_ENTRIES = 200;                   // max. Eintraege in list_dir
+const MAX_TREE_ENTRIES = 1000;                  // max. Eintraege in list_tree
 
 // Sehr grobe Glob -> RegExp Konvertierung (* und **). Ausreichend fuer
 // Pfade wie "ticketsystem/**/*.js" oder "**/*.md".
@@ -104,7 +104,7 @@ async function tool_grep({ integration, pattern, glob }) {
     catch (e) { return { error: `Ungueltige Regex: ${e.message}` }; }
 
     try {
-        const tree = await fetchRepoTreeLight(integration, { maxEntries: 800 });
+        const tree = await fetchRepoTreeLight(integration, { maxEntries: 2000 });
         const text = typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.join('\n') : String(tree || '');
         let candidates = text.split('\n').filter(p => p && !p.endsWith('/'));
         if (glob) {
