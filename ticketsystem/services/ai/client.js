@@ -75,7 +75,7 @@ const CONFIG = {
 };
 
 const DEFAULT_PROVIDER = env.AI_DEFAULT_PROVIDER || 'deepseek';
-const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 120000;
+const DEFAULT_TIMEOUT = parseInt(env.AI_WORKFLOW_REQUEST_TIMEOUT_MS, 10) || 300000;
 // 128k Default fuer grosse Cloud-Provider. Lokale Backends (vLLM,
 // openai/openai_local) haben oft engere max_model_len-Limits und MUESSEN per
 // provider-spezifischer Env runtergeregelt werden, sonst HTTP 400.
