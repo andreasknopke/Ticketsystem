@@ -34,7 +34,7 @@
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
-                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span
                     <a href="/account" class="btn-secondary text-sm">Account</a>
                     <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
                 </div>
@@ -57,8 +57,8 @@
                 <button type="button" class="btn-primary text-sm" onclick='openStaffModal(null)'>+ Mitarbeiter / KI-Bot</button>
             </div>
             <div class="card-body text-sm text-slate-600">
-                Mitarbeiter können <strong>Menschen</strong> oder <strong>KI-Bots</strong> sein. Jeder kann eine oder
-                mehrere Workflow-Rollen übernehmen (Triage, Security &amp; Privacy, Planning, Integration, Final Approval).
+                Mitarbeiter können <strong class="text-slate-900">Menschen</strong> oder <strong class="text-slate-900">KI-Bots</strong> sein. Jeder kann eine oder
+                mehrere Workflow-Rollen übernehmen (Triage, Security &amp; Privacy, Planning, Integration, Final Approval). 
                 Bei mehreren Kandidaten pro Rolle wird per Round-Robin zugewiesen.
             </div>
         </div>
@@ -148,8 +148,9 @@
         </div>
     </main>
 
-    <div id="staffModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-        <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200">
+    <!-- Modal Overlay -->
+    <div id="staffModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm" onclick="if(event.target === this) closeStaffModal()">
+        <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200" onclick="event.stopPropagation()">
             <div class="border-b border-slate-200 px-6 py-4">
                 <div class="flex items-start justify-between gap-4">
                     <div>
@@ -225,7 +226,7 @@
                             <label class="mb-1 block text-sm font-medium text-slate-700">Extra-Config (JSON, optional)</label>
                             <textarea id="staff_ai_extra_config" name="ai_extra_config" rows="2" class="form-input w-full font-mono text-xs" placeholder='{"top_p": 0.9}'></textarea>
                         </div>
-                        <div>
+                        <div class="md:col-span-2">
                             <label class="mb-1 block text-sm font-medium text-slate-700">Coding-Level (nur fuer Coding Bot)</label>
                             <select id="staff_coding_level" name="coding_level" class="form-input w-full">
                                 <option value="">– kein Coding Bot –</option>
@@ -233,7 +234,6 @@
                                     <option value="<%= l %>"><%= codingLevelLabels[l] %></option>
                                 <% }); %>
                             </select>
-                            <p class="text-xs text-slate-500 mt-1">Approver wählt anhand der Empfehlung aus dem Integration-Review.</p>
                         </div>
                         <div class="flex items-center pt-6">
                             <label class="inline-flex items-center gap-2">
@@ -241,22 +241,6 @@
                                 <span class="text-sm text-slate-700">Auto-Commit / PR im verknüpften Repository erlauben</span>
                             </label>
                         </div>
-                    </div>
-                </fieldset>
-
-                <fieldset>
-                    <legend class="text-sm font-semibold text-slate-700">Workflow-Rollen</legend>
-                    <p class="text-xs text-slate-500 mt-1 mb-2">Welche Stages des Standard-Workflows darf dieser Mitarbeiter bearbeiten?</p>
-                    <div class="grid gap-2 sm:grid-cols-2">
-                        <% workflowRoles.forEach(r => { %>
-                            <label class="inline-flex items-start gap-2 rounded border border-slate-200 px-3 py-2 hover:bg-slate-50">
-                                <input type="checkbox" name="roles" value="<%= r %>" class="role-checkbox mt-1" data-role="<%= r %>">
-                                <span>
-                                    <span class="block text-sm font-medium text-slate-800"><%= workflowRoleLabels[r] %></span>
-                                    <span class="block text-xs text-slate-500"><%= r %></span>
-                                </span>
-                            </label>
-                        <% }); %>
                     </div>
                 </fieldset>
 
@@ -291,12 +275,12 @@
 
     <script>
     const staffModal = document.getElementById('staffModal');
+    const staffForm = document.getElementById('staffEditForm');
 
     function onKindChange() {
         const aiSelected = document.getElementById('staff_kind_ai').checked;
         document.getElementById('aiBlock').classList.toggle('hidden', !aiSelected);
         document.getElementById('systemAssignmentsBlock').classList.toggle('hidden', aiSelected);
-        // Handle email field for Bot
         const emailField = document.getElementById('staff_email');
         if (aiSelected) {
             emailField.required = false;
@@ -346,6 +330,10 @@
     function openStaffModal(staff) {
         const isNew = !staff;
         document.getElementById('staffModalTitle').textContent = isNew ? 'Neuer Mitarbeiter' : staff.name;
+        
+        // Reset form fields
+        staffForm.reset();
+        
         document.getElementById('staff_name').value = isNew ? '' : (staff.name || '');
         document.getElementById('staff_email').value = isNew ? '' : (staff.email || '');
         document.getElementById('staff_phone').value = isNew ? '' : (staff.phone || '');
@@ -357,13 +345,17 @@
         document.getElementById('staff_ai_extra_config').value = isNew ? '' : (staff.ai_extra_config || '');
         document.getElementById('staff_coding_level').value = isNew ? '' : (staff.coding_level || '');
         document.getElementById('staff_auto_commit_enabled').checked = isNew ? false : !!staff.auto_commit_enabled;
+        
         const kind = isNew ? 'human' : (staff.kind || 'human');
         document.getElementById('staff_kind_human').checked = kind === 'human';
         document.getElementById('staff_kind_ai').checked = kind === 'ai';
+        
         onKindChange();
         setRoleCheckboxes(isNew ? [] : staff.roles);
         setSystemCheckboxes(isNew ? [] : (staff.system_assignments || []));
+        
         document.getElementById('staffEditForm').action = isNew ? '/admin/staff' : ('/admin/staff/' + staff.id + '/update');
+        
         staffModal.classList.remove('hidden');
         staffModal.classList.add('flex');
         document.body.classList.add('overflow-hidden');
@@ -373,11 +365,10 @@
         staffModal.classList.add('hidden');
         staffModal.classList.remove('flex');
         document.body.classList.remove('overflow-hidden');
+        staffForm.reset();
+        // Ensure onKindChange is called to reset visibility states after reset()
+        onKindChange();
     }
-
-    staffModal.addEventListener('click', function(event) {
-        if (event.target === staffModal) closeStaffModal();
-    });
 
     document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape' && !staffModal.classList.contains('hidden')) {
