@@ -114,12 +114,12 @@ function buildCodingBriefing({ ticket, codingLevel, security, plan, integration,
         parts.push('');
     }
 
-    // 7) CURRENT FILES (vollstaendig, nicht trunciert)
+    // 7) CURRENT FILES (ggf. gekuerzt bei >30 KB)
     if (Array.isArray(currentFiles) && currentFiles.length) {
         parts.push(`## CURRENT FILES (read-only Kontext)`);
         currentFiles.forEach(f => {
             const marker = f.exists ? '' : ' (NEU — wird erstellt)';
-            const truncMarker = f.truncated ? ' (TRUNCATED — original groesser als 60 KB)' : '';
+            const truncMarker = f.truncated ? ' (TRUNCATED — Original groesser als 30 KB, nur die ersten 30 KB gezeigt)' : '';
             parts.push(`\n### CURRENT FILE: ${f.path}${marker}${truncMarker}`);
             if (f.exists && f.content) {
                 parts.push('```');

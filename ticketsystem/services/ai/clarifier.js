@@ -7,7 +7,7 @@
 // Iterationen pro Anfrage:    max 3
 // Files pro Iteration:        max 5
 // Files pro Resolver-Lauf:    max 5 (gesamt, nicht pro Iteration)
-// Bytes pro File:             60 KB (geerbt von githubContext.fetchFilesFromRepo)
+// Bytes pro File:             8 KB (gekuertzt fuer Clarifier-Prompt)
 //
 // Public API:
 //   resolveQuestions({ questions, integration, repoTree, staff, aiClient, prompts })
@@ -16,6 +16,7 @@
 const MAX_ITERATIONS = 3;
 const MAX_FILES_TOTAL = parseInt(process.env.CLARIFIER_MAX_FILES, 10) || 10;
 const MAX_FILES_PER_ITERATION = parseInt(process.env.CLARIFIER_MAX_FILES_PER_ITER, 10) || 5;
+const MAX_FILE_CHARS = 8 * 1024;       // 8 KB pro File fuer Clarifier-Prompt
 
 function log(msg, data) {
     const ts = new Date().toISOString();
@@ -114,6 +115,10 @@ async function resolveQuestions({ questions, integration, repoTree, staff, callA
                 const fetched = await fetchFiles(integration, toFetch);
                 fetched.forEach(f => {
                     if (!loadedPaths.has(f.path)) {
+                        if (f.content && f.content.length > MAX_FILE_CHARS) {
+                            f.content = f.content.slice(0, MAX_FILE_CHARS) + '\n// ... [truncated]';
+                            f.truncated = true;
+                        }
                         loaded.push(f);
                         loadedPaths.add(f.path);
                     }

@@ -35,7 +35,8 @@ const {
     fetchRepoContext,
     fetchFilesFromRepo,
     commitFilesAsPR,
-    fetchRepoTreeLight
+    fetchRepoTreeLight,
+    truncateForOverview
 } = require('./githubContext');
 const { runCodeChecks } = require('./codeChecks');
 const { buildCodingBriefing, buildCorrectionFeedback, MAX_PROMPT_BYTES } = require('./briefing');
@@ -430,12 +431,15 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         try { currentFiles = await fetchFilesFromRepo(integration, boundary); }
         catch (e) { wfWarn(`Stage:PLANNING boundary fetch failed`, e.message); }
     }
+    const boundaryForOverview = currentFiles.filter(f => f.exists).map(truncateForOverview);
+    const overviewBytes = boundaryForOverview.reduce((s, f) => s + (f.content?.length || 0), 0);
+    wfInfo(`Stage:PLANNING boundary | files=${boundaryForOverview.length} overviewBytes=${overviewBytes} truncated=${boundaryForOverview.filter(f => f.truncated).length}`);
 
     let resolverAnswersText = '';
     const planningRepoInfo = integration ? `${integration.repo_owner}/${integration.repo_name}` : null;
     let userPrompt = prompts.PLANNING.buildUser({
         codingPrompt, repoTree,
-        currentFiles: currentFiles.filter(f => f.exists),
+        currentFiles: boundaryForOverview,
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo
     });
@@ -455,7 +459,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             wfInfo(`Stage:PLANNING re-running with resolver answers | answered=${resolver.answers.length} unresolved=${resolver.unresolved.length}`);
             userPrompt = prompts.PLANNING.buildUser({
                 codingPrompt, repoTree,
-                currentFiles: currentFiles.filter(f => f.exists),
+                currentFiles: boundaryForOverview,
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo
             });

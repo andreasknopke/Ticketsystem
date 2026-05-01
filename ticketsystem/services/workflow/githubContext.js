@@ -6,8 +6,10 @@
 const { Octokit } = require('@octokit/rest');
 
 const MAX_FILES = 30;
-const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap
-const MAX_FILE_BYTES = 60 * 1024;       // 60 KB pro Datei
+const MAX_TOTAL_BYTES = 100 * 1024;     // 100 KB Cap (nur fetchRepoContext)
+const MAX_FILE_BYTES = 30 * 1024;        // 30 KB pro Datei (fuer Coding-Bot)
+const MAX_OVERVIEW_BYTES = 8 * 1024;     // 8 KB pro Datei (fuer Architect/Clarifier)
+const MAX_OVERVIEW_LINES = 150;          // max Zeilen fuer Overview-Truncation
 const DEFAULT_BOUNDARY_FILES = ['package.json', 'server.js'];
 const SUBDIR_FALLBACKS = ['ticketsystem', 'src', 'app', 'backend', 'frontend'];
 
@@ -121,7 +123,27 @@ async function fetchRepoContext(integration) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight };
+/**
+ * Kuerzt eine Datei auf Overview-Groesse (z.B. fuer Architect/Clarifier).
+ * Nimmt die ersten MAX_OVERVIEW_LINES Zeilen und cappt bei MAX_OVERVIEW_BYTES.
+ * Markiert das Ergebnis mit truncated=true wenn gekuerzt wurde.
+ * package.json wird nicht gekuerzt (meist < 4KB).
+ */
+function truncateForOverview(file) {
+    if (!file || !file.exists || !file.content) return file;
+    if (/package\.json$/i.test(file.path)) return file;
+    if (file.content.length <= MAX_OVERVIEW_BYTES) return { ...file, truncated: false };
+
+    const lines = file.content.split('\n');
+    const trimmed = lines.slice(0, MAX_OVERVIEW_LINES).join('\n');
+    return {
+        ...file,
+        content: trimmed.slice(0, MAX_OVERVIEW_BYTES) + '\n// ... [truncated for overview]',
+        truncated: true
+    };
+}
+
+module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight, truncateForOverview };
 
 /**
  * Light-Version des Repo-Trees: nutzt Git Trees API mit recursive=1

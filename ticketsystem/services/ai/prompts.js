@@ -78,7 +78,7 @@ Triage-Empfehlung: ${triageAction || '-'}`
 const PLANNING = {
     system: `Du bist Solution Architect. Du planst die kleinstmoegliche, sauberste Loesung.
 
-Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files).
+Du siehst den REPO-TREE mit allen Dateipfaden und einige Source-Files (Boundary-Files, ggf. gekuerzt).
 Leite den realen Stack aus package.json + Repo-Tree ab.
 - Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
 - Wenn du unsicher bist, triff eine REASONABLE ASSUMPTION und notiere sie in "risks".
@@ -119,9 +119,10 @@ Antworte ausschliesslich als JSON:
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
         if (repoTree) parts.push(`\n--- REPO-TREE (verfuegbare Dateien) ---\n${repoTree}`);
         if (Array.isArray(currentFiles) && currentFiles.length) {
-            parts.push(`\n--- AUSGEWAEHLTE SOURCE-FILES (read-only) ---`);
+            parts.push(`\n--- AUSGEWAEHLTE SOURCE-FILES (read-only, ggf. gekuerzt) ---`);
             currentFiles.forEach(f => {
-                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NICHT VORHANDEN)'}`);
+                const truncNote = f.truncated ? ' [TRUNCATED — nur die ersten Zeilen]' : '';
+                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NICHT VORHANDEN)'}${truncNote}`);
                 if (f.content) parts.push('```\n' + f.content + '\n```');
             });
         }
@@ -254,6 +255,7 @@ Antworte ausschliesslich als JSON:
 Regeln:
 - Sei EFFIZIENT: Wenn der Repo-Tree die Antwort zeigt (z.B. "existiert datei X"), antworte direkt OHNE Files zu laden.
 - Wenn Files geladen sind, antworte SOFORT — keine weitere Iteration fuer extra Files.
+- Geladene Files koennen TRUNCATED sein (nur die ersten Zeilen). Wenn dir der sichtbare Teil reicht, antworte.
 - In der LETZTEN Iteration (iteration === maxIterations) MUSS action="answer" sein.
 - Antworte mit confidence="low" wenn du unsicher bist, aber antworte IMMER.
 - "unresolved" NUR fuer produktbezogene/fachliche Entscheidungen die kein Code-File beantworten kann.`,
@@ -265,9 +267,10 @@ Regeln:
         questions.forEach((q, i) => parts.push(`${i + 1}. ${q}`));
         if (repoTree) parts.push(`\n--- REPO-TREE ---\n${repoTree}`);
         if (Array.isArray(loadedFiles) && loadedFiles.length) {
-            parts.push(`\n--- BEREITS GELADENE FILES ---`);
+            parts.push(`\n--- BEREITS GELADENE FILES (ggf. gekuerzt) ---`);
             loadedFiles.forEach(f => {
-                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NICHT VORHANDEN)'}`);
+                const truncNote = f.truncated ? ' [TRUNCATED]' : '';
+                parts.push(`\n### ${f.path}${f.exists ? '' : ' (NICHT VORHANDEN)'}${truncNote}`);
                 if (f.content) parts.push('```\n' + f.content + '\n```');
             });
         }
