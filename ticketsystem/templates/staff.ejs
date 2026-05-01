@@ -129,7 +129,8 @@
                                 </td>
                                 <td class="px-4 py-3 whitespace-nowrap text-sm">
                                     <button type="button" class="mr-3 text-primary-600 hover:text-primary-800"
-                                        onclick='openStaffModal(<%- JSON.stringify(s) %>)'>Bearbeiten</button>
+                                        data-staff='<%- JSON.stringify(s).replace(/'/g, "&#39;") %>'
+                                        onclick='openStaffModal(this.dataset.staff)'>Bearbeiten</button>
                                     <form method="post" action="/admin/staff/<%= s.id %>/delete" style="display:inline;" onsubmit="return confirm('Mitarbeiter <%= s.name %> wirklich löschen?');">
                                         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                         <button type="submit" class="text-red-600 hover:text-red-900">Löschen</button>
@@ -345,7 +346,12 @@
         });
     });
 
-    function openStaffModal(staff) {
+    function openStaffModal(staffOrJson) {
+        let staff = null;
+        if (staffOrJson) {
+            try { staff = typeof staffOrJson === 'string' ? JSON.parse(staffOrJson) : staffOrJson; }
+            catch (e) { console.error('openStaffModal: parse error', e); return; }
+        }
         const isNew = !staff;
         document.getElementById('staffModalTitle').textContent = isNew ? 'Neuer Mitarbeiter' : staff.name;
         
