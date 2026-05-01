@@ -19,24 +19,64 @@ function applyEdits(originalContent, edits) {
     let content = originalContent;
     const applied = [];
     const failed = [];
+
+    // Helper: normalize for fuzzy match (collapse whitespace, trim lines)
+    function norm(s) { return s.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n').replace(/\n\s+/g, '\n ').trim(); }
+
     for (const edit of edits) {
         if (typeof edit.search !== 'string' || typeof edit.replace !== 'string') {
             failed.push({ search: String(edit.search || '').slice(0, 80), reason: 'search oder replace ist kein String' });
             continue;
         }
-        const idx = content.indexOf(edit.search);
+
+        // Try exact match first
+        let idx = content.indexOf(edit.search);
+        let usedFuzzy = false;
+
+        // Fallback: fuzzy whitespace-tolerant match line by line
+        if (idx === -1 && edit.search.trim().length > 10) {
+            const searchLines = edit.search.split('\n');
+            const contentLines = content.split('\n');
+            // Find the first matching line (normalized)
+            const normFirstLine = norm(searchLines[0]);
+            let startLine = -1;
+            for (let i = 0; i < contentLines.length; i++) {
+                if (norm(contentLines[i]) === normFirstLine) {
+                    // Check remaining lines
+                    let match = true;
+                    for (let j = 1; j < searchLines.length && i + j < contentLines.length; j++) {
+                        if (norm(contentLines[i + j]) !== norm(searchLines[j])) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        startLine = i;
+                        break;
+                    }
+                }
+            }
+        if (startLine !== -1) {
+            const endLine = startLine + searchLines.length;
+            // Replace the original lines (startLine..endLine) with edit.replace
+            const contentLines = content.split('\n');
+            const replaceLines = edit.replace.split('\n');
+            contentLines.splice(startLine, searchLines.length, ...replaceLines);
+            content = contentLines.join('\n');
+            usedFuzzy = true;
+            applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80), fuzzy: true });
+            wfInfo(`applyEdits FUZZY-MATCH | search="${edit.search.slice(0, 50)}..." -> line ${startLine + 1}`);
+            continue; // skip the normal replacement logic
+        }
+        }
+
         if (idx === -1) {
             failed.push({ search: edit.search.slice(0, 80), reason: 'search-String nicht im aktuellen Datei-Inhalt gefunden' });
             continue;
         }
-        // Pruefe auf Mehrfach-Treffer — Edit muss eindeutig sein
-        const secondIdx = content.indexOf(edit.search, idx + 1);
-        if (secondIdx !== -1) {
-            failed.push({ search: edit.search.slice(0, 80), reason: 'search-String ist nicht eindeutig (mehrere Treffer)' });
-            continue;
-        }
+
         content = content.slice(0, idx) + edit.replace + content.slice(idx + edit.search.length);
-        applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80) });
+        applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80), fuzzy: usedFuzzy });
     }
     return { content, applied, failed };
 }
@@ -1199,6 +1239,11 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
     // Zeilenbereiche aus Explore-Ergebnis extrahieren + Content laden
     const exploreOut = exploreResult.parsed;
     const requestedFiles = Array.isArray(exploreOut.files) ? exploreOut.files : [];
+    wfInfo(`Stage:CODING EXPLORE_RESULT | files=${requestedFiles.length} summary=${(exploreOut.summary || '').slice(0, 100)}`);
+    for (const rf of requestedFiles) {
+        const ranges = Array.isArray(rf.read_ranges) ? rf.read_ranges : [];
+        wfInfo(`Stage:CODING EXPLORE_RANGE | ${rf.path} action=${rf.action} ranges=${ranges.length} ${ranges.map(r => `L${r.start}-${r.end}`).join(',')}`);
+    }
     const loadedRanges = [];
     for (const rf of requestedFiles) {
         if (!rf.path || !allowedFiles.includes(rf.path)) continue;

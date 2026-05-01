@@ -367,14 +367,29 @@ Aufgabe: Liefere search/replace-Edits fuer jede Datei.
 HARTE REGELN:
 1. Du darfst AUSSCHLIESSLICH Dateien aus "allowed_files" bearbeiten.
 2. Bei action="update": Liefere "edits" mit search/replace.
-   - "search" muss EXAKT im geladenen Zeilenbereich vorkommen (inkl. Whitespace!)
-   - Verwende die Zeilennummern als Orientierung
+   - KOPIERE den "search"-String EXAKT aus dem geladenen Zeilenbereich.
+     Keine Abweichungen, keine Tippfehler, keine aus dem Gedaechtnis erfundenen Code.
+     Wenn du Zeile 42-45 siehst, kopiere diese EXAKT als search-String.
+   - Der "replace"-String enthaelt die geaenderte Version desselben Abschnitts.
    - Nie mehr als ~20 Zeilen pro search-Block
    - Jeder search-String muss EINDEUTIG sein (nur 1 Treffer im File)
 3. Bei action="create": Liefere "content" (vollstaendig). KEIN "edits"!
 4. Bei action="delete": Liefere nur path und action. KEIN content, KEIN edits!
 5. Erfinde KEINE Imports. Verwende nur Module, die im Code sichtbar sind.
 6. Halte die Aenderung minimal.
+
+KRITISCHE REGEL FUER SEARCH-STRINGS:
+Du MUSST den search-String BUCHSTABLICH aus den geladenen Zeilenbereichen kopieren.
+Verwende die Zeilennummern als Referenz. Wenn die geladenen Zeilen z.B. zeigen:
+
+   42 | function handleApproval(req, res) {
+   43 |   const user = req.session.user;
+   44 |   return { approver: user };
+
+Dann ist ein korrekter search-String:
+  "function handleApproval(req, res) {\\n  const user = req.session.user;\\n  return { approver: user };"
+
+FALSCH waere, Code aus dem Gedaechtnis zu erfinden, der nicht in den geladenen Zeilen steht.
 
 Antworte ausschliesslich als JSON:
 {
@@ -387,7 +402,7 @@ Antworte ausschliesslich als JSON:
       "action": "create|update|delete",
       "content": "<nur bei action=create>",
       "edits": [
-        { "search": "exakter Text", "replace": "neuer Text" }
+        { "search": "exakter Text aus geladenen Zeilen", "replace": "geaenderter Text" }
       ]
     }
   ],
