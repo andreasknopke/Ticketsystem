@@ -377,7 +377,7 @@
                 </div>
 
                 <!-- Feedback -->
-                <% if (ticket.status === 'geschlossen' && !feedback) { %>
+                <% if (!canManageTickets && ticket.status === 'geschlossen' && ticket.feedback_requested && !feedback) { %>
                 <div class="card border-primary-200">
                     <div class="card-header bg-primary-50 border-primary-200">
                         <h3 class="text-lg font-semibold text-primary-900">Feedback abgeben</h3>

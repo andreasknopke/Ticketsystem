@@ -2403,6 +2403,7 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
 
         if (updates.status === 'geschlossen' && oldTicket.status !== 'geschlossen') {
             updates.closed_at = new Date().toISOString();
+            updates.feedback_requested = 0;
         } else if (updates.status && updates.status !== 'geschlossen' && oldTicket.status === 'geschlossen') {
             updates.closed_at = null;
             updates.feedback_requested = 0;
@@ -2434,7 +2435,11 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
                     });
                 }
             });
-            res.json({ id: req.params.id, status: 'updated' });
+            res.json({
+                id: req.params.id,
+                status: 'updated',
+                redirect: updates.status === 'geschlossen' ? '/' : null
+            });
         });
     });
 });
@@ -3970,6 +3975,7 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
         const updates = { status };
         if (status === 'geschlossen') {
             updates.closed_at = new Date().toISOString();
+            updates.feedback_requested = 0;
         } else if (oldTicket.status === 'geschlossen') {
             updates.closed_at = null;
             updates.feedback_requested = 0;
@@ -3989,9 +3995,6 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
             if (status === 'geschlossen') {
                 updateSLAResolution(ticketId);
                 addActivity(ticketId, actor, 'closed', 'Ticket geschlossen', {});
-                
-                // Feedback anfragen
-                db.run('UPDATE tickets SET feedback_requested = 1 WHERE id = ?', [ticketId]);
             }
 
             io.to(`ticket-${ticketId}`).emit('ticket-updated', { ticketId, updates: { status }, actor });
