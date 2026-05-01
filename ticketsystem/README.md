@@ -211,8 +211,29 @@ nicht erkannt"). Beim Re-Run wird:
 - `GET  /api/tickets/:id/workflow/artifacts/:artId` — Artefakt-Download (z.B. Plan, Commit-Message, Test-Plan, geänderte Dateien).
 - `POST /api/tickets/:id/workflow/restart` — Workflow neu starten (Admin).
 - `POST /api/tickets/:id/workflow/steps/:stepId/decision` — Entscheidung des Approvers.
-  - **Dispatch-Phase** (vor Coding): `dispatch_medium` | `dispatch_high` | `rejected` | `unclear` | `handoff`
+  - **Dispatch-Phase** (vor Coding): `dispatch_medium` | `dispatch_high` | `dispatch_external` | `rejected` | `unclear` | `handoff`
   - **Final-Phase** (nach Coding): `approved` | `rework` | `rejected`
+
+#### Dispatch → Externer Coding-Agent (Repo-Dossier)
+
+Statt einen lokalen Coding-Bot zu beauftragen, kann der Approver mit
+`dispatch_external` den gesamten Ticket-Workflow als Markdown-Dossier in einen
+neuen Branch des System-Repos pushen lassen. Dort liegt das Material unter
+`tickets/<ticket-id>/` (`README.md`, `01_triage.md`, `02_security.md`,
+`03_planning.md`, `04_integration.md`, `05_approval.md`, `manifest.json`).
+
+Ein externer Coding-Agent (OpenCode, VS Code Copilot, etc.) kann diesen
+Branch auschecken und mit dem Dossier als Briefing arbeiten — er hat den
+gesamten Repo-Kontext mit den eigenen Tools und braucht von uns keinen Code,
+nur die Analyse. Branch- und Commit-Info werden auf `ticket_workflow_runs`
+persistiert (`dossier_branch`, `dossier_commit_sha`, `dossier_exported_at`)
+und im Workflow-Tab des Tickets als Link angezeigt. Es wird **kein PR**
+geoeffnet — der Branch ist die Arbeitsoberflaeche fuer den externen Agenten.
+
+Voraussetzung: Das System des Tickets hat ein Repository konfiguriert
+(`systems.repo_owner`/`repo_name`) und ein Token mit Schreibrechten — entweder
+`systems.repo_access_token` oder `GITHUB_DEFAULT_TOKEN` (gleiche
+Token-Hierarchie wie bei Coding-Bot-PRs).
 
 ### Coding-Bots (Medium / High Level)
 

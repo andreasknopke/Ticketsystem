@@ -186,7 +186,7 @@ function truncateForOverview(file) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight, truncateForOverview };
+module.exports = { fetchRepoContext, commitFilesAsPR, commitFilesToBranch, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight, truncateForOverview };
 
 /**
  * Light-Version des Repo-Trees: nutzt Git Trees API mit recursive=1
@@ -437,4 +437,101 @@ async function commitFilesAsPR(integration, payload) {
         }
     }
     return await tryCommit(fallbackToken, 'ENV-Token');
+}
+
+/**
+ * Erstellt einen Branch und committet Dateien — OHNE einen PR zu oeffnen.
+ * Gedacht fuer den Dossier-Export (External-Dispatch): die Stage-Outputs
+ * werden als Markdown/JSON unter tickets/<id>/ in einen dedizierten Branch
+ * gepusht. Der Coding-Agent (OpenCode/VSCode) checkt diesen Branch aus und
+ * arbeitet dort mit eigenen Tools.
+ *
+ * Token-Hierarchie wie commitFilesAsPR.
+ *
+ * @param {Object} integration - { repo_owner, repo_name, access_token, default_branch? }
+ * @param {Object} payload     - { branchName, files: [{path, content, action?}], commitMessage?, baseBranch? }
+ * @returns {Promise<{ branch: string, baseBranch: string, commitSha: string }>}
+ */
+async function commitFilesToBranch(integration, payload) {
+    const log = (msg, data) => console.log(`[GH:BRANCH] ${msg}`, data !== undefined ? JSON.stringify(data).slice(0, 500) : '');
+    log(`Start | owner=${integration?.repo_owner} repo=${integration?.repo_name} hasDBToken=${!!integration?.access_token} hasEnvToken=${!!process.env.GITHUB_DEFAULT_TOKEN} branch=${payload.branchName} files=${payload.files?.length}`);
+    if (!integration || !integration.repo_owner || !integration.repo_name) {
+        throw new Error('Kein Repository verknuepft');
+    }
+    const primaryToken = integration.access_token;
+    const fallbackToken = process.env.GITHUB_DEFAULT_TOKEN;
+    if (!primaryToken && !fallbackToken) {
+        throw new Error('Kein GitHub-Token mit Schreibrechten verfuegbar');
+    }
+
+    async function tryPush(token, label) {
+        log(`Versuche mit ${label} prefix=${token.slice(0, 12)}...`);
+        const client = new Octokit({ auth: token });
+        const owner = integration.repo_owner;
+        const repo = integration.repo_name;
+
+        let baseBranch = payload.baseBranch || integration.default_branch || null;
+        if (!baseBranch) {
+            const repoInfo = await client.repos.get({ owner, repo });
+            baseBranch = repoInfo.data.default_branch || 'main';
+            log(`Base-Branch: ${baseBranch}`);
+        }
+
+        const baseRef = await client.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
+        const baseSha = baseRef.data.object.sha;
+        log(`Base SHA: ${baseSha.slice(0, 7)}`);
+
+        let branch = (payload.branchName || `ticket/dossier-${Date.now()}`).replace(/[^a-zA-Z0-9._\-/]/g, '-').slice(0, 200);
+        log(`Erstelle Branch: ${branch}`);
+        try {
+            await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+        } catch (e) {
+            if (e.status === 422) {
+                // Branch existiert bereits — wir haengen Timestamp an, damit jeder Run/Re-Export
+                // einen eigenen Stand bekommt und nichts ueberschrieben wird.
+                log(`Branch existiert bereits, neuer Name`);
+                branch = `${branch}-${Date.now()}`;
+                await client.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+            } else {
+                throw e;
+            }
+        }
+        log(`Branch erstellt: ${branch}`);
+
+        let lastCommitSha = baseSha;
+        const commitPrefix = (payload.commitMessage || 'dossier').split('\n')[0];
+        for (const f of payload.files || []) {
+            if (!f.path) continue;
+            const action = f.action || 'update';
+            log(`  File: ${action} ${f.path} (${(f.content || '').length} bytes)`);
+            if (action === 'delete') continue; // Dossier-Export legt nur an
+            let existingSha = undefined;
+            try {
+                const existing = await client.repos.getContent({ owner, repo, path: f.path, ref: branch });
+                if (!Array.isArray(existing.data) && existing.data.sha) existingSha = existing.data.sha;
+            } catch (_) {}
+            const r = await client.repos.createOrUpdateFileContents({
+                owner, repo, path: f.path, branch,
+                message: `${commitPrefix} (${f.path})`,
+                content: Buffer.from(String(f.content ?? ''), 'utf-8').toString('base64'),
+                sha: existingSha
+            });
+            lastCommitSha = r.data.commit?.sha || lastCommitSha;
+        }
+        log(`COMMITS FERTIG | branch=${branch} lastSha=${lastCommitSha.slice(0, 7)}`);
+        return { branch, baseBranch, commitSha: lastCommitSha };
+    }
+
+    if (primaryToken) {
+        try {
+            return await tryPush(primaryToken, 'DB-Token');
+        } catch (e) {
+            if ((e.status === 403 || e.status === 401) && fallbackToken && fallbackToken !== primaryToken) {
+                log(`DB-Token schlug fehl (${e.status}), versuche GITHUB_DEFAULT_TOKEN`);
+                return await tryPush(fallbackToken, 'ENV-Token');
+            }
+            throw e;
+        }
+    }
+    return await tryPush(fallbackToken, 'ENV-Token');
 }

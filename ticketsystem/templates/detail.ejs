@@ -667,6 +667,7 @@
             ` : isDispatch ? `
                     ${renderDispatchChoice('medium', 'Dispatch → Medium-Coder', recommended === 'medium')}
                     ${renderDispatchChoice('high', 'Dispatch → High-Coder', recommended === 'high')}
+                    <button data-decision="dispatch_external" class="dec-btn btn-secondary text-xs" title="Dossier ins Repo pushen, externer Coding-Agent uebernimmt">Dispatch → Externer Agent (Repo-Dossier)</button>
                     <button data-decision="rejected" class="dec-btn btn-secondary text-xs">Reject</button>
                     <button data-decision="unclear" class="dec-btn btn-secondary text-xs">Rueckfrage / unklar</button>
                     <button data-decision="handoff" class="dec-btn btn-secondary text-xs">Handoff</button>
@@ -751,6 +752,15 @@
                     </div>
                     <span class="badge ${STATUS_BADGE[run.status] || 'bg-gray-100 text-gray-700'}">${run.status}</span>
                 </div>`;
+                if (run.dossier_branch && data.repo) {
+                    const branchUrl = `https://github.com/${data.repo}/tree/${encodeURIComponent(run.dossier_branch)}/tickets/${ticketId}`;
+                    html += `<div class="mb-3 rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
+                        <div class="font-semibold text-emerald-900">📦 Dossier exportiert</div>
+                        <div class="text-xs text-emerald-800 mt-1">Branch: <a href="${branchUrl}" target="_blank" rel="noopener" class="underline font-mono">${escapeHtml(run.dossier_branch)}</a></div>
+                        ${run.dossier_commit_sha ? `<div class="text-xs text-emerald-700 mt-0.5">Commit: <code>${escapeHtml(run.dossier_commit_sha.slice(0, 7))}</code></div>` : ''}
+                        <div class="text-xs text-emerald-700 mt-1">Externer Coding-Agent kann diesen Branch auschecken und mit dem Dossier unter <code>tickets/${ticketId}/</code> arbeiten.</div>
+                    </div>`;
+                }
                 html += '<ol class="space-y-3">';
                 const artifacts = data.artifacts || [];
                 data.steps.forEach(step => {

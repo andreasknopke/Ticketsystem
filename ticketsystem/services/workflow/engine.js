@@ -164,6 +164,7 @@ const {
 } = require('./githubContext');
 const { runCodeChecks } = require('./codeChecks');
 const { buildCodingBriefing, buildCorrectionFeedback, MAX_PROMPT_BYTES } = require('./briefing');
+const dossierExport = require('./dossierExport');
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = 1; // Aider-Style: 1 Versuch + 1 Korrektur
@@ -967,7 +968,7 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         return { status: 'resumed_after_questions' };
     }
 
-    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'rework'];
+    const allowedDecisions = ['approved', 'rejected', 'unclear', 'handoff', 'dispatch_medium', 'dispatch_high', 'dispatch_external', 'rework'];
     if (!allowedDecisions.includes(decision)) throw new Error('Ungueltige Entscheidung');
 
     if (step.stage === 'approval') {
@@ -1005,6 +1006,41 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
                 selected_staff_id: selectedStaff ? selectedStaff.id : null,
                 selected_staff_name: selectedStaff ? selectedStaff.name : null
             };
+        }
+
+        if (isDispatchPhase && decision === 'dispatch_external') {
+            // Externer Coding-Agent: kein lokaler Bot — wir pushen das Dossier
+            // in einen Branch des System-Repos. Der Agent (OpenCode/VSCode)
+            // arbeitet dort mit eigenen Tools im echten Repo-Kontext.
+            wfInfo(`DISPATCH EXTERNAL | run=${runId} ticket=${ticket.id}`);
+            try {
+                const dossier = await dossierExport.exportDossier({ runId, dispatchNote: note });
+                const output = {
+                    decision, note: note || null,
+                    dossier_branch: dossier.branch,
+                    dossier_commit_sha: dossier.commitSha,
+                    dossier_branch_url: dossier.branchUrl,
+                    decided_by: actor || null, decided_at: new Date().toISOString()
+                };
+                await finishStep(stepId, { status: 'done', output, ai: null });
+                await run(`UPDATE ticket_workflow_runs
+                           SET status='completed', finished_at=CURRENT_TIMESTAMP, result='dispatched_external',
+                               dossier_branch=?, dossier_commit_sha=?, dossier_exported_at=CURRENT_TIMESTAMP
+                           WHERE id = ?`,
+                    [dossier.branch, dossier.commitSha, runId]);
+                await dbRef.run('UPDATE tickets SET final_decision = ? WHERE id = ?', ['dispatched_external', ticket.id]);
+                emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
+                emit('workflow:completed', { runId, ticketId: ticket.id, result: 'dispatched_external', dossier_branch: dossier.branch });
+                return {
+                    status: 'dispatched_external',
+                    dossier_branch: dossier.branch,
+                    dossier_commit_sha: dossier.commitSha,
+                    dossier_branch_url: dossier.branchUrl
+                };
+            } catch (e) {
+                wfError(`DOSSIER EXPORT FEHLER run=${runId}`, e.message);
+                throw new Error(`Dossier-Export fehlgeschlagen: ${e.message}`);
+            }
         }
 
         if (!isDispatchPhase && decision === 'rework') {

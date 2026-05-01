@@ -31,6 +31,7 @@ const { Octokit } = require('@octokit/rest');
 const aiClient = require('./services/ai/client');
 const redactor = require('./services/ai/redact');
 const workflowEngine = require('./services/workflow/engine');
+const dossierExport = require('./services/workflow/dossierExport');
 
 if (process.env.AI_REDACTION_PATTERNS_FILE) {
     redactor.loadExtraPatternsFromFile(process.env.AI_REDACTION_PATTERNS_FILE);
@@ -955,6 +956,29 @@ function initDb() {
         FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
         FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
     )`);
+
+    // Migration: ticket_workflow_runs um Dossier-Felder erweitern (External-Dispatch)
+    db.all('PRAGMA table_info(ticket_workflow_runs)', (pragmaErr, rows) => {
+        if (pragmaErr) {
+            console.error('Fehler beim Pruefen der ticket_workflow_runs-Struktur:', pragmaErr.message);
+            return;
+        }
+        const cols = (rows || []).map(r => r.name);
+        const runMigrations = [
+            { col: 'recommended_executor', sql: "ALTER TABLE ticket_workflow_runs ADD COLUMN recommended_executor TEXT" },
+            { col: 'dossier_branch', sql: 'ALTER TABLE ticket_workflow_runs ADD COLUMN dossier_branch TEXT' },
+            { col: 'dossier_commit_sha', sql: 'ALTER TABLE ticket_workflow_runs ADD COLUMN dossier_commit_sha TEXT' },
+            { col: 'dossier_pr_url', sql: 'ALTER TABLE ticket_workflow_runs ADD COLUMN dossier_pr_url TEXT' },
+            { col: 'dossier_exported_at', sql: 'ALTER TABLE ticket_workflow_runs ADD COLUMN dossier_exported_at DATETIME' }
+        ];
+        runMigrations.forEach(m => {
+            if (!cols.includes(m.col)) {
+                db.run(m.sql, (e) => {
+                    if (e) console.error(`Fehler beim Hinzufuegen von ticket_workflow_runs.${m.col}:`, e.message);
+                });
+            }
+        });
+    });
 
     // Migration fuer bestehende DBs: CHECK-Constraint um neue Rollen erweitern
     migrateWorkflowRoleConstraints();
@@ -4372,6 +4396,7 @@ app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
 // --- Server Start ---
 
 workflowEngine.init({ db, io });
+dossierExport.init({ db });
 
 server.listen(PORT, () => {
     console.log('====================================================');
