@@ -125,3 +125,128 @@
     module.exports = StepForm;
   }
 })(typeof window !== 'undefined' ? window : globalThis);
+
+;(function() {
+  'use strict';
+  document.addEventListener('DOMContentLoaded', function() {
+    var modal = document.getElementById('staffModal');
+    if (!modal) return;
+
+    function onKindChange() {
+      var aiSelected = document.getElementById('staff_kind_ai').checked;
+      document.getElementById('aiBlock').classList.toggle('hidden', !aiSelected);
+      document.getElementById('systemAssignmentsBlock').classList.toggle('hidden', aiSelected);
+      var emailField = document.getElementById('staff_email');
+      if (aiSelected) {
+        emailField.required = false;
+        emailField.readOnly = true;
+        emailField.placeholder = 'Bot erhält automatisch E-Mail-Adresse';
+        if (!emailField.value || emailField.value === '') {
+          emailField.value = 'bot@ticketsystem.local';
+        }
+      } else {
+        emailField.required = true;
+        emailField.readOnly = false;
+        emailField.placeholder = '';
+        if (emailField.value === 'bot@ticketsystem.local') {
+          emailField.value = '';
+        }
+      }
+    }
+
+    function setRoleCheckboxes(roles) {
+      var roleSet = new Set(roles || []);
+      document.querySelectorAll('.role-checkbox').forEach(function(cb) {
+        cb.checked = roleSet.has(cb.dataset.role);
+      });
+    }
+
+    function setSystemCheckboxes(assignments) {
+      var assigned = new Set((assignments || []).map(function(a) { return String(a.system_id); }));
+      var primary = new Set((assignments || []).filter(function(a) { return a.is_primary; }).map(function(a) { return String(a.system_id); }));
+      document.querySelectorAll('.system-checkbox').forEach(function(cb) {
+        cb.checked = assigned.has(cb.dataset.systemId);
+      });
+      document.querySelectorAll('.primary-system-checkbox').forEach(function(cb) {
+        cb.checked = primary.has(cb.dataset.systemId);
+        cb.disabled = !assigned.has(cb.dataset.systemId);
+      });
+    }
+
+    window.openStaffModal = function openStaffModal(staff) {
+      var isNew = !staff;
+      var titleEl = document.getElementById('staffModalTitle');
+      if (titleEl) titleEl.textContent = isNew ? 'Neuer Mitarbeiter' : staff.name;
+      var nameEl = document.getElementById('staff_name');
+      if (nameEl) nameEl.value = isNew ? '' : (staff.name || '');
+      var emailEl = document.getElementById('staff_email');
+      if (emailEl) emailEl.value = isNew ? '' : (staff.email || '');
+      var phoneEl = document.getElementById('staff_phone');
+      if (phoneEl) phoneEl.value = isNew ? '' : (staff.phone || '');
+      var providerEl = document.getElementById('staff_ai_provider');
+      if (providerEl) providerEl.value = isNew ? '' : (staff.ai_provider || '');
+      var modelEl = document.getElementById('staff_ai_model');
+      if (modelEl) modelEl.value = isNew ? '' : (staff.ai_model || '');
+      var tempEl = document.getElementById('staff_ai_temperature');
+      if (tempEl) tempEl.value = isNew ? '' : (typeof staff.ai_temperature !== 'undefined' ? staff.ai_temperature : '');
+      var maxTokensEl = document.getElementById('staff_ai_max_tokens');
+      if (maxTokensEl) maxTokensEl.value = isNew ? '' : (typeof staff.ai_max_tokens !== 'undefined' ? staff.ai_max_tokens : '');
+      var promptEl = document.getElementById('staff_ai_system_prompt');
+      if (promptEl) promptEl.value = isNew ? '' : (staff.ai_system_prompt || '');
+      var extraConfigEl = document.getElementById('staff_ai_extra_config');
+      if (extraConfigEl) extraConfigEl.value = isNew ? '' : (staff.ai_extra_config || '');
+      var codingLevelEl = document.getElementById('staff_coding_level');
+      if (codingLevelEl) codingLevelEl.value = isNew ? '' : (staff.coding_level || '');
+      var autoCommitEl = document.getElementById('staff_auto_commit_enabled');
+      if (autoCommitEl) autoCommitEl.checked = isNew ? false : !!staff.auto_commit_enabled;
+      var kind = isNew ? 'human' : (staff.kind || 'human');
+      var humanCheck = document.getElementById('staff_kind_human');
+      var aiCheck = document.getElementById('staff_kind_ai');
+      if (humanCheck) humanCheck.checked = kind === 'human';
+      if (aiCheck) aiCheck.checked = kind === 'ai';
+      onKindChange();
+      setRoleCheckboxes(isNew ? [] : staff.roles);
+      setSystemCheckboxes(isNew ? [] : (staff.system_assignments || []));
+      var formEl = document.getElementById('staffEditForm');
+      if (formEl) formEl.action = isNew ? '/admin/staff' : ('/admin/staff/' + staff.id + '/update');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+      }
+      document.body.classList.add('overflow-hidden');
+    };
+
+    window.closeStaffModal = function closeStaffModal() {
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+      document.body.classList.remove('overflow-hidden');
+    };
+
+    window.onKindChange = onKindChange;
+
+    if (modal) {
+      modal.addEventListener('click', function(event) {
+        if (event.target === modal) window.closeStaffModal();
+      });
+    }
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
+        window.closeStaffModal();
+      }
+    });
+
+    document.querySelectorAll('.system-checkbox').forEach(function(cb) {
+      cb.addEventListener('change', function() {
+        var primary = document.querySelector('.primary-system-checkbox[data-system-id="' + this.dataset.systemId + '"]');
+        if (!primary) return;
+        primary.disabled = !this.checked;
+        if (!this.checked) primary.checked = false;
+      });
+    });
+
+    var formEl = document.getElementById('staffEditForm');
+    if (formEl) formEl.action = '/admin/staff';
+  });
+})();
