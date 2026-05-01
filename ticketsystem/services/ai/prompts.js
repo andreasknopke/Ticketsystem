@@ -36,7 +36,7 @@ Regeln:
 - Beschreibung:
 ${ticket.description || '(leer)'}
 ${ticket.software_info ? `\nSoftware-Info / Kontext:\n${ticket.software_info}\n` : ''}
-${preselectedSystem ? `\nVOM NUTZER VORAUSGEWAEHLTES SYSTEM (ID: ${preselectedSystem.id}, Name: ${preselectedSystem.name}). Dieses System MUSS verwendet werden, ausser es ist offensichtlich falsch (dann decision="unclear" und begruenden).\n` : ''}
+${preselectedSystem ? `\nWICHTIG: Dieses Ticket ist bereits dem System "${preselectedSystem.name}" (ID: ${preselectedSystem.id}) zugeordnet. DU MUSS dieses System verwenden (system_id: ${preselectedSystem.id}). Weiche NICHT davon ab.\n` : ''}
 Verfuegbare Systeme (id | name | description):
 ${(systems || []).map(s => `- ${s.id} | ${s.name} | ${s.description || ''}`).join('\n') || '(keine Systeme konfiguriert)'}`
 };
@@ -62,9 +62,9 @@ Antworte ausschliesslich als JSON:
 Regeln:
 - "open_questions" nur fuer echte Privacy-Konflikte (z.B. "darf User-ID X erwaehnt werden?").
 - Keine technischen Rueckfragen.`,
-    buildUser: ({ ticket, preRedacted, triageSummary, triageAction }) => `Ticket-Typ: ${ticket.type}
+    buildUser: ({ ticket, preRedacted, triageSummary, triageAction, systemName }) => `Ticket-Typ: ${ticket.type}
 Titel: ${ticket.title}
-
+${systemName ? `Ziel-System: ${systemName}\n` : ''}
 Bereits regex-redigierte Beschreibung:
 ${preRedacted || '(leer)'}
 

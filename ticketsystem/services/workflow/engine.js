@@ -254,6 +254,21 @@ async function execTriage({ ticket, staff }) {
     if (preselectedSystemId) {
         if (out.system_id && parseInt(out.system_id, 10) !== preselectedSystemId) {
             wfWarn(`Stage:TRIAGE AI tried to override user system_id ${preselectedSystemId} -> ${out.system_id}, ignoring`);
+            // AI chose wrong system — override system_id and patch text fields
+            const wrongSys = systems.find(s => s.id === parseInt(out.system_id, 10));
+            const correctSys = preselectedSystem;
+            if (wrongSys && correctSys) {
+                const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const patch = (text) => {
+                    if (typeof text !== 'string') return text;
+                    return text.replace(new RegExp(esc(wrongSys.name), 'g'), correctSys.name);
+                };
+                out.reason = patch(out.reason);
+                out.summary = patch(out.summary);
+                out.suggested_action = patch(out.suggested_action);
+                out.system_match_confidence = 'high';
+                wfInfo(`Stage:TRIAGE patched AI text: replaced "${wrongSys.name}" -> "${correctSys.name}"`);
+            }
         }
         out.system_id = preselectedSystemId;
         out._system_locked = true;
@@ -272,14 +287,15 @@ async function execTriage({ ticket, staff }) {
     return { output: out, ai: r };
 }
 
-async function execSecurity({ ticket, staff, triageBundle }) {
+async function execSecurity({ ticket, staff, triageBundle, systemName }) {
     wfInfo(`Stage:SECURITY start | ticket=${ticket.id}`);
     const pre = redact(ticket.description || '');
     const userPrompt = prompts.SECURITY.buildUser({
         ticket,
         preRedacted: pre.redacted,
         triageSummary: triageBundle?.summary,
-        triageAction: triageBundle?.suggested_action
+        triageAction: triageBundle?.suggested_action,
+        systemName
     });
     const r = await callAIWithStaff(staff, { systemPrompt: prompts.SECURITY.system, userPrompt });
     const out = r.parsed || { redacted_text: pre.redacted, findings: pre.hits, coding_prompt: pre.redacted, open_questions: [] };
@@ -627,6 +643,11 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
     let integration = null;
     let repoTree = '';
     let repoDocs = '';
+    let systemName = null;
+    if (initialTicket.system_id) {
+        const sys = await getRow('SELECT name FROM systems WHERE id = ?', [initialTicket.system_id]);
+        systemName = sys?.name || null;
+    }
     try {
         integration = await resolveIntegration(initialTicket);
         if (integration) {
@@ -683,7 +704,7 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             if (stage.role === 'triage') {
                 result = await execTriage({ ticket, staff });
             } else if (stage.role === 'security') {
-                result = await execSecurity({ ticket, staff, triageBundle: bundles.triage });
+                result = await execSecurity({ ticket, staff, triageBundle: bundles.triage, systemName: systemName });
             } else if (stage.role === 'planning') {
                 result = await execPlanning({
                     ticket, staff, runId,
