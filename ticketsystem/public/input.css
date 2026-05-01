@@ -64,6 +64,10 @@
     @apply badge bg-purple-100 text-purple-800;
   }
   
+  .badge-status-umgesetzt {
+    @apply badge bg-teal-100 text-teal-800;
+  }
+  
   .badge-status-geschlossen {
     @apply badge bg-green-100 text-green-800;
   }

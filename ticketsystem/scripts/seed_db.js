@@ -11,7 +11,7 @@ const systems = [
 
 const priorities = ['niedrig', 'mittel', 'hoch', 'kritisch'];
 const types = ['bug', 'feature'];
-const statuses = ['offen', 'in_bearbeitung', 'wartend', 'geschlossen'];
+const statuses = ['offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen'];
 
 async function runQuery(sql, params = []) {
     return new Promise((resolve, reject) => {

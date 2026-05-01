@@ -825,6 +825,60 @@ function initDb() {
         });
     });
 
+    // Migration: tickets.status CHECK-Constraint um 'umgesetzt' erweitern.
+    // SQLite kann CHECK-Constraints nicht per ALTER aendern -> Tabelle muss
+    // bei alten DBs neu gebaut werden. Wir erkennen das an der CREATE-DDL
+    // in sqlite_master und springen sonst raus.
+    db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'", (sqlErr, row) => {
+        if (sqlErr || !row || !row.sql) return;
+        if (row.sql.includes("'umgesetzt'")) return; // schon migriert / fresh DB
+        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return; // unerwartetes Schema, Hand wegnehmen
+        console.log('[migration] tickets.status CHECK erweitern (umgesetzt)…');
+        db.serialize(() => {
+            db.run('PRAGMA foreign_keys=OFF');
+            db.run('BEGIN TRANSACTION');
+            const newDdl = row.sql.replace(
+                /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
+                "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen')) DEFAULT 'offen'"
+            ).replace(/CREATE TABLE\s+tickets/i, 'CREATE TABLE tickets__new');
+            db.run(newDdl, (e1) => {
+                if (e1) {
+                    console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message);
+                    db.run('ROLLBACK');
+                    db.run('PRAGMA foreign_keys=ON');
+                    return;
+                }
+                db.all('PRAGMA table_info(tickets)', (e2, cols) => {
+                    if (e2) {
+                        console.error('[migration] PRAGMA fehlgeschlagen:', e2.message);
+                        db.run('ROLLBACK');
+                        db.run('PRAGMA foreign_keys=ON');
+                        return;
+                    }
+                    const colList = cols.map(c => c.name).join(', ');
+                    db.run(`INSERT INTO tickets__new (${colList}) SELECT ${colList} FROM tickets`, (e3) => {
+                        if (e3) {
+                            console.error('[migration] Datenkopie fehlgeschlagen:', e3.message);
+                            db.run('ROLLBACK');
+                            db.run('PRAGMA foreign_keys=ON');
+                            return;
+                        }
+                        db.run('DROP TABLE tickets', (e4) => {
+                            if (e4) { console.error('[migration] DROP fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                            db.run('ALTER TABLE tickets__new RENAME TO tickets', (e5) => {
+                                if (e5) { console.error('[migration] RENAME fehlgeschlagen:', e5.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                                db.run('COMMIT', () => {
+                                    db.run('PRAGMA foreign_keys=ON');
+                                    console.log('[migration] tickets.status erfolgreich erweitert');
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    });
+
     // --- KI-Workflow: Erweiterungen Mitarbeiter & Systeme ---
 
     // n:m Mitarbeiter <-> Workflow-Rollen
@@ -1144,7 +1198,7 @@ function initTicketsTable() {
             username TEXT,
             console_logs TEXT,
             software_info TEXT,
-            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'geschlossen')) DEFAULT 'offen',
+            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen')) DEFAULT 'offen',
             priority TEXT CHECK(priority IN ('niedrig', 'mittel', 'hoch', 'kritisch')) DEFAULT 'mittel',
             system_id INTEGER,
             assigned_to INTEGER,
@@ -3906,7 +3960,7 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
     const ticketId = req.params.id;
     const actor = getActor(req);
     
-    if (!['offen', 'in_bearbeitung', 'wartend', 'geschlossen'].includes(status)) {
+    if (!['offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen'].includes(status)) {
         return res.status(400).send('Ungueltiger Status');
     }
     

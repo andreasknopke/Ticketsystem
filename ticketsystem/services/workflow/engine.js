@@ -228,6 +228,41 @@ async function pickStaff(role, executorKind, options) {
     });
 }
 
+/**
+ * Markiert ein Ticket als 'umgesetzt' — wird von zwei Stellen aufgerufen:
+ *   1) Coding-Bot hat einen PR fuer das Ticket erstellt
+ *   2) Approver hat das Ticket-Dossier in einen Branch dispatcht (externer Agent)
+ *
+ * Nicht ueberschreiben, wenn das Ticket bereits 'geschlossen' oder 'umgesetzt' ist.
+ * Schreibt einen Audit-Log-Eintrag (best effort).
+ */
+async function markTicketUmgesetzt(ticketId, reason) {
+    try {
+        const t = await getRow('SELECT id, status FROM tickets WHERE id = ?', [ticketId]);
+        if (!t) return false;
+        if (t.status === 'umgesetzt' || t.status === 'geschlossen') {
+            wfInfo(`markTicketUmgesetzt SKIP | ticket=${ticketId} status=${t.status}`);
+            return false;
+        }
+        await run(
+            `UPDATE tickets SET status='umgesetzt', updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
+            [ticketId]
+        );
+        try {
+            await run(
+                `INSERT INTO audit_log (ticket_id, user, action, details) VALUES (?, ?, ?, ?)`,
+                [ticketId, 'workflow', 'status_change', `Status: ${t.status} -> umgesetzt (${reason || 'auto'})`]
+            );
+        } catch (_) {}
+        emit('ticket:status', { ticketId, status: 'umgesetzt', reason });
+        wfInfo(`markTicketUmgesetzt OK | ticket=${ticketId} from=${t.status} reason=${reason}`);
+        return true;
+    } catch (e) {
+        wfWarn(`markTicketUmgesetzt FAILED ticket=${ticketId}`, e.message);
+        return false;
+    }
+}
+
 // ---------- Repo-Aufloesung (NUR systems.repo_*) ----------
 async function resolveIntegration(ticket) {
     if (!ticket || !ticket.system_id) {
@@ -1168,6 +1203,8 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
                            WHERE id = ?`,
                     [dossier.branch, dossier.commitSha, runId]);
                 await dbRef.run('UPDATE tickets SET final_decision = ? WHERE id = ?', ['dispatched_external', ticket.id]);
+                // Ticket-Status auf 'umgesetzt' setzen — Dossier wurde an externen Agenten dispatcht.
+                await markTicketUmgesetzt(ticket.id, `dispatch_external -> ${dossier.branch}`);
                 emit('workflow:step', { runId, stage: 'approval', status: 'done', decision });
                 emit('workflow:completed', { runId, ticketId: ticket.id, result: 'dispatched_external', dossier_branch: dossier.branch });
                 return {
@@ -1671,6 +1708,8 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
                 out.pr_draft = pr.draft;
                 out.markdown += `\n\n**Pull Request:** [#${pr.prNumber}](${pr.prUrl})${pr.draft ? ' _(Draft)_' : ''} — Branch \`${pr.branch}\``;
                 wfInfo(`Stage:CODING PR-CREATED | pr=${pr.prNumber} url=${pr.prUrl} branch=${pr.branch} draft=${pr.draft}`);
+                // Ticket-Status auf 'umgesetzt' setzen — der Coding-Bot hat einen PR erstellt.
+                await markTicketUmgesetzt(ticket.id, `coding-bot PR #${pr.prNumber}`);
             } catch (e) {
                 out.pr_error = e.message;
                 out.markdown += `\n\n_PR-Erstellung fehlgeschlagen: ${e.message}_`;
