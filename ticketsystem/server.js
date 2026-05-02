@@ -3993,16 +3993,44 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
                     variableCostByProvider.set(row.provider, (variableCostByProvider.get(row.provider) || 0) + (row.estimated_cost_usd || 0));
                 });
 
+                const providerRows = new Map();
+                (byProvider || []).forEach(row => {
+                    providerRows.set(row.provider, {
+                        ...row,
+                        total_tokens: (row.total_prompt || 0) + (row.total_completion || 0),
+                        estimated_cost_usd: variableCostByProvider.get(row.provider) || 0,
+                        subscription_cost_eur: 0
+                    });
+                });
+
+                subscriptionProviders.forEach(provider => {
+                    if (!providerRows.has(provider)) {
+                        providerRows.set(provider, {
+                            provider,
+                            total_prompt: 0,
+                            total_completion: 0,
+                            call_count: 0,
+                            total_duration_ms: 0,
+                            total_tokens: 0,
+                            estimated_cost_usd: 0,
+                            subscription_cost_eur: 0
+                        });
+                    }
+                });
+
                 let subscriptionCostEurTotal = 0;
-                const byProviderDetailed = (byProvider || []).map(row => {
+                const byProviderDetailed = Array.from(providerRows.values()).map(row => {
                     const subscriptionCostEur = estimateSubscriptionCostEur(row.provider, selectedPeriod, statsStartedAt);
                     subscriptionCostEurTotal += subscriptionCostEur;
                     return {
                         ...row,
-                        total_tokens: (row.total_prompt || 0) + (row.total_completion || 0),
-                        estimated_cost_usd: variableCostByProvider.get(row.provider) || 0,
                         subscription_cost_eur: subscriptionCostEur
                     };
+                }).sort((left, right) => {
+                    const leftCombined = (left.estimated_cost_usd || 0) + (left.subscription_cost_eur || 0);
+                    const rightCombined = (right.estimated_cost_usd || 0) + (right.subscription_cost_eur || 0);
+                    if (rightCombined !== leftCombined) return rightCombined - leftCombined;
+                    return String(left.provider || '').localeCompare(String(right.provider || ''));
                 });
 
                 const statsStartLabel = statsStartedAt
