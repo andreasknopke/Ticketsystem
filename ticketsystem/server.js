@@ -3841,6 +3841,18 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
+    const allowedPeriods = new Set(['daily', 'monthly', 'yearly', 'all']);
+    const selectedPeriod = allowedPeriods.has(String(req.query.period || 'all')) ? String(req.query.period || 'all') : 'all';
+
+    function buildPeriodFilter(period, column) {
+        if (period === 'daily') return { clause: ` AND date(${column}) = date('now')`, params: [] };
+        if (period === 'monthly') return { clause: ` AND date(${column}) >= date('now', 'start of month')`, params: [] };
+        if (period === 'yearly') return { clause: ` AND date(${column}) >= date('now', 'start of year')`, params: [] };
+        return { clause: '', params: [] };
+    }
+
+    const tokenPeriod = buildPeriodFilter(selectedPeriod, 'created_at');
+
     const query = `
         SELECT provider, model,
                SUM(prompt_tokens) as total_prompt,
@@ -3848,6 +3860,7 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
                COUNT(*) as call_count,
                SUM(duration_ms) as total_duration_ms
         FROM ai_token_usage
+        WHERE 1=1${tokenPeriod.clause}
         GROUP BY provider, model
         ORDER BY total_prompt + total_completion DESC
     `;
@@ -3858,18 +3871,20 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
                COUNT(*) as call_count,
                SUM(duration_ms) as total_duration_ms
         FROM ai_token_usage
+        WHERE 1=1${tokenPeriod.clause}
         GROUP BY provider
         ORDER BY total_prompt + total_completion DESC
     `;
-    db.all(query, [], (err, byModel) => {
+    db.all(query, tokenPeriod.params, (err, byModel) => {
         if (err) { console.error('Token stats error:', err.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
-        db.all(summaryQuery, [], (err2, byProvider) => {
+        db.all(summaryQuery, tokenPeriod.params, (err2, byProvider) => {
             if (err2) { console.error('Token stats summary error:', err2.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
             let grandTotal = 0;
             byModel.forEach(r => { grandTotal += (r.total_prompt || 0) + (r.total_completion || 0); });
             res.render('stats-tokens', {
                 user: req.session.user,
                 role: req.session.role || 'user',
+                selectedPeriod,
                 byModel,
                 byProvider,
                 grandTotal

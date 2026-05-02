@@ -49,8 +49,28 @@
                 <p class="mt-2 max-w-3xl text-sm text-gray-500">Token-Verbrauch nach Provider und Modell. Insgesamt <strong><%= grandTotal.toLocaleString() %></strong> Tokens verbraucht.</p>
             </div>
             <div class="flex gap-2">
-                <a href="/stats" class="btn-secondary text-sm">Ticket-Statistiken</a>
+                <a href="/stats?period=<%= selectedPeriod || 'all' %>" class="btn-secondary text-sm">Ticket-Statistiken</a>
                 <a href="/" class="btn-secondary text-sm">Zurück zum Dashboard</a>
+            </div>
+        </div>
+
+        <div class="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Zeitraum</p>
+                    <p class="mt-1 text-sm text-slate-600">Filtert die Token-Nutzung nach dem Zeitpunkt der LLM-Aufrufe.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <% const periodOptions = [
+                        { key: 'all', label: 'Alle' },
+                        { key: 'daily', label: 'Täglich' },
+                        { key: 'monthly', label: 'Monatlich' },
+                        { key: 'yearly', label: 'Jährlich' }
+                    ]; %>
+                    <% periodOptions.forEach(option => { %>
+                        <a href="/stats/tokens?period=<%= option.key %>" class="rounded-full px-4 py-2 text-sm font-medium transition <%= selectedPeriod === option.key ? 'bg-primary-600 text-white shadow-sm' : 'border border-slate-300 bg-white text-slate-700 hover:border-primary-300 hover:text-primary-700' %>"><%= option.label %></a>
+                    <% }); %>
+                </div>
             </div>
         </div>
 
