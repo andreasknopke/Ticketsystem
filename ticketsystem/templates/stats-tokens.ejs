@@ -46,7 +46,7 @@
             <div>
                 <p class="text-sm font-semibold uppercase tracking-[0.2em] text-primary-600">Reporting</p>
                 <h1 class="mt-1 text-3xl font-bold text-gray-900">AI Token Usage</h1>
-                <p class="mt-2 max-w-3xl text-sm text-gray-500">Token-Verbrauch nach Provider und Modell. Insgesamt <strong><%= grandTotal.toLocaleString() %></strong> Tokens verbraucht.</p>
+                <p class="mt-2 max-w-3xl text-sm text-gray-500">Token-Verbrauch und geschätzte Kosten nach Provider und Modell. Insgesamt <strong><%= grandTotal.toLocaleString() %></strong> Tokens verbraucht.</p>
             </div>
             <div class="flex gap-2">
                 <a href="/stats?period=<%= selectedPeriod || 'all' %>" class="btn-secondary text-sm">Ticket-Statistiken</a>
@@ -74,6 +74,34 @@
             </div>
         </div>
 
+        <div class="grid grid-cols-1 gap-6 md:grid-cols-3">
+            <div class="card border border-emerald-200 bg-emerald-50">
+                <div class="card-body">
+                    <p class="text-sm font-medium text-emerald-700">Geschätzte API-Kosten</p>
+                    <p class="mt-2 text-3xl font-bold text-emerald-900"><%= Number(variableCostUsdTotal || 0).toLocaleString('de-DE', { style: 'currency', currency: 'USD' }) %></p>
+                    <p class="mt-2 text-xs text-emerald-700">Tokenbasierte Verbrauchskosten</p>
+                </div>
+            </div>
+            <div class="card border border-blue-200 bg-blue-50">
+                <div class="card-body">
+                    <p class="text-sm font-medium text-blue-700">Abo-Kosten</p>
+                    <p class="mt-2 text-3xl font-bold text-blue-900"><%= Number(subscriptionCostEurTotal || 0).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) %></p>
+                    <p class="mt-2 text-xs text-blue-700">Ollama 20 EUR/Monat, Copilot 40 EUR/Monat</p>
+                </div>
+            </div>
+            <div class="card border border-amber-200 bg-amber-50">
+                <div class="card-body">
+                    <p class="text-sm font-medium text-amber-700">Nicht bepreiste Modelle</p>
+                    <p class="mt-2 text-3xl font-bold text-amber-900"><%= unknownCostRows || 0 %></p>
+                    <p class="mt-2 text-xs text-amber-700">Zeilen ohne hinterlegte Preismatrix</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm">
+            Kosten werden aus den geloggten Token-Mengen geschätzt. API-basierte Provider werden in USD pro 1 Mio. Tokens berechnet. OpenAI Local und Mistral sind als kostenlos hinterlegt, Ollama und Copilot als Monatsabo in EUR.
+        </div>
+
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div class="card border border-slate-200 bg-white">
                 <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Token nach Provider</h3></div>
@@ -90,6 +118,37 @@
         </div>
 
         <div class="mt-6 card border border-slate-200 bg-white">
+            <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Kosten pro Provider</h3></div>
+            <div class="card-body overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gesamt-Tokens</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">API-Kosten (USD)</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Abo (EUR)</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Aufrufe</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        <% byProvider.forEach(row => { %>
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-4 py-3 text-sm text-gray-900"><%= row.provider %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.total_tokens || 0).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= Number(row.estimated_cost_usd || 0).toLocaleString('de-DE', { style: 'currency', currency: 'USD' }) %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= Number(row.subscription_cost_eur || 0).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.call_count || 0).toLocaleString() %></td>
+                        </tr>
+                        <% }) %>
+                        <% if (!byProvider.length) { %>
+                        <tr><td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">Noch keine Kostendaten erfasst.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="mt-6 card border border-slate-200 bg-white">
             <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Details pro Modell</h3></div>
             <div class="card-body overflow-x-auto">
                 <table class="min-w-full divide-y divide-gray-200">
@@ -100,6 +159,8 @@
                             <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Prompt Tokens</th>
                             <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Completion Tokens</th>
                             <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gesamt</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Preismodell</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Kosten (USD)</th>
                             <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Aufrufe</th>
                             <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Dauer (ms)</th>
                         </tr>
@@ -112,12 +173,14 @@
                             <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.total_prompt || 0).toLocaleString() %></td>
                             <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.total_completion || 0).toLocaleString() %></td>
                             <td class="px-4 py-3 text-sm font-semibold text-gray-900 text-right"><%= ((row.total_prompt || 0) + (row.total_completion || 0)).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm text-gray-500"><%= row.pricing_label %></td>
+                            <td class="px-4 py-3 text-sm font-semibold text-gray-900 text-right"><%= Number(row.estimated_cost_usd || 0).toLocaleString('de-DE', { style: 'currency', currency: 'USD' }) %></td>
                             <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.call_count || 0).toLocaleString() %></td>
                             <td class="px-4 py-3 text-sm text-gray-500 text-right"><%= (row.total_duration_ms || 0).toLocaleString() %></td>
                         </tr>
                         <% }) %>
                         <% if (!byModel.length) { %>
-                        <tr><td colspan="7" class="px-4 py-6 text-center text-sm text-gray-400">Noch keine Token-Daten erfasst.</td></tr>
+                        <tr><td colspan="9" class="px-4 py-6 text-center text-sm text-gray-400">Noch keine Token-Daten erfasst.</td></tr>
                         <% } %>
                     </tbody>
                 </table>

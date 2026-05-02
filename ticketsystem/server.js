@@ -3852,6 +3852,80 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
     }
 
     const tokenPeriod = buildPeriodFilter(selectedPeriod, 'created_at');
+    const subscriptionProviders = ['ollama', 'copilot'];
+
+    function normalizeModelName(model) {
+        return String(model || '').trim().toLowerCase();
+    }
+
+    function getPricing(provider, model) {
+        const normalizedProvider = String(provider || '').trim().toLowerCase();
+        const normalizedModel = normalizeModelName(model);
+
+        if (normalizedProvider === 'openai_local' || normalizedProvider === 'mistral') {
+            return { kind: 'free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Kostenloser Provider' };
+        }
+        if (normalizedProvider === 'ollama') {
+            return { kind: 'subscription', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Monatsabo 20 EUR' };
+        }
+        if (normalizedProvider === 'copilot') {
+            return { kind: 'subscription', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Monatsabo 40 EUR' };
+        }
+        if (normalizedProvider === 'deepseek') {
+            if (normalizedModel.includes('v4-pro')) return { kind: 'metered', inputUsdPerMillion: 0.435, outputUsdPerMillion: 0.87, label: 'DeepSeek V4 Pro, aktueller Discountpreis' };
+            return { kind: 'metered', inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28, label: 'DeepSeek Chat/Flash, aktueller Preis' };
+        }
+        if (normalizedProvider === 'openai') {
+            if (normalizedModel.includes('gpt-5.5-pro')) return { kind: 'metered', inputUsdPerMillion: 30, outputUsdPerMillion: 180, label: 'OpenAI GPT-5.5 Pro' };
+            if (normalizedModel.includes('gpt-5.5')) return { kind: 'metered', inputUsdPerMillion: 5, outputUsdPerMillion: 30, label: 'OpenAI GPT-5.5' };
+            if (normalizedModel.includes('gpt-5.4-pro')) return { kind: 'metered', inputUsdPerMillion: 30, outputUsdPerMillion: 180, label: 'OpenAI GPT-5.4 Pro' };
+            if (normalizedModel.includes('gpt-5.4-mini')) return { kind: 'metered', inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.5, label: 'OpenAI GPT-5.4 Mini' };
+            if (normalizedModel.includes('gpt-5.4-nano')) return { kind: 'metered', inputUsdPerMillion: 0.2, outputUsdPerMillion: 1.25, label: 'OpenAI GPT-5.4 Nano' };
+            if (normalizedModel.includes('gpt-5.4') || normalizedModel === 'gpt-5') return { kind: 'metered', inputUsdPerMillion: 2.5, outputUsdPerMillion: 15, label: 'OpenAI GPT-5.4' };
+            if (normalizedModel.includes('gpt-4.1-mini')) return { kind: 'metered', inputUsdPerMillion: 0.4, outputUsdPerMillion: 1.6, label: 'OpenAI GPT-4.1 Mini' };
+            if (normalizedModel.includes('gpt-4.1-nano')) return { kind: 'metered', inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.4, label: 'OpenAI GPT-4.1 Nano' };
+            if (normalizedModel.includes('gpt-4.1')) return { kind: 'metered', inputUsdPerMillion: 2, outputUsdPerMillion: 8, label: 'OpenAI GPT-4.1' };
+            if (normalizedModel.includes('gpt-4o-mini')) return { kind: 'metered', inputUsdPerMillion: 0.15, outputUsdPerMillion: 0.6, label: 'OpenAI GPT-4o Mini' };
+            if (normalizedModel.includes('gpt-4o')) return { kind: 'metered', inputUsdPerMillion: 2.5, outputUsdPerMillion: 10, label: 'OpenAI GPT-4o' };
+        }
+        if (normalizedProvider === 'anthropic') {
+            if (normalizedModel.includes('opus')) return { kind: 'metered', inputUsdPerMillion: 15, outputUsdPerMillion: 30, label: 'Anthropic Claude Opus' };
+            if (normalizedModel.includes('haiku 4.5') || normalizedModel.includes('haiku-4.5')) return { kind: 'metered', inputUsdPerMillion: 1, outputUsdPerMillion: 2, label: 'Anthropic Claude Haiku 4.5' };
+            if (normalizedModel.includes('haiku 3.5') || normalizedModel.includes('haiku-3.5')) return { kind: 'metered', inputUsdPerMillion: 0.8, outputUsdPerMillion: 1.6, label: 'Anthropic Claude Haiku 3.5' };
+            return { kind: 'metered', inputUsdPerMillion: 3, outputUsdPerMillion: 6, label: 'Anthropic Claude Sonnet' };
+        }
+        if (normalizedProvider === 'clarifai') {
+            if (normalizedModel.includes('kimi')) return { kind: 'metered', inputUsdPerMillion: 1.5, outputUsdPerMillion: 1.5, label: 'Clarifai Kimi' };
+            if (normalizedModel.includes('gpt-oss')) return { kind: 'metered', inputUsdPerMillion: 0.09, outputUsdPerMillion: 0.36, label: 'Clarifai GPT OSS 120B' };
+            if (normalizedModel.includes('claude-opus')) return { kind: 'metered', inputUsdPerMillion: 6.25, outputUsdPerMillion: 31.25, label: 'Clarifai Claude Opus 4.5' };
+            if (normalizedModel.includes('gpt-5')) return { kind: 'metered', inputUsdPerMillion: 1.5625, outputUsdPerMillion: 12.5, label: 'Clarifai GPT-5.1' };
+            if (normalizedModel.includes('qwen3-coder')) return { kind: 'metered', inputUsdPerMillion: 0.36, outputUsdPerMillion: 1.3, label: 'Clarifai Qwen3 Coder' };
+        }
+
+        return { kind: 'unknown', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Kein Preis hinterlegt' };
+    }
+
+    function estimateVariableCostUsd(provider, model, promptTokens, completionTokens) {
+        const pricing = getPricing(provider, model);
+        const estimatedCostUsd = ((promptTokens || 0) * pricing.inputUsdPerMillion + (completionTokens || 0) * pricing.outputUsdPerMillion) / 1000000;
+        return {
+            pricing,
+            estimatedCostUsd
+        };
+    }
+
+    function estimateSubscriptionCostEur(provider, period, activeMonths) {
+        const monthlyFee = provider === 'ollama' ? 20 : provider === 'copilot' ? 40 : 0;
+        if (!monthlyFee) return 0;
+        const now = new Date();
+        if (period === 'daily') {
+            const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            return monthlyFee / daysInMonth;
+        }
+        if (period === 'monthly') return monthlyFee;
+        if (period === 'yearly') return monthlyFee * (now.getMonth() + 1);
+        return monthlyFee * (activeMonths || 0);
+    }
 
     const query = `
         SELECT provider, model,
@@ -3875,19 +3949,71 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
         GROUP BY provider
         ORDER BY total_prompt + total_completion DESC
     `;
+    const subscriptionUsageQuery = `
+        SELECT provider,
+               COUNT(DISTINCT strftime('%Y-%m', created_at)) AS active_months
+        FROM ai_token_usage
+        WHERE 1=1${tokenPeriod.clause} AND provider IN (${subscriptionProviders.map(() => '?').join(', ')})
+        GROUP BY provider
+    `;
     db.all(query, tokenPeriod.params, (err, byModel) => {
         if (err) { console.error('Token stats error:', err.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
         db.all(summaryQuery, tokenPeriod.params, (err2, byProvider) => {
             if (err2) { console.error('Token stats summary error:', err2.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
-            let grandTotal = 0;
-            byModel.forEach(r => { grandTotal += (r.total_prompt || 0) + (r.total_completion || 0); });
-            res.render('stats-tokens', {
-                user: req.session.user,
-                role: req.session.role || 'user',
-                selectedPeriod,
-                byModel,
-                byProvider,
-                grandTotal
+            db.all(subscriptionUsageQuery, [...tokenPeriod.params, ...subscriptionProviders], (err3, subscriptionUsage) => {
+                if (err3) { console.error('Token stats subscription error:', err3.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
+
+                let grandTotal = 0;
+                let variableCostUsdTotal = 0;
+                let unknownCostRows = 0;
+                const byModelDetailed = (byModel || []).map(row => {
+                    const totalTokens = (row.total_prompt || 0) + (row.total_completion || 0);
+                    const { pricing, estimatedCostUsd } = estimateVariableCostUsd(row.provider, row.model, row.total_prompt || 0, row.total_completion || 0);
+                    grandTotal += totalTokens;
+                    variableCostUsdTotal += estimatedCostUsd;
+                    if (pricing.kind === 'unknown') unknownCostRows += 1;
+                    return {
+                        ...row,
+                        total_tokens: totalTokens,
+                        estimated_cost_usd: estimatedCostUsd,
+                        pricing_kind: pricing.kind,
+                        pricing_label: pricing.label,
+                        input_price_usd_per_million: pricing.inputUsdPerMillion,
+                        output_price_usd_per_million: pricing.outputUsdPerMillion
+                    };
+                });
+
+                const variableCostByProvider = new Map();
+                byModelDetailed.forEach(row => {
+                    variableCostByProvider.set(row.provider, (variableCostByProvider.get(row.provider) || 0) + (row.estimated_cost_usd || 0));
+                });
+
+                const subscriptionMonthsByProvider = new Map((subscriptionUsage || []).map(row => [row.provider, row.active_months || 0]));
+                let subscriptionCostEurTotal = 0;
+                const byProviderDetailed = (byProvider || []).map(row => {
+                    const activeMonths = subscriptionMonthsByProvider.get(row.provider) || 0;
+                    const subscriptionCostEur = estimateSubscriptionCostEur(row.provider, selectedPeriod, activeMonths);
+                    subscriptionCostEurTotal += subscriptionCostEur;
+                    return {
+                        ...row,
+                        total_tokens: (row.total_prompt || 0) + (row.total_completion || 0),
+                        estimated_cost_usd: variableCostByProvider.get(row.provider) || 0,
+                        subscription_cost_eur: subscriptionCostEur,
+                        active_months: activeMonths
+                    };
+                });
+
+                res.render('stats-tokens', {
+                    user: req.session.user,
+                    role: req.session.role || 'user',
+                    selectedPeriod,
+                    byModel: byModelDetailed,
+                    byProvider: byProviderDetailed,
+                    grandTotal,
+                    variableCostUsdTotal,
+                    subscriptionCostEurTotal,
+                    unknownCostRows
+                });
             });
         });
     });
