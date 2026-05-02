@@ -4045,7 +4045,7 @@ app.post('/tickets/:id/verify', requireAuth, (req, res) => {
     const actor = getActor(req);
 
     workflowEngine.markTicketUeberprueft(ticketId, actor).then(ok => {
-        if (!ok) return res.status(409).json({ error: 'Verifizierung nicht möglich – Ticket nicht im Status "umgesetzt".' });
+        if (!ok) return res.status(409).json({ error: 'Verifizierung nicht moeglich - Ticket nicht im Status "umgesetzt".' });
         db.get('SELECT status FROM tickets WHERE id = ?', [ticketId], (err, row) => {
             if (err) return res.status(500).json({ error: 'DB-Fehler' });
             logAction(ticketId, actor, 'verify', `Status: umgesetzt → überprüft (Verifizierung)`);
@@ -4054,6 +4054,7 @@ app.post('/tickets/:id/verify', requireAuth, (req, res) => {
             res.json({ success: true });
         });
     }).catch(err => {
+        console.error('[verify] Error:', err.message);
         res.status(500).json({ error: 'Verifizierung fehlgeschlagen.' });
     });
 });

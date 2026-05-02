@@ -266,9 +266,14 @@ async function markTicketUmgesetzt(ticketId, reason) {
 async function markTicketUeberprueft(ticketId, reason) {
     try {
         const t = await getRow('SELECT id, status FROM tickets WHERE id = ?', [ticketId]);
-        if (!t) return false;
-        if (t.status !== 'umgesetzt') {
-            wfInfo(`markTicketUeberprueft SKIP | ticket=${ticketId} status=${t.status}`);
+        if (!t) {
+            wfWarn(`markTicketUeberprueft SKIP | ticket=${ticketId} NOT FOUND`);
+            return false;
+        }
+        const currentStatus = String(t.status).trim();
+        wfInfo(`markTicketUeberprueft CHECK | ticket=${ticketId} db_status="${currentStatus}" db_status_hex=${Buffer.from(currentStatus).toString('hex')} expected="umgesetzet"`);
+        if (currentStatus !== 'umgesetzt') {
+            wfInfo(`markTicketUeberprueft SKIP | ticket=${ticketId} status="${currentStatus}" (expected "umgesetzt")`);
             return false;
         }
         await run(
