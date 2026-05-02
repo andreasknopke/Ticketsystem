@@ -841,7 +841,7 @@ function initDb() {
             const newDdl = row.sql.replace(
                 /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
                 "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen')) DEFAULT 'offen'"
-            ).replace(/CREATE TABLE\s+tickets/i, 'CREATE TABLE tickets__new');
+            ).replace(/CREATE\s+TABLE\s+["']?tickets["']?/i, 'CREATE TABLE tickets__new');
             db.run(newDdl, (e1) => {
                 if (e1) {
                     console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message);
@@ -894,7 +894,7 @@ function initDb() {
             const newDdl = row.sql.replace(
                 /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
                 "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen'"
-            ).replace(/CREATE TABLE\s+tickets/i, 'CREATE TABLE tickets__new');
+            ).replace(/CREATE\s+TABLE\s+["']?tickets["']?/i, 'CREATE TABLE tickets__new');
             console.log('[migration] newDdl starts with:', newDdl.substring(0, 80));
             db.run(newDdl, (e1) => {
                 if (e1) { console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
