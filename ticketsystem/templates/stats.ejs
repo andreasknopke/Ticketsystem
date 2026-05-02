@@ -53,6 +53,26 @@
             </div>
         </div>
 
+        <div class="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Zeitraum</p>
+                    <p class="mt-1 text-sm text-slate-600">Filtert alle Statistiken nach dem Erstellungsdatum der Tickets.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <% const periodOptions = [
+                        { key: 'all', label: 'Alle' },
+                        { key: 'daily', label: 'Täglich' },
+                        { key: 'monthly', label: 'Monatlich' },
+                        { key: 'yearly', label: 'Jährlich' }
+                    ]; %>
+                    <% periodOptions.forEach(option => { %>
+                        <a href="/stats?period=<%= option.key %>" class="rounded-full px-4 py-2 text-sm font-medium transition <%= selectedPeriod === option.key ? 'bg-primary-600 text-white shadow-sm' : 'border border-slate-300 bg-white text-slate-700 hover:border-primary-300 hover:text-primary-700' %>"><%= option.label %></a>
+                    <% }); %>
+                </div>
+            </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
             <div class="card border border-slate-200 bg-white">
                 <div class="card-body">
