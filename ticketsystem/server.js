@@ -835,6 +835,7 @@ function initDb() {
         if (!/status TEXT CHECK\(status IN/.test(row.sql)) return; // unerwartetes Schema, Hand wegnehmen
         console.log('[migration] tickets.status CHECK erweitern (umgesetzt)…');
         db.serialize(() => {
+            db.run('DROP TABLE IF EXISTS tickets__new');
             db.run('PRAGMA foreign_keys=OFF');
             db.run('BEGIN TRANSACTION');
             const newDdl = row.sql.replace(
@@ -886,6 +887,7 @@ function initDb() {
         if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
         console.log('[migration] tickets.status CHECK erweitern (überprüft)…');
         db.serialize(() => {
+            db.run('DROP TABLE IF EXISTS tickets__new');
             db.run('PRAGMA foreign_keys=OFF');
             db.run('BEGIN TRANSACTION');
             const newDdl = row.sql.replace(
