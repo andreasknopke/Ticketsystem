@@ -3914,7 +3914,12 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
         };
     }
 
-    function estimateSubscriptionCostEur(provider, period, activeMonths) {
+    function countMonthsInclusive(startDate, endDate) {
+        if (!startDate || !endDate) return 0;
+        return ((endDate.getFullYear() - startDate.getFullYear()) * 12) + (endDate.getMonth() - startDate.getMonth()) + 1;
+    }
+
+    function estimateSubscriptionCostEur(provider, period, statsStartedAt) {
         const monthlyFee = provider === 'ollama' ? 20 : provider === 'copilot' ? 40 : 0;
         if (!monthlyFee) return 0;
         const now = new Date();
@@ -3924,7 +3929,8 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
         }
         if (period === 'monthly') return monthlyFee;
         if (period === 'yearly') return monthlyFee * (now.getMonth() + 1);
-        return monthlyFee * (activeMonths || 0);
+        if (!statsStartedAt) return 0;
+        return monthlyFee * countMonthsInclusive(statsStartedAt, now);
     }
 
     const query = `
@@ -3949,19 +3955,18 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
         GROUP BY provider
         ORDER BY total_prompt + total_completion DESC
     `;
-    const subscriptionUsageQuery = `
-        SELECT provider,
-               COUNT(DISTINCT strftime('%Y-%m', created_at)) AS active_months
+    const statsStartQuery = `
+        SELECT MIN(created_at) AS stats_started_at
         FROM ai_token_usage
-        WHERE 1=1${tokenPeriod.clause} AND provider IN (${subscriptionProviders.map(() => '?').join(', ')})
-        GROUP BY provider
     `;
     db.all(query, tokenPeriod.params, (err, byModel) => {
         if (err) { console.error('Token stats error:', err.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
         db.all(summaryQuery, tokenPeriod.params, (err2, byProvider) => {
             if (err2) { console.error('Token stats summary error:', err2.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
-            db.all(subscriptionUsageQuery, [...tokenPeriod.params, ...subscriptionProviders], (err3, subscriptionUsage) => {
+            db.get(statsStartQuery, [], (err3, statsStartRow) => {
                 if (err3) { console.error('Token stats subscription error:', err3.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
+
+                const statsStartedAt = statsStartRow && statsStartRow.stats_started_at ? new Date(statsStartRow.stats_started_at) : null;
 
                 let grandTotal = 0;
                 let variableCostUsdTotal = 0;
@@ -3988,20 +3993,29 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
                     variableCostByProvider.set(row.provider, (variableCostByProvider.get(row.provider) || 0) + (row.estimated_cost_usd || 0));
                 });
 
-                const subscriptionMonthsByProvider = new Map((subscriptionUsage || []).map(row => [row.provider, row.active_months || 0]));
                 let subscriptionCostEurTotal = 0;
                 const byProviderDetailed = (byProvider || []).map(row => {
-                    const activeMonths = subscriptionMonthsByProvider.get(row.provider) || 0;
-                    const subscriptionCostEur = estimateSubscriptionCostEur(row.provider, selectedPeriod, activeMonths);
+                    const subscriptionCostEur = estimateSubscriptionCostEur(row.provider, selectedPeriod, statsStartedAt);
                     subscriptionCostEurTotal += subscriptionCostEur;
                     return {
                         ...row,
                         total_tokens: (row.total_prompt || 0) + (row.total_completion || 0),
                         estimated_cost_usd: variableCostByProvider.get(row.provider) || 0,
-                        subscription_cost_eur: subscriptionCostEur,
-                        active_months: activeMonths
+                        subscription_cost_eur: subscriptionCostEur
                     };
                 });
+
+                const statsStartLabel = statsStartedAt
+                    ? statsStartedAt.toLocaleDateString('de-DE', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                    : null;
+
+                let subscriptionCostBasis = 'Monatskosten fuer den gewaehlten Zeitraum';
+                if (selectedPeriod === 'daily') subscriptionCostBasis = 'Tagesanteil der Monatsabos';
+                else if (selectedPeriod === 'monthly') subscriptionCostBasis = 'Monatsabos fuer den aktuellen Monat';
+                else if (selectedPeriod === 'yearly') subscriptionCostBasis = 'Aufsummierte Monatsabos seit Jahresbeginn';
+                else if (selectedPeriod === 'all') subscriptionCostBasis = statsStartLabel
+                    ? `Aufsummierte Monatsabos seit Statistikbeginn am ${statsStartLabel}`
+                    : 'Keine Statistikbasis fuer Abo-Kosten vorhanden';
 
                 res.render('stats-tokens', {
                     user: req.session.user,
@@ -4012,7 +4026,8 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
                     grandTotal,
                     variableCostUsdTotal,
                     subscriptionCostEurTotal,
-                    unknownCostRows
+                    unknownCostRows,
+                    subscriptionCostBasis
                 });
             });
         });
