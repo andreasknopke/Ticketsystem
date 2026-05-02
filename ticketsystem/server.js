@@ -1051,6 +1051,16 @@ function initDb() {
         FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS ai_token_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_tokens INTEGER NOT NULL,
+        completion_tokens INTEGER NOT NULL,
+        duration_ms INTEGER
+    )`);
+
     // Migration: ticket_workflow_runs um Dossier-Felder erweitern (External-Dispatch)
     db.all('PRAGMA table_info(ticket_workflow_runs)', (pragmaErr, rows) => {
         if (pragmaErr) {
@@ -1260,6 +1270,14 @@ function initTicketsTable() {
 }
 
 initTicketsTable();
+
+aiClient.setTokenLogger((provider, model, promptTokens, completionTokens, durationMs) => {
+    db.run(
+        'INSERT INTO ai_token_usage (provider, model, prompt_tokens, completion_tokens, duration_ms) VALUES (?, ?, ?, ?, ?)',
+        [provider, model, promptTokens, completionTokens, durationMs || null],
+        (err) => { if (err) console.error('[token-usage] Insert failed:', err.message); }
+    );
+});
 
 // --- SLA Funktionen ---
 
@@ -3797,6 +3815,44 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
         console.error('Stats Error:', err.message);
         res.status(500).send('Statistiken konnten nicht geladen werden.');
     }
+});
+
+app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
+    const query = `
+        SELECT provider, model,
+               SUM(prompt_tokens) as total_prompt,
+               SUM(completion_tokens) as total_completion,
+               COUNT(*) as call_count,
+               SUM(duration_ms) as total_duration_ms
+        FROM ai_token_usage
+        GROUP BY provider, model
+        ORDER BY total_prompt + total_completion DESC
+    `;
+    const summaryQuery = `
+        SELECT provider,
+               SUM(prompt_tokens) as total_prompt,
+               SUM(completion_tokens) as total_completion,
+               COUNT(*) as call_count,
+               SUM(duration_ms) as total_duration_ms
+        FROM ai_token_usage
+        GROUP BY provider
+        ORDER BY total_prompt + total_completion DESC
+    `;
+    db.all(query, [], (err, byModel) => {
+        if (err) { console.error('Token stats error:', err.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
+        db.all(summaryQuery, [], (err2, byProvider) => {
+            if (err2) { console.error('Token stats summary error:', err2.message); return res.status(500).send('Fehler beim Laden der Token-Statistiken.'); }
+            let grandTotal = 0;
+            byModel.forEach(r => { grandTotal += (r.total_prompt || 0) + (r.total_completion || 0); });
+            res.render('stats-tokens', {
+                user: req.session.user,
+                role: req.session.role || 'user',
+                byModel,
+                byProvider,
+                grandTotal
+            });
+        });
+    });
 });
 
 // --- Web UI: Dashboard & Detail ---

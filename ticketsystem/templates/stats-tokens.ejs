@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Token Usage | Ticketsystem</title>
+    <link rel="stylesheet" href="/style.css?v=2">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <div class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                        </div>
+                        <a href="/" class="text-xl font-bold text-gray-900 hover:text-primary-600">Ticketsystem</a>
+                    </div>
+                    <div class="hidden md:ml-8 md:flex md:space-x-1">
+                        <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/stats" class="nav-link active">Statistiken</a>
+                        <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+                        <a href="/projects" class="nav-link">Projekte</a>
+                        <a href="/admin/systems" class="nav-link">Systeme</a>
+                        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+                        <% if (role === 'root') { %>
+                        <a href="/admin/users" class="nav-link">Benutzer</a>
+                        <% } %>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <a href="/account" class="btn-secondary text-sm">Account</a>
+                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-primary-600">Reporting</p>
+                <h1 class="mt-1 text-3xl font-bold text-gray-900">AI Token Usage</h1>
+                <p class="mt-2 max-w-3xl text-sm text-gray-500">Token-Verbrauch nach Provider und Modell. Insgesamt <strong><%= grandTotal.toLocaleString() %></strong> Tokens verbraucht.</p>
+            </div>
+            <div class="flex gap-2">
+                <a href="/stats" class="btn-secondary text-sm">Ticket-Statistiken</a>
+                <a href="/" class="btn-secondary text-sm">Zurück zum Dashboard</a>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div class="card border border-slate-200 bg-white">
+                <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Token nach Provider</h3></div>
+                <div class="card-body">
+                    <canvas id="chart-provider" height="300"></canvas>
+                </div>
+            </div>
+            <div class="card border border-slate-200 bg-white">
+                <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Token nach Modell</h3></div>
+                <div class="card-body">
+                    <canvas id="chart-model" height="300"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 card border border-slate-200 bg-white">
+            <div class="card-header"><h3 class="text-lg font-semibold text-gray-900">Details pro Modell</h3></div>
+            <div class="card-body overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Modell</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Prompt Tokens</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Completion Tokens</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gesamt</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Aufrufe</th>
+                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Dauer (ms)</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        <% byModel.forEach(row => { %>
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-4 py-3 text-sm text-gray-900"><%= row.provider %></td>
+                            <td class="px-4 py-3 text-sm text-gray-900 font-mono"><%= row.model %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.total_prompt || 0).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.total_completion || 0).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm font-semibold text-gray-900 text-right"><%= ((row.total_prompt || 0) + (row.total_completion || 0)).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm text-gray-700 text-right"><%= (row.call_count || 0).toLocaleString() %></td>
+                            <td class="px-4 py-3 text-sm text-gray-500 text-right"><%= (row.total_duration_ms || 0).toLocaleString() %></td>
+                        </tr>
+                        <% }) %>
+                        <% if (!byModel.length) { %>
+                        <tr><td colspan="7" class="px-4 py-6 text-center text-sm text-gray-400">Noch keine Token-Daten erfasst.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const byProvider = <%- JSON.stringify(byProvider || []) %>;
+        const byModel = <%- JSON.stringify(byModel || []) %>;
+
+        function fmt(n) { return n != null ? n.toLocaleString() : '0'; }
+
+        if (byProvider.length) {
+            new Chart(document.getElementById('chart-provider'), {
+                type: 'bar',
+                data: {
+                    labels: byProvider.map(r => r.provider),
+                    datasets: [
+                        { label: 'Prompt Tokens', data: byProvider.map(r => r.total_prompt || 0), backgroundColor: 'rgba(59,130,246,0.7)' },
+                        { label: 'Completion Tokens', data: byProvider.map(r => r.total_completion || 0), backgroundColor: 'rgba(249,115,22,0.7)' }
+                    ]
+                },
+                options: { responsive: true, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString() } } } }
+            });
+        }
+
+        if (byModel.length) {
+            new Chart(document.getElementById('chart-model'), {
+                type: 'bar',
+                data: {
+                    labels: byModel.map(r => r.model),
+                    datasets: [
+                        { label: 'Prompt Tokens', data: byModel.map(r => r.total_prompt || 0), backgroundColor: 'rgba(59,130,246,0.7)' },
+                        { label: 'Completion Tokens', data: byModel.map(r => r.total_completion || 0), backgroundColor: 'rgba(249,115,22,0.7)' }
+                    ]
+                },
+                options: { responsive: true, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString() } }, x: { ticks: { maxRotation: 45 } } } }
+            });
+        }
+    </script>
+</body>
+</html>

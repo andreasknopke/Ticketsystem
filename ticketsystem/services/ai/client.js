@@ -244,25 +244,30 @@ async function callOllama(opts) {
     };
 }
 
+let _logTokenUsage = null;
+
+function setTokenLogger(fn) {
+    _logTokenUsage = fn;
+}
+
 async function chat(opts) {
     const provider = opts.provider || DEFAULT_PROVIDER;
     if (!CONFIG[provider]) throw new Error(`AI: Unbekannter Provider "${provider}"`);
-    if (provider === 'ollama') return callOllama(opts);
-    if (provider === 'anthropic') return callAnthropic(opts);
-    if (provider === 'copilot') return callCopilot(opts);
-    if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) {
-        throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
+    let result;
+    if (provider === 'ollama') result = await callOllama(opts);
+    else if (provider === 'anthropic') result = await callAnthropic(opts);
+    else if (provider === 'copilot') result = await callCopilot(opts);
+    else {
+        if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
+        if (provider === 'openai' && !CONFIG.openai.apiKey) throw new Error('AI openai: OPENAI_API_KEY ist nicht gesetzt');
+        if (provider === 'mistral' && !CONFIG.mistral.apiKey) throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
+        if (provider === 'clarifai' && !CONFIG.clarifai.apiKey) throw new Error('AI clarifai: CLARIFAI_PAT ist nicht gesetzt');
+        result = await callOpenAICompatible(provider, opts);
     }
-    if (provider === 'openai' && !CONFIG.openai.apiKey) {
-        throw new Error('AI openai: OPENAI_API_KEY ist nicht gesetzt');
+    if (_logTokenUsage && result && result.prompt_tokens != null && result.completion_tokens != null) {
+        try { _logTokenUsage(result.provider || provider, result.model || opts.model, result.prompt_tokens, result.completion_tokens, result.duration_ms); } catch (_) {}
     }
-    if (provider === 'mistral' && !CONFIG.mistral.apiKey) {
-        throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
-    }
-    if (provider === 'clarifai' && !CONFIG.clarifai.apiKey) {
-        throw new Error('AI clarifai: CLARIFAI_PAT ist nicht gesetzt');
-    }
-    return callOpenAICompatible(provider, opts);
+    return result;
 }
 
 // --- Anthropic (Claude) ---
@@ -561,4 +566,4 @@ function getConfigSummary() {
     };
 }
 
-module.exports = { chat, health, tryParseJson, getConfigSummary, CONFIG, DEFAULT_PROVIDER };
+module.exports = { chat, health, tryParseJson, getConfigSummary, setTokenLogger, CONFIG, DEFAULT_PROVIDER };
