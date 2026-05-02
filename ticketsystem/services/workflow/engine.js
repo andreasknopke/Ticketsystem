@@ -1513,6 +1513,36 @@ function assembleFilesFromEdits(out, currentFiles) {
  * Phase 2 (Edit): Bot sieht geladene Zeilenbereiche → schreibt search/replace-Edits
  * Liefert { out, ai, scopeViolations, codeCheckViolations, assembledFiles }.
  */
+function loadRequestedRanges(requestedFiles, allowedFiles, currentMap) {
+    const ranges = [];
+    for (const rf of requestedFiles) {
+        if (!rf.path || !allowedFiles.includes(rf.path)) continue;
+        const cur = currentMap.get(rf.path);
+        if (!cur || !cur.exists) {
+            ranges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
+            continue;
+        }
+        const readRanges = Array.isArray(rf.read_ranges) ? rf.read_ranges : [];
+        if (!readRanges.length && rf.action === 'create') {
+            ranges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
+            continue;
+        }
+        const effectiveRanges = readRanges.length ? readRanges : [
+            { start: 1, end: Math.min(50, cur.content.split('\n').length), reason: 'default context' }
+        ];
+        const { content: rangeContent, startLine: rangeStart } = extractLineRanges(cur.content, effectiveRanges);
+        ranges.push({
+            path: rf.path,
+            exists: true,
+            content: rangeContent,
+            startLine: rangeStart,
+            truncated: cur.truncated
+        });
+        wfInfo(`Stage:CODING EXPLORE | loaded ${rf.path} ranges=${effectiveRanges.length} bytes=${rangeContent.length}`);
+    }
+    return ranges;
+}
+
 async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback, systemName, repoInfo }) {
     const allowedFiles = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
     const changeKind = plan?.change_kind || 'extend';
@@ -1544,47 +1574,64 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
     // Zeilenbereiche aus Explore-Ergebnis extrahieren + Content laden
     const exploreOut = exploreResult.parsed;
     const requestedFiles = Array.isArray(exploreOut.files) ? exploreOut.files : [];
-    wfInfo(`Stage:CODING EXPLORE_RESULT | files=${requestedFiles.length} summary=${(exploreOut.summary || '').slice(0, 100)}`);
+    wfInfo(`Stage:CODING EXPLORE_RESULT | files=${requestedFiles.length} need_more_context=${!!exploreOut.need_more_context} summary=${(exploreOut.summary || '').slice(0, 100)}`);
     for (const rf of requestedFiles) {
         const ranges = Array.isArray(rf.read_ranges) ? rf.read_ranges : [];
         wfInfo(`Stage:CODING EXPLORE_RANGE | ${rf.path} action=${rf.action} ranges=${ranges.length} ${ranges.map(r => `L${r.start}-${r.end}`).join(',')}`);
     }
-    const loadedRanges = [];
-    for (const rf of requestedFiles) {
-        if (!rf.path || !allowedFiles.includes(rf.path)) continue;
-        const cur = currentMap.get(rf.path);
-        if (!cur || !cur.exists) {
-            // Neue Datei — keine Zeilen laden
-            loadedRanges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
-            continue;
+    const loadedRanges = loadRequestedRanges(requestedFiles, allowedFiles, currentMap);
+
+    // Phase 1b: Kontext-Nachbesserung wenn Bot need_more_context gesetzt hat
+    let finalLoadedRanges = loadedRanges;
+    if (exploreOut.need_more_context && integration) {
+        const extraPaths = requestedFiles
+            .map(f => f.path)
+            .filter(p => p && !allowedFiles.includes(p) && !currentMap.has(p));
+        let extraFiles = [];
+        if (extraPaths.length) {
+            try {
+                extraFiles = await fetchFilesFromRepo(integration, extraPaths, { maxBytes: 200 * 1024 });
+                wfInfo(`Stage:CODING EXPLORE_EXTRA | requested=${extraPaths.length} loaded=${extraFiles.filter(f => f.exists).length}`);
+                for (const ef of extraFiles) {
+                    if (ef.exists) currentMap.set(ef.path, ef);
+                }
+            } catch (e) { wfWarn(`Stage:CODING EXPLORE_EXTRA fetch failed`, e.message); }
         }
-        const ranges = Array.isArray(rf.read_ranges) ? rf.read_ranges : [];
-        if (!ranges.length && rf.action === 'create') {
-            loadedRanges.push({ path: rf.path, exists: false, content: '', startLine: 1, truncated: false });
-            continue;
-        }
-        // Fallback: wenn keine ranges angegeben aber action=update, nimm die Symbol-Zeilen + Kontext
-        const effectiveRanges = ranges.length ? ranges : [
-            { start: 1, end: Math.min(50, cur.content.split('\n').length), reason: 'default context' }
-        ];
-        const { content: rangeContent, startLine: rangeStart } = extractLineRanges(cur.content, effectiveRanges);
-        loadedRanges.push({
-            path: rf.path,
-            exists: true,
-            content: rangeContent,
-            startLine: rangeStart,
-            truncated: cur.truncated
+        const exploreExtraFiles = requestedFiles.filter(f => f.path && !allowedFiles.includes(f.path));
+        const extraRanges = loadRequestedRanges(exploreExtraFiles, [...allowedFiles, ...extraPaths], currentMap);
+        finalLoadedRanges = [...loadedRanges, ...extraRanges];
+
+        const contextGaps = Array.isArray(exploreOut.context_gaps) ? exploreOut.context_gaps : [];
+        wfInfo(`Stage:CODING EXPLORE_RE-RUN | context_gaps=${contextGaps.length} extra_ranges=${extraRanges.length}`);
+        const reExplorePrompt = prompts.CODING_EXPLORE.buildUser({
+            ticket, codingLevel, security, plan, integration,
+            symbolIndex, approverNote, correctionFeedback, systemName, repoInfo,
+            preloadedRanges: finalLoadedRanges
         });
-        wfInfo(`Stage:CODING EXPLORE | loaded ${rf.path} ranges=${effectiveRanges.length} bytes=${rangeContent.length}`);
+        const reExploreResult = await callAIWithStaff(staff, { systemPrompt: prompts.CODING_EXPLORE.system, userPrompt: reExplorePrompt, json: true });
+        if (reExploreResult.parsed) {
+            const reOut = reExploreResult.parsed;
+            const reFiles = Array.isArray(reOut.files) ? reOut.files : [];
+            wfInfo(`Stage:CODING EXPLORE_RE-RUN_RESULT | files=${reFiles.length} need_more_context=${!!reOut.need_more_context}`);
+            const reRanges = loadRequestedRanges(reFiles, [...allowedFiles, ...extraPaths], currentMap);
+            const seen = new Set(finalLoadedRanges.map(r => r.path));
+            for (const rr of reRanges) {
+                if (!seen.has(rr.path)) { finalLoadedRanges.push(rr); seen.add(rr.path); }
+                else {
+                    const idx = finalLoadedRanges.findIndex(r => r.path === rr.path);
+                    if (idx >= 0) finalLoadedRanges[idx] = rr;
+                }
+            }
+        }
     }
 
     // Phase 2: Edit — Bot sieht geladene Zeilenbereiche + schreibt Edits
     const editPrompt = prompts.CODING_EDIT.buildUser({
         ticket, codingLevel, plan, integration,
-        loadedRanges, approverNote, correctionFeedback, systemName, repoInfo
+        loadedRanges: finalLoadedRanges, approverNote, correctionFeedback, systemName, repoInfo
     });
     const editBytes = Buffer.byteLength(editPrompt, 'utf-8');
-    wfInfo(`Stage:CODING EDIT | bytes=${editBytes} ranges=${loadedRanges.length} hasApprover=${!!approverNote} hasCorrection=${!!correctionFeedback}`);
+    wfInfo(`Stage:CODING EDIT | bytes=${editBytes} ranges=${finalLoadedRanges.length} hasApprover=${!!approverNote} hasCorrection=${!!correctionFeedback}`);
 
     if (editBytes > MAX_PROMPT_BYTES) {
         throw new Error(`Coding-Edit-Briefing zu gross: ${editBytes} bytes > MAX ${MAX_PROMPT_BYTES} bytes. Reduziere allowed_files im Plan.`);

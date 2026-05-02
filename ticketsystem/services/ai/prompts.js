@@ -363,8 +363,20 @@ Aufgabe: Gib an, welche Zeilenbereiche Du aus jeder Datei sehen moechtest.
   Typisch: 3-5 Ranges pro Datei, a 10-30 Zeilen.
 - Bei action="delete": Fordere nur die Zeilen um das zu loeschende Konstrukt.
 
+KONTEXT-LUECKEN ERKENNEN:
+Wenn die im Plan genannten Schritte, Constraints oder Symbole Verweise auf Code
+enthalten, den Du in den angebotenen Ranges NICHT siehst (z.B. eine Funktion,
+die im Plan erwaehnt wird, aber nicht im Symboldex auftaucht; oder ein Framework-
+Import, den Du nicht siehst), dann setze "need_more_context": true und
+fuege ZUSATZLICHE read_ranges hinzu, um die Luecke zu schliessen.
+Du kannst auch Dateien in "files" aufnehmen, die NICHT in allowed_files stehen,
+wenn Du glaubst, dass sie fuer das Verstaendnis notwendig sind (z.B. eine Datei,
+die eine Funktion enthaelt, die Du aufrufen musst).
+
 Antworte ausschliesslich als JSON:
 {
+  "need_more_context": false,
+  "context_gaps": ["kurze Beschreibung der Luecke(n)"],
   "files": [
     {
       "path": "src/foo.js",
@@ -376,8 +388,11 @@ Antworte ausschliesslich als JSON:
     }
   ],
   "summary": "Kurze Beschreibung was Du vorhast"
-}`,
-    buildUser: ({ ticket, codingLevel, security, plan, integration, symbolIndex, approverNote, correctionFeedback, systemName, repoInfo }) => {
+}
+
+Wenn need_more_context=true, wird das System die angeforderten Ranges laden und
+Dir einen zweiten Explore-Durchlauf bieten, bevor die Edit-Phase startet.`,
+    buildUser: ({ ticket, codingLevel, security, plan, integration, symbolIndex, approverNote, correctionFeedback, systemName, repoInfo, preloadedRanges }) => {
         const parts = [];
         parts.push(`# Coding-Exploration — Ticket #${ticket.id}`);
         parts.push(`Typ: ${ticket.type} | Titel: ${ticket.title} | Level: ${codingLevel || 'medium'}`);
@@ -429,6 +444,27 @@ Antworte ausschliesslich als JSON:
                     f.symbols.forEach(s => parts.push(`  L${s.line}: ${s.signature}`));
                 } else {
                     parts.push(`  (keine Signaturen — vermutlich neue Datei)`);
+                }
+            });
+            parts.push('');
+        }
+        // Bereits geladene Zeilenbereiche aus einem eventuellen vorigen Explore-Durchlauf
+        if (Array.isArray(preloadedRanges) && preloadedRanges.length) {
+            parts.push(`\n## BEREITS GELADENE ZEILENBEREICHE (aus vorigem Explore-Durchlauf)`);
+            parts.push(`Diese Kontext-Bereiche wurden bereits fuer Dich geladen. Nutze sie, um Deine read_ranges zu ergaenzen.`);
+            preloadedRanges.forEach(f => {
+                const marker = f.exists ? '' : ' (NEU)';
+                const truncNote = f.truncated ? ' [TRUNCATED]' : '';
+                parts.push(`\n### PRELOADED: ${f.path}${marker}${truncNote}`);
+                if (f.content) {
+                    parts.push('```');
+                    const lines = f.content.split('\n');
+                    lines.forEach((line, i) => {
+                        parts.push(`${String(f.startLine + i).padStart(4)} | ${line}`);
+                    });
+                    parts.push('```');
+                } else {
+                    parts.push('(leer)');
                 }
             });
             parts.push('');
