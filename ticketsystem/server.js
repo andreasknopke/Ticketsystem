@@ -886,6 +886,7 @@ function initDb() {
         if (row.sql.includes("'überprüft'")) return;
         if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
         console.log('[migration] tickets.status CHECK erweitern (überprüft)…');
+        console.log('[migration] DDL preview:', row.sql.replace(/\n/g, ' ').substring(0, 200));
         db.serialize(() => {
             db.run('DROP TABLE IF EXISTS tickets__new');
             db.run('PRAGMA foreign_keys=OFF');
@@ -894,6 +895,7 @@ function initDb() {
                 /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
                 "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen'"
             ).replace(/CREATE TABLE\s+tickets/i, 'CREATE TABLE tickets__new');
+            console.log('[migration] newDdl starts with:', newDdl.substring(0, 80));
             db.run(newDdl, (e1) => {
                 if (e1) { console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
                 db.all('PRAGMA table_info(tickets)', (e2, cols) => {
