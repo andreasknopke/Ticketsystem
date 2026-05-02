@@ -733,12 +733,34 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         });
     }
 
+    // Repo-Tree-Validierung: halluzinierte Dateipfade erkennen
+    const treeValidation = validatePlanAgainstRepoTree(out, repoTree);
+    if (treeValidation.warnings.length) {
+        out.risks = Array.isArray(out.risks) ? out.risks : [];
+        treeValidation.warnings.forEach(w => {
+            out.risks.push(w);
+            wfWarn(`PLANNING tree-validation`, w.slice(0, 200));
+        });
+        if (treeValidation.hallucinatedPaths.size) {
+            const halluList = [...treeValidation.hallucinatedPaths];
+            wfWarn(`PLANNING hallucinated paths detected`, halluList.join(', '));
+            if (out.change_kind === 'extend') {
+                out.allowed_files = (out.allowed_files || []).filter(f => !treeValidation.hallucinatedPaths.has(f));
+                halluList.forEach(p => {
+                    out.constraints.push(`HALLUZINIERTE DATEI ENTFERNT: "${p}" — diese Datei existiert nicht im Repo und wurde vom Coding-Bot ignoriert.`);
+                });
+                wfInfo(`PLANNING removed ${halluList.length} hallucinated paths from allowed_files`);
+            }
+        }
+    }
+
     // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
     if (toolTrace.length || exploreFindings.length || exploreNonExistent.length) {
         out.architect_explore = {
             findings: exploreFindings,
             non_existent: exploreNonExistent,
             consistency_violations: consistencyViolations,
+            tree_validation_warnings: treeValidation.warnings,
             tool_calls: toolTrace,
             tokens: exploreTokens
         };
@@ -872,6 +894,55 @@ function checkPlanConsistency(out, nonExistent) {
         }
     }
     return violations;
+}
+
+/**
+ * Prueft, ob im Plan erwaehnte Dateipfade (allowed_files, steps[].files,
+ * affected_areas) tatsaechlich im Repo-Tree existieren. Bei change_kind=extend
+ * duerfen nur existierende Dateien in allowed_files stehen. Bei change_kind=new
+ * duerfen sie NICHT existieren. Halluzinierte Pfade (die weder im Tree stehen
+ * noch bei new-file-Szenarien passen) werden als Risiken markiert.
+ *
+ * Liefert ein Array von Warnungen und ein Set der halluzinierten Pfade.
+ */
+function validatePlanAgainstRepoTree(out, repoTree) {
+    if (!repoTree || typeof repoTree !== 'string') return { warnings: [], hallucinatedPaths: new Set() };
+    const treePaths = new Set(repoTree.split('\n').map(p => p.trim()).filter(Boolean));
+    const warnings = [];
+    const hallucinated = new Set();
+
+    const changeKind = out.change_kind || 'extend';
+
+    const allPlanPaths = new Set();
+    if (Array.isArray(out.allowed_files)) out.allowed_files.forEach(f => allPlanPaths.add(f));
+    if (Array.isArray(out.steps)) {
+        out.steps.forEach(s => {
+            if (Array.isArray(s.files)) s.files.forEach(f => allPlanPaths.add(f));
+        });
+    }
+
+    for (const p of allPlanPaths) {
+        if (!p || typeof p !== 'string') continue;
+        const inTree = treePaths.has(p);
+        if (changeKind === 'new') {
+            if (inTree) {
+                warnings.push(`change_kind=new, aber Datei existiert bereits im Repo: ${p}`);
+            }
+        } else {
+            if (!inTree) {
+                const baseName = p.split('/').pop() || '';
+                const hasSimilarExt = [...treePaths].some(tp => tp.endsWith(baseName));
+                if (!hasSimilarExt) {
+                    hallucinated.add(p);
+                    warnings.push(`HALLUZINATION-VERDACHT: "${p}" existiert nicht im Repo-Tree und keine aehnlich benannte Datei gefunden. Wahrscheinlich vom Modell erfunden.`);
+                } else {
+                    warnings.push(`WARNUNG: "${p}" existiert nicht im Repo-Tree (aehnlich benannte Datei vorhanden — Pruefen ob der Pfad falsch ist)`);
+                }
+            }
+        }
+    }
+
+    return { warnings, hallucinatedPaths: hallucinated };
 }
 
 function renderIntegrationMarkdown(out) {
@@ -1554,6 +1625,13 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
 
     // Symboldex fuer alle allowed_files aufbauen
     const currentMap = new Map((currentFiles || []).map(f => [f.path, f]));
+    const missingInExtend = allowedFiles.filter(path => {
+        const f = currentMap.get(path);
+        return !f || !f.exists;
+    });
+    if (missingInExtend.length && changeKind === 'extend') {
+        wfWarn(`Stage:CODING | ${missingInExtend.length} allowed_files not found in repo with change_kind=extend: ${missingInExtend.join(', ')}. These were likely hallucinated by the Architect and will cause scope violations if the coder tries to edit them.`);
+    }
     const symbolIndex = allowedFiles.map(path => {
         const f = currentMap.get(path);
         if (!f || !f.exists) return { path, exists: false, action: 'create', symbols: [] };

@@ -153,6 +153,15 @@ Verwende NUR Funktions-/Klassennamen aus dem Symboldex fuer deinen Plan — erfi
 Leite den realen Stack aus package.json + Repo-Tree ab.
 - Erfinde NICHTS (keine Frameworks, ORMs, Router-Strukturen, Libraries, Dateipfade) ohne Beleg im Repo-Tree.
 
+REPO-TREE-IST-GESETZ (wird programmatisch geprueft):
+- JEDER Pfad in "allowed_files" und "steps[].files" MUSS im REPO-TREE stehen
+  (bei change_kind="new" darf er frei erfunden sein, aber NUR dann).
+- Wenn du einen Pfad in allowed_files schreibst, der NICHT im Repo-Tree steht
+  und change_kind nicht "new" ist, wird er AUTOMATISCH GELÖSCHT — der Coding-Bot
+  kann ihn nicht bearbeiten.
+- Schreibe also NUR Pfade, die du im REPO-TREE siehst, ODER die du bewusst
+  als neue Datei anlegst (change_kind="new").
+
 KONSISTENZ-PFLICHT (wird vom System geprueft):
 - Wenn dir ein Block "VERIFIZIERTE FAKTEN" gegeben wird, sind das die EINZIGE
   Quelle der Wahrheit fuer Symbole/Tabellen/Pfade. Nutze GENAU diese Namen.
