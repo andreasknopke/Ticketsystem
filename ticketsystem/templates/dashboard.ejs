@@ -252,7 +252,7 @@
         <div class="card shadow-sm">
             <div class="card-header flex items-center justify-between flex-wrap gap-3">
                 <h3 class="text-base font-semibold text-gray-900"><%= view ? 'Queue' : myTickets ? 'Meine Tickets' : 'Alle Tickets' %> <span class="text-gray-400 font-normal">(<%= tickets.length %>)</span></h3>
-                <div class="flex flex-wrap items-center gap-1.5">
+                <div class="flex flex-wrap items-center gap-3">
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-offen" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><input type="checkbox" class="status-filter rounded" value="offen" checked onchange="filterTable()"> Offen</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-in_bearbeitung" style="background:#dbeafe;border-color:#93c5fd;color:#1e40af"><input type="checkbox" class="status-filter rounded" value="in_bearbeitung" checked onchange="filterTable()"> Bearbeitung</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-wartend" style="background:#ede9fe;border-color:#c4b5fd;color:#6b21a8"><input type="checkbox" class="status-filter rounded" value="wartend" checked onchange="filterTable()"> Wartend</label>
