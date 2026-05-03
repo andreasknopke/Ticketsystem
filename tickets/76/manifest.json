@@ -1,0 +1,76 @@
+{
+  "ticket_id": 76,
+  "title": "Kein Umschalten auf Dashboard bei Ticket-Schließung",
+  "type": "bug",
+  "urgency": "normal",
+  "system": {
+    "id": 4,
+    "name": "Ticketsystem",
+    "repo": "andreasknopke/Ticketsystem"
+  },
+  "run": {
+    "id": 100,
+    "started_at": "2026-05-03 06:04:42",
+    "current_stage": "triage",
+    "recommended_executor": null
+  },
+  "steps": [
+    {
+      "id": 652,
+      "stage": "triage",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 5,
+      "staff_name": "Triage-Bot",
+      "provider": "openai_local",
+      "model": "gemma-4",
+      "duration_ms": 2557
+    },
+    {
+      "id": 653,
+      "stage": "security",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 7,
+      "staff_name": "Security-Bot",
+      "provider": "openai_local",
+      "model": "gemma-4",
+      "duration_ms": 4128
+    },
+    {
+      "id": 654,
+      "stage": "planning",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 6,
+      "staff_name": "Architect-Bot",
+      "provider": "openrouter",
+      "model": "inclusionai/ling-2.6-1t:free",
+      "duration_ms": 1895
+    },
+    {
+      "id": 655,
+      "stage": "integration",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 8,
+      "staff_name": "Integration-Bot",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "duration_ms": 22698
+    },
+    {
+      "id": 656,
+      "stage": "approval",
+      "status": "waiting_human",
+      "executor_kind": "human",
+      "staff_id": 4,
+      "staff_name": "Michael",
+      "provider": null,
+      "model": null,
+      "duration_ms": null
+    }
+  ],
+  "exported_at": "2026-05-03T06:06:43.359Z",
+  "dispatch_note": null
+}
