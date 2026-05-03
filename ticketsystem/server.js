@@ -32,6 +32,11 @@ const aiClient = require('./services/ai/client');
 const redactor = require('./services/ai/redact');
 const workflowEngine = require('./services/workflow/engine');
 const dossierExport = require('./services/workflow/dossierExport');
+const {
+    EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
+    EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
+    buildExternalDispatchPrompt
+} = require('./services/workflow/externalDispatchPrompt');
 
 if (process.env.AI_REDACTION_PATTERNS_FILE) {
     redactor.loadExtraPatternsFromFile(process.env.AI_REDACTION_PATTERNS_FILE);
@@ -4246,6 +4251,9 @@ app.get('/ticket/:id', requireAuth, (req, res) => {
                                         sla: sla || {},
                                         activities: canManage ? (activities || []) : [],
                                         feedback: feedback || null,
+                                        externalDispatchPrompt: buildExternalDispatchPrompt,
+                                        externalDispatchPromptTemplate: EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
+                                        externalDispatchPromptBranchToken: EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
                                         user,
                                         role,
                                         canManageTickets: canManage
