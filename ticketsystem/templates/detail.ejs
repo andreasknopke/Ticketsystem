@@ -270,7 +270,7 @@
                             <label class="block text-xs font-medium text-gray-500 mb-1.5">Status</label>
                             <form method="post" action="/ticket/<%= ticket.id %>/status" id="ticket-status-form">
                                 <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                                <select name="status" id="ticket-status-select" class="form-select text-sm" onchange="this.form.submit()">
+                                <select name="status" id="ticket-status-select" class="form-select text-sm">
                                     <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
                                     <option value="in_bearbeitung" <%= ticket.status === 'in_bearbeitung' ? 'selected' : '' %>>In Bearbeitung</option>
                                     <option value="wartend" <%= ticket.status === 'wartend' ? 'selected' : '' %>>Wartend</option>
@@ -1051,6 +1051,10 @@
         const ticketStatusSelect = document.getElementById('ticket-status-select');
         if (ticketStatusForm && ticketStatusSelect) {
             let statusSubmitInFlight = false;
+
+            ticketStatusSelect.addEventListener('change', () => {
+                ticketStatusForm.requestSubmit();
+            });
 
             ticketStatusForm.addEventListener('submit', async (event) => {
                 if (statusSubmitInFlight) {
