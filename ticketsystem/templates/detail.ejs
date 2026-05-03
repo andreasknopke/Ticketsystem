@@ -247,6 +247,12 @@
                     </div>
                     <div class="card-body" id="workflowBody">
                         <p class="text-sm text-gray-500">Lade Workflow…</p>
+                        <% if (ticket.dossier_branch && workflowStep === 'dispatch_external') { %>
+                        <div class="mt-4">
+                            <p class="text-xs font-medium text-gray-500 mb-1.5">System-Prompt für externes Dispatch</p>
+                            <pre class="system-prompt-block"><code>Du bist ein externer Dispatch-Assistent. Verwende den Dossier-Branch <%= ticket.dossier_branch %> als maßgebliche Arbeitsgrundlage. Prüfe den Ticketkontext sorgfältig und formuliere eine klare, umsetzbare Weitergabe für die externe Bearbeitung.</code></pre>
+                        </div>
+                        <% } %>
                     </div>
                 </div>
             </div>
