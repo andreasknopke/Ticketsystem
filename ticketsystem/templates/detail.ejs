@@ -463,6 +463,8 @@
         const ticketId = '<%= ticket.id %>';
         const csrfToken = '<%= csrfToken %>';
         const canManageTickets = <%= canManageTickets ? 'true' : 'false' %>;
+        let suppressTicketReload = false;
+        let redirectingFromTicket = false;
         
         socket.emit('join-ticket', ticketId);
         
@@ -473,6 +475,8 @@
         
         socket.on('ticket-updated', (data) => {
             if (data && Number(data.ticketId) === Number(ticketId)) {
+                if (redirectingFromTicket) return;
+                if (suppressTicketReload && data.updates && data.updates.status) return;
                 location.reload();
             }
         });
@@ -1059,6 +1063,7 @@
                 ticketStatusSelect.disabled = true;
 
                 const nextStatus = ticketStatusSelect.value;
+                suppressTicketReload = true;
 
                 try {
                     const resp = await fetch(`/api/tickets/${ticketId}`, {
@@ -1076,6 +1081,7 @@
                     }
 
                     if (nextStatus === 'geschlossen' || data.redirect) {
+                        redirectingFromTicket = true;
                         window.location.href = data.redirect || '/';
                         return;
                     }
@@ -1083,6 +1089,7 @@
                     window.location.reload();
                 } catch (err) {
                     alert('Fehler: ' + err.message);
+                    suppressTicketReload = false;
                     ticketStatusSelect.disabled = false;
                     statusSubmitInFlight = false;
                 }
