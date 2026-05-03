@@ -268,9 +268,9 @@
                     <div class="card-body py-3 px-5 space-y-3">
                         <div>
                             <label class="block text-xs font-medium text-gray-500 mb-1.5">Status</label>
-                            <form method="post" action="/ticket/<%= ticket.id %>/status">
+                            <form method="post" action="/ticket/<%= ticket.id %>/status" id="ticket-status-form">
                                 <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                                <select name="status" class="form-select text-sm" onchange="this.form.submit()">
+                                <select name="status" id="ticket-status-select" class="form-select text-sm" onchange="this.form.submit()">
                                     <option value="offen" <%= ticket.status === 'offen' ? 'selected' : '' %>>Offen</option>
                                     <option value="in_bearbeitung" <%= ticket.status === 'in_bearbeitung' ? 'selected' : '' %>>In Bearbeitung</option>
                                     <option value="wartend" <%= ticket.status === 'wartend' ? 'selected' : '' %>>Wartend</option>
@@ -1039,6 +1039,52 @@
                     btnVerify.disabled = false;
                     btnVerify.textContent = 'Verifizierung anstoßen';
                     updateVerifyBtn();
+                }
+            });
+        }
+
+        const ticketStatusForm = document.getElementById('ticket-status-form');
+        const ticketStatusSelect = document.getElementById('ticket-status-select');
+        if (ticketStatusForm && ticketStatusSelect) {
+            let statusSubmitInFlight = false;
+
+            ticketStatusForm.addEventListener('submit', async (event) => {
+                if (statusSubmitInFlight) {
+                    event.preventDefault();
+                    return;
+                }
+
+                event.preventDefault();
+                statusSubmitInFlight = true;
+                ticketStatusSelect.disabled = true;
+
+                const nextStatus = ticketStatusSelect.value;
+
+                try {
+                    const resp = await fetch(`/api/tickets/${ticketId}`, {
+                        method: 'PATCH',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-Token': csrfToken
+                        },
+                        body: JSON.stringify({ status: nextStatus })
+                    });
+
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        throw new Error(data.error || 'Status konnte nicht gespeichert werden.');
+                    }
+
+                    if (nextStatus === 'geschlossen' || data.redirect) {
+                        window.location.href = data.redirect || '/';
+                        return;
+                    }
+
+                    window.location.reload();
+                } catch (err) {
+                    alert('Fehler: ' + err.message);
+                    ticketStatusSelect.disabled = false;
+                    statusSubmitInFlight = false;
                 }
             });
         }

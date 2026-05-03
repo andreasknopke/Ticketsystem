@@ -2489,8 +2489,15 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
 
             db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
                 if (updates.status && oldTicket && oldTicket.status !== updates.status) {
+                    addActivity(req.params.id, getActor(req), 'status_changed', `Status geändert: ${oldTicket.status} → ${updates.status}`, {
+                        old: oldTicket.status,
+                        new: updates.status
+                    });
                     mailStatusChange(ticket, oldTicket.status);
-                    if (updates.status === 'geschlossen') updateSLAResolution(req.params.id);
+                    if (updates.status === 'geschlossen') {
+                        updateSLAResolution(req.params.id);
+                        addActivity(req.params.id, getActor(req), 'closed', 'Ticket geschlossen', {});
+                    }
                 }
                 if (updates.assigned_to && (!oldTicket || oldTicket.assigned_to !== updates.assigned_to)) {
                     db.get('SELECT * FROM staff WHERE id = ?', [updates.assigned_to], (err, staff) => {
@@ -2498,6 +2505,13 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
                     });
                 }
             });
+            if (updates.status) {
+                io.to(`ticket-${req.params.id}`).emit('ticket-updated', {
+                    ticketId: req.params.id,
+                    updates: { status: updates.status },
+                    actor: getActor(req)
+                });
+            }
             res.json({
                 id: req.params.id,
                 status: 'updated',
