@@ -382,6 +382,15 @@ Du kannst auch Dateien in "files" aufnehmen, die NICHT in allowed_files stehen,
 wenn Du glaubst, dass sie fuer das Verstaendnis notwendig sind (z.B. eine Datei,
 die eine Funktion enthaelt, die Du aufrufen musst).
 
+FRONTEND-/REACT-REGEL:
+Wenn Du JSX/React-Komponenten aenderst oder neue UI-State-Variablen, Handler,
+Dropdowns, Filter, Dialoge oder Hooks brauchst, MUSST Du zusaetzlich die Imports
+und den Anfang der Komponentenfunktion mit vorhandenen useState/useEffect/useMemo
+Initialisierungen lesen. Fuege dafuer einen kleinen read_range ab Zeile 1 bis
+mindestens zum Ende der lokalen Hook-/State-Deklarationen hinzu. Edits im Render-
+Block allein sind unvollstaendig, wenn neu verwendete Variablen nicht sichtbar
+definiert sind.
+
 Antworte ausschliesslich als JSON:
 {
   "need_more_context": false,

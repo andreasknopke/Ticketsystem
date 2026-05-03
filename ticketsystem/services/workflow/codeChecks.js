@@ -6,9 +6,10 @@
 //
 // Tier 1 (immer):  Per-Datei-Syntax-Check (node --check fuer JS, JSON.parse fuer JSON)
 // Tier 2 (opt.):   Lint im sauberen Repo-Klon (AI_CODING_VERIFY_LINT=true)
-// Tier 3 (opt.):   Build im sauberen Repo-Klon (AI_CODING_VERIFY_BUILD=true)
+// Tier 3 (opt.):   Typecheck im sauberen Repo-Klon (AI_CODING_VERIFY_TYPECHECK=true)
+// Tier 4 (opt.):   Build im sauberen Repo-Klon (AI_CODING_VERIFY_BUILD=true)
 //
-// Tier 2/3 brauchen ein verknuepftes GitHub-Repo, einen Token und ausreichend
+// Tier 2-4 brauchen ein verknuepftes GitHub-Repo, einen Token und ausreichend
 // Plattenplatz/Netz. Bei jeglichem Setup-Fehler wird der Check als 'skipped'
 // markiert (kein PR-Block), die Engine sieht nur 'ok=true' falls keine echten
 // Verstoesse gefunden wurden.
@@ -28,6 +29,7 @@ function logCheck(msg, data) {
 }
 
 function isJsFile(p) { return /\.(js|mjs|cjs)$/i.test(p); }
+function isJsLikeFile(p) { return /\.(js|mjs|cjs|jsx|ts|tsx)$/i.test(p); }
 function isJsonFile(p) { return /\.json$/i.test(p); }
 
 function runProc(cmd, args, opts = {}) {
@@ -95,7 +97,133 @@ async function runSyntaxChecks(files) {
     return violations;
 }
 
-// ---------- Tier 2/3: Lint + Build im Repo-Klon ----------
+// ---------- Tier 1b: Lightweight JS/JSX Reference Regression ----------
+
+const JS_KEYWORDS = new Set([
+    'as', 'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue',
+    'default', 'delete', 'do', 'else', 'export', 'extends', 'false', 'finally',
+    'for', 'from', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new',
+    'null', 'of', 'return', 'static', 'super', 'switch', 'this', 'throw', 'true',
+    'try', 'typeof', 'undefined', 'var', 'void', 'while', 'with', 'yield'
+]);
+
+const JS_GLOBALS = new Set([
+    'Array', 'BigInt', 'Blob', 'Boolean', 'Buffer', 'Date', 'Error', 'Event',
+    'File', 'FormData', 'JSON', 'Map', 'Math', 'Number', 'Object', 'Promise',
+    'RegExp', 'Set', 'String', 'Symbol', 'URL', 'URLSearchParams', 'WeakMap',
+    'WeakSet', 'console', 'document', 'global', 'globalThis', 'localStorage',
+    'module', 'process', 'require', 'sessionStorage', 'window'
+]);
+
+function stripJsLiteralsAndComments(code) {
+    return String(code || '')
+        .replace(/\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length))
+        .replace(/\/\/.*$/gm, m => ' '.repeat(m.length))
+        .replace(/`(?:\\[\s\S]|[^`\\])*`/g, m => ' '.repeat(m.length))
+        .replace(/'(?:\\.|[^'\\])*'/g, m => ' '.repeat(m.length))
+        .replace(/"(?:\\.|[^"\\])*"/g, m => ' '.repeat(m.length));
+}
+
+function addNamesFromList(target, text) {
+    String(text || '').split(',').forEach(part => {
+        const cleaned = part
+            .replace(/=.*$/g, '')
+            .replace(/[{}\[\]()]/g, ' ')
+            .trim();
+        const m = cleaned.match(/(?:\.\.\.)?([A-Za-z_$][\w$]*)$/);
+        if (m && !JS_KEYWORDS.has(m[1])) target.add(m[1]);
+    });
+}
+
+function extractDeclaredIdentifiers(code) {
+    const stripped = stripJsLiteralsAndComments(code);
+    const declared = new Set(JS_GLOBALS);
+    let m;
+
+    const importRe = /^\s*import\s+([^;]+?)\s+from\s+[^;]+/gm;
+    while ((m = importRe.exec(stripped)) !== null) {
+        const clause = m[1].trim();
+        if (clause.startsWith('{')) {
+            addNamesFromList(declared, clause.replace(/[{}]/g, '').replace(/\bas\s+([A-Za-z_$][\w$]*)/g, '$1'));
+        } else {
+            const parts = clause.split(',');
+            addNamesFromList(declared, parts[0]);
+            if (parts.length > 1) addNamesFromList(declared, parts.slice(1).join(','));
+        }
+    }
+
+    const requireRe = /\b(?:const|let|var)\s+([^=;\n]+?)\s*=\s*require\s*\(/g;
+    while ((m = requireRe.exec(stripped)) !== null) addNamesFromList(declared, m[1]);
+
+    const varRe = /\b(?:const|let|var)\s+([^;\n]+)/g;
+    while ((m = varRe.exec(stripped)) !== null) {
+        const decl = m[1].split('=')[0];
+        addNamesFromList(declared, decl);
+    }
+
+    const fnRe = /\bfunction\s+([A-Za-z_$][\w$]*)?\s*\(([^)]*)\)/g;
+    while ((m = fnRe.exec(stripped)) !== null) {
+        if (m[1]) declared.add(m[1]);
+        addNamesFromList(declared, m[2]);
+    }
+
+    const classRe = /\bclass\s+([A-Za-z_$][\w$]*)/g;
+    while ((m = classRe.exec(stripped)) !== null) declared.add(m[1]);
+
+    const arrowParamsRe = /(?:\(([^)]*)\)|\b([A-Za-z_$][\w$]*))\s*=>/g;
+    while ((m = arrowParamsRe.exec(stripped)) !== null) addNamesFromList(declared, m[1] || m[2]);
+
+    const catchRe = /\bcatch\s*\(([^)]*)\)/g;
+    while ((m = catchRe.exec(stripped)) !== null) addNamesFromList(declared, m[1]);
+
+    return declared;
+}
+
+function extractReferencedIdentifiers(code) {
+    const stripped = stripJsLiteralsAndComments(code);
+    const refs = new Set();
+    const idRe = /\b[A-Za-z_$][\w$]*\b/g;
+    let m;
+    while ((m = idRe.exec(stripped)) !== null) {
+        const name = m[0];
+        if (JS_KEYWORDS.has(name)) continue;
+        const before = stripped.slice(0, m.index).replace(/\s+$/g, '');
+        const after = stripped.slice(idRe.lastIndex).replace(/^\s+/g, '');
+        const prev = before[before.length - 1] || '';
+        if (prev === '.') continue;                         // property access: obj.foo
+        if (after.startsWith(':') && /[{,]$/.test(before)) continue; // object literal key
+        refs.add(name);
+    }
+    return refs;
+}
+
+function collectLikelyUndefinedIdentifiers(code) {
+    const declared = extractDeclaredIdentifiers(code);
+    const refs = extractReferencedIdentifiers(code);
+    return [...refs].filter(name => !declared.has(name)).sort();
+}
+
+function runReferenceRegressionChecks(files, currentFiles) {
+    const violations = [];
+    const currentMap = new Map((currentFiles || []).map(f => [f.path, f]));
+    for (const f of files || []) {
+        if (!f?.path || !isJsLikeFile(f.path) || f.action === 'delete' || typeof f.content !== 'string') continue;
+        const before = currentMap.get(f.path)?.content || '';
+        const beforeMissing = new Set(collectLikelyUndefinedIdentifiers(before));
+        const afterMissing = collectLikelyUndefinedIdentifiers(f.content)
+            .filter(name => !beforeMissing.has(name));
+        if (afterMissing.length) {
+            violations.push({
+                type: 'reference',
+                file: f.path,
+                message: `Neue moeglicherweise undefinierte Identifier: ${afterMissing.slice(0, 20).join(', ')}`
+            });
+        }
+    }
+    return violations;
+}
+
+// ---------- Tier 2-4: Lint + Typecheck + Build im Repo-Klon ----------
 
 function pickToken(integration) {
     return integration?.access_token || process.env.GITHUB_DEFAULT_TOKEN || null;
@@ -164,11 +292,12 @@ async function runInstallAndScript(dir, scriptName, label) {
     };
 }
 
-async function runLintAndBuild(integration, files, opts) {
+async function runLintTypecheckAndBuild(integration, files, opts) {
     const result = { ran: [], violations: [] };
     const wantLint = opts.lint;
+    const wantTypecheck = opts.typecheck;
     const wantBuild = opts.build;
-    if (!wantLint && !wantBuild) return result;
+    if (!wantLint && !wantTypecheck && !wantBuild) return result;
     if (!integration?.repo_owner || !integration?.repo_name) {
         result.ran.push({ name: 'lint_build', status: 'skipped', reason: 'no_integration' });
         return result;
@@ -205,6 +334,18 @@ async function runLintAndBuild(integration, files, opts) {
                 }
             }
         }
+        if (wantTypecheck) {
+            const scriptName = scripts.typecheck ? 'typecheck' : (scripts['type-check'] ? 'type-check' : null);
+            if (!scriptName) {
+                result.ran.push({ name: 'typecheck', status: 'skipped', reason: 'no_typecheck_script' });
+            } else {
+                const r = await runInstallAndScript(tmp, scriptName, 'typecheck');
+                result.ran.push(r);
+                if (r.status === 'failed') {
+                    result.violations.push({ type: 'typecheck', message: `npm run ${scriptName} fehlgeschlagen:\n${r.output_preview}` });
+                }
+            }
+        }
         if (wantBuild) {
             const scriptName = scripts.build ? 'build' : (scripts.compile ? 'compile' : null);
             if (!scriptName) {
@@ -229,12 +370,14 @@ async function runLintAndBuild(integration, files, opts) {
  * Fuehrt Code-Checks gegen die Coding-Bot-Ausgabe aus.
  *  files:       Array {path, action, content}
  *  integration: Repo-Verknuepfung (fuer Lint/Build noetig)
- *  opts:        { lint?: bool, build?: bool, syntax?: bool }
+ *  opts:        { lint?: bool, typecheck?: bool, build?: bool, syntax?: bool, references?: bool, currentFiles?: Array }
  * Returns: { ok, violations: [...], ran: [...] }
  */
 async function runCodeChecks(files, integration, opts = {}) {
     const enableSyntax = opts.syntax !== false; // default an
+    const enableReferenceCheck = opts.references !== false; // default an
     const enableLint = !!opts.lint;
+    const enableTypecheck = !!opts.typecheck;
     const enableBuild = !!opts.build;
     const violations = [];
     const ran = [];
@@ -248,9 +391,18 @@ async function runCodeChecks(files, integration, opts = {}) {
         ran.push({ name: 'syntax', status: 'skipped', reason: 'disabled' });
     }
 
-    if (enableLint || enableBuild) {
+    if (enableReferenceCheck) {
+        const start = Date.now();
+        const refViolations = runReferenceRegressionChecks(files, opts.currentFiles || []);
+        ran.push({ name: 'reference_regression', status: refViolations.length ? 'failed' : 'ok', duration_ms: Date.now() - start, count: refViolations.length });
+        violations.push(...refViolations);
+    } else {
+        ran.push({ name: 'reference_regression', status: 'skipped', reason: 'disabled' });
+    }
+
+    if (enableLint || enableTypecheck || enableBuild) {
         try {
-            const lb = await runLintAndBuild(integration, files, { lint: enableLint, build: enableBuild });
+            const lb = await runLintTypecheckAndBuild(integration, files, { lint: enableLint, typecheck: enableTypecheck, build: enableBuild });
             ran.push(...lb.ran);
             violations.push(...lb.violations);
         } catch (e) {

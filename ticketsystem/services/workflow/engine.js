@@ -1737,13 +1737,23 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
     const scopeViolations = validateCodingScope(out, allowedFiles, changeKind, currentFiles);
     scopeViolations.push(...editViolations);
 
+    function verifyFlag(name, highRiskDefault) {
+        const raw = process.env[name];
+        if (raw == null || raw === '') return !!highRiskDefault;
+        const value = String(raw).toLowerCase();
+        if (value === 'auto-high') return !!highRiskDefault;
+        return value === 'true' || value === '1' || value === 'yes';
+    }
+
     let codeCheckViolations = [];
     let codeCheckResult = null;
     if (!scopeViolations.length && assembledFiles.length) {
-        const wantLint = (process.env.AI_CODING_VERIFY_LINT || 'false').toLowerCase() === 'true';
-        const wantBuild = (process.env.AI_CODING_VERIFY_BUILD || 'false').toLowerCase() === 'true';
+        const highRiskCoding = codingLevel === 'high';
+        const wantLint = verifyFlag('AI_CODING_VERIFY_LINT', highRiskCoding);
+        const wantTypecheck = verifyFlag('AI_CODING_VERIFY_TYPECHECK', highRiskCoding);
+        const wantBuild = verifyFlag('AI_CODING_VERIFY_BUILD', highRiskCoding);
         try {
-            codeCheckResult = await runCodeChecks(assembledFiles, integrationCfg, { syntax: true, lint: wantLint, build: wantBuild });
+            codeCheckResult = await runCodeChecks(assembledFiles, integrationCfg, { syntax: true, references: true, currentFiles, lint: wantLint, typecheck: wantTypecheck, build: wantBuild });
             if (!codeCheckResult.ok) {
                 codeCheckViolations = codeCheckResult.violations.map(v => `[${v.type}]${v.file ? ' ' + v.file : ''}: ${v.message}`);
             }

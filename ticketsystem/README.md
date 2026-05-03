@@ -203,6 +203,15 @@ ARCHITECT_TOOLS_BUDGET=6
 # - true (Default): Bots mit auto_commit_enabled=1 und Repo-Token oeffnen automatisch einen PR
 # - false: nur Artefakte (commit_message, test_plan, geaenderte Dateien) als Download
 AI_CODING_AUTO_PR=true
+
+# Coding-Bots: deterministische Verifikation im Zielrepo-Klon
+# - Syntaxcheck laeuft immer fuer JS/JSON-Dateien.
+# - Fuer High-Coding-Bots sind lint, typecheck und build standardmaessig aktiv,
+#   sofern das Zielrepo entsprechende npm-Scripts anbietet.
+# - Medium-Bots koennen dieselben Gates explizit per ENV aktivieren.
+AI_CODING_VERIFY_LINT=auto-high
+AI_CODING_VERIFY_TYPECHECK=auto-high
+AI_CODING_VERIFY_BUILD=auto-high
 ```
 
 #### Bot erneut auspruefen lassen
