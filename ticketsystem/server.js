@@ -3241,7 +3241,7 @@ const CODING_LEVEL_LABELS = {
     medium: 'Medium (GPT-5.4 / DeepSeek V4 / Kimi 2.6 Niveau)',
     high: 'High (Opus 4.7 / GPT-5.5 Niveau)'
 };
-const AI_PROVIDERS = ['deepseek', 'ollama', 'openai', 'openai_local', 'anthropic', 'copilot', 'mistral', 'clarifai'];
+const AI_PROVIDERS = ['deepseek', 'ollama', 'openai', 'openai_local', 'anthropic', 'copilot', 'mistral', 'openrouter', 'clarifai'];
 
 function parseRepoInput(repoUrlOrOwner, repoNameRaw) {
     let repo_owner = repoUrlOrOwner ? String(repoUrlOrOwner).trim() : '';
@@ -3864,6 +3864,15 @@ app.get('/stats/tokens', requireAuth, requireAdmin, (req, res) => {
 
         if (normalizedProvider === 'openai_local' || normalizedProvider === 'mistral') {
             return { kind: 'free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Kostenloser Provider' };
+        }
+        if (normalizedProvider === 'openrouter') {
+            if (normalizedModel.includes('lin 2.6') || normalizedModel.includes('lin-2.6') || normalizedModel.includes('lin/2.6') || normalizedModel.includes('lin-2.6:free') || normalizedModel.includes('lin 2.6 free')) {
+                return { kind: 'free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'OpenRouter Lin 2.6 (kostenlos)' };
+            }
+            if (normalizedModel.includes(':free') || normalizedModel.endsWith('/free')) {
+                return { kind: 'free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'OpenRouter Free-Modell' };
+            }
+            return { kind: 'unknown', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'OpenRouter-Modell ohne hinterlegten Preis' };
         }
         if (normalizedProvider === 'ollama') {
             return { kind: 'subscription', inputUsdPerMillion: 0, outputUsdPerMillion: 0, label: 'Monatsabo 20 EUR' };

@@ -114,7 +114,7 @@ EMAIL_NOTIFY_COMMENT=true
 
 # --- KI-Workflow ---
 AI_WORKFLOW_ENABLED=true
-AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral | openrouter
 AI_WORKFLOW_MAX_RETRIES=2
 AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
 AI_WORKFLOW_MAX_TOKENS=2048
@@ -167,6 +167,13 @@ COPILOT_EDITOR_PLUGIN_VERSION=copilot-chat/0.22.0
 MISTRAL_API_KEY=
 MISTRAL_BASE_URL=https://api.mistral.ai/v1
 MISTRAL_MODEL=mistral-large-latest      # alternativ: magistral-medium-latest, magistral-small-latest
+
+# OpenRouter (OpenAI-kompatibel)
+# Fuer kostenlose Modelle kann direkt das OpenRouter-Modell gesetzt werden,
+# z. B. Lin 2.6.
+OPENROUTER_API_KEY=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=lin-2.6
 
 # Optionaler Fallback-GitHub-Token fuer Planning-Stage
 # (Vorrang: github_integration.access_token des Projekts)

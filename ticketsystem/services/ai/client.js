@@ -1,7 +1,7 @@
 'use strict';
 
 // Einheitlicher AI-Client mit Provider-Abstraktion.
-// Provider: deepseek, ollama (Cloud), openai, openai_local, anthropic, copilot, mistral
+// Provider: deepseek, ollama (Cloud), openai, openai_local, anthropic, copilot, mistral, openrouter
 // Methode: chat({ provider, model, system, user, temperature, maxTokens, json, timeoutMs })
 //   -> { text, raw, prompt_tokens, completion_tokens, provider, model, duration_ms }
 
@@ -64,6 +64,12 @@ const CONFIG = {
         apiKey: normalizeApiKey(env.MISTRAL_API_KEY),
         defaultModel: env.MISTRAL_MODEL || 'mistral-large-latest'
     },
+    openrouter: {
+        // OpenRouter nutzt eine OpenAI-kompatible Chat-Completions-API.
+        baseUrl: (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, ''),
+        apiKey: normalizeApiKey(env.OPENROUTER_API_KEY),
+        defaultModel: env.OPENROUTER_MODEL || 'lin-2.6'
+    },
     clarifai: {
         // OpenAI-kompatibler Endpoint via https://api.clarifai.com/v2/ext/openai/v1
         // Authentifizierung: Authorization: Key YOUR_PAT (nicht Bearer!)
@@ -84,6 +90,7 @@ const PROVIDER_MAX_TOKENS = {
     deepseek: parseInt(env.AI_DEEPSEEK_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     openai: parseInt(env.AI_OPENAI_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     mistral: parseInt(env.AI_MISTRAL_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
+    openrouter: parseInt(env.AI_OPENROUTER_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     anthropic: parseInt(env.AI_ANTHROPIC_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     copilot: parseInt(env.AI_COPILOT_MAX_TOKENS, 10) || DEFAULT_MAX_TOKENS,
     // Lokale Backends: konservativer Default, da typische vLLM-Setups
@@ -261,6 +268,7 @@ async function chat(opts) {
         if (provider === 'deepseek' && !CONFIG.deepseek.apiKey) throw new Error('AI deepseek: DEEPSEEK_API_KEY ist nicht gesetzt');
         if (provider === 'openai' && !CONFIG.openai.apiKey) throw new Error('AI openai: OPENAI_API_KEY ist nicht gesetzt');
         if (provider === 'mistral' && !CONFIG.mistral.apiKey) throw new Error('AI mistral: MISTRAL_API_KEY ist nicht gesetzt');
+        if (provider === 'openrouter' && !CONFIG.openrouter.apiKey) throw new Error('AI openrouter: OPENROUTER_API_KEY ist nicht gesetzt');
         if (provider === 'clarifai' && !CONFIG.clarifai.apiKey) throw new Error('AI clarifai: CLARIFAI_PAT ist nicht gesetzt');
         result = await callOpenAICompatible(provider, opts);
     }
@@ -562,6 +570,7 @@ function getConfigSummary() {
         anthropic: { base_url: CONFIG.anthropic.baseUrl, model: CONFIG.anthropic.defaultModel, configured: !!CONFIG.anthropic.apiKey },
         copilot: { base_url: CONFIG.copilot.baseUrl, model: CONFIG.copilot.defaultModel, configured: !!CONFIG.copilot.githubToken },
         mistral: { base_url: CONFIG.mistral.baseUrl, model: CONFIG.mistral.defaultModel, configured: !!CONFIG.mistral.apiKey },
+        openrouter: { base_url: CONFIG.openrouter.baseUrl, model: CONFIG.openrouter.defaultModel, configured: !!CONFIG.openrouter.apiKey },
         clarifai: { base_url: CONFIG.clarifai.baseUrl, model: CONFIG.clarifai.defaultModel, configured: !!CONFIG.clarifai.apiKey }
     };
 }
