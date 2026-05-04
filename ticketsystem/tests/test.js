@@ -189,10 +189,14 @@ async function main() {
         priority:'hoch', urgency:'normal', system_id:1
     }, jar);
     assert(resp.status === 201 && resp.body.id, 'POST /api/tickets (erstellt)');
+    assert(/^[0-9a-f-]{36}$/i.test(resp.body.id), 'POST /api/tickets liefert UUID als Ticket-ID');
     const ticketId = resp.body.id;
 
     resp = await request('GET', '/api/tickets/' + ticketId, null, jar);
     assert(resp.status === 200 && resp.body.title === 'Test-Bug', 'GET /api/tickets/' + ticketId);
+
+    resp = await request('GET', '/api/tickets/' + ticketId + '/workflow', null, jar);
+    assert(resp.status === 200, 'GET /api/tickets/' + ticketId + '/workflow');
 
     resp = await request('PATCH', '/api/tickets/' + ticketId, { status:'in_bearbeitung' }, jar);
     assert(resp.status === 200, 'PATCH /api/tickets/' + ticketId + ' (Status geändert)');

@@ -1,5 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const crypto = require('crypto');
 const dbPath = path.join(__dirname, '..', 'tickets.db');
 const db = new sqlite3.Database(dbPath);
 
@@ -208,14 +209,15 @@ async function seed() {
             const priority = priorities[Math.floor(Math.random() * priorities.length)];
             const type = types[Math.floor(Math.random() * types.length)];
             const status = statuses[Math.floor(Math.random() * statuses.length)];
+            const ticketId = crypto.randomUUID();
             const title = `Test Ticket ${i}: ${type === 'bug' ? 'Fehler in' : 'Neues Feature für'} ${system.name}`;
             const description = `Dies ist ein automatisch generierter Test-Beschreibung für Ticket #${i}.`;
 
             await runQuery(`
                 INSERT INTO tickets (
-                    type, title, description, status, priority, system_id, assigned_to
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [type, title, description, status, priority, system.id, staff.id]
+                    id, type, title, description, status, priority, system_id, assigned_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [ticketId, type, title, description, status, priority, system.id, staff.id]
             );
         }
 

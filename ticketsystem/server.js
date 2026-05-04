@@ -450,11 +450,272 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
     else { console.log('Connected to SQLite DB.'); }
 });
 
+function migrateTicketIdsToText() {
+    db.all('PRAGMA table_info(tickets)', (pragmaErr, rows) => {
+        if (pragmaErr) {
+            console.error('[migration] ticket-id PRAGMA fehlgeschlagen:', pragmaErr.message);
+            return;
+        }
+
+        const ticketIdCol = (rows || []).find(col => col.name === 'id');
+        if (!ticketIdCol) return;
+        if (String(ticketIdCol.type || '').toUpperCase() === 'TEXT') return;
+
+        console.log('[migration] ticket IDs von INTEGER auf TEXT umstellen...');
+
+        const statements = [
+            'DROP TABLE IF EXISTS tickets__new',
+            `CREATE TABLE tickets__new (
+                id TEXT PRIMARY KEY,
+                type TEXT CHECK(type IN ('bug', 'feature')) DEFAULT 'bug',
+                title TEXT NOT NULL,
+                description TEXT,
+                username TEXT,
+                console_logs TEXT,
+                software_info TEXT,
+                status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen',
+                priority TEXT CHECK(priority IN ('niedrig', 'mittel', 'hoch', 'kritisch')) DEFAULT 'mittel',
+                system_id INTEGER,
+                assigned_to INTEGER,
+                location TEXT,
+                contact_email TEXT,
+                urgency TEXT CHECK(urgency IN ('normal','emergency','safety')) DEFAULT 'normal',
+                deadline DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                first_responded_at DATETIME,
+                closed_at DATETIME,
+                feedback_requested INTEGER DEFAULT 0,
+                workflow_run_id INTEGER,
+                redacted_description TEXT,
+                coding_prompt TEXT,
+                implementation_plan TEXT,
+                integration_assessment TEXT,
+                merge_review TEXT,
+                reference_repo_owner TEXT,
+                reference_repo_name TEXT,
+                final_decision TEXT
+            )`,
+            `INSERT INTO tickets__new (
+                id, type, title, description, username, console_logs, software_info, status, priority,
+                system_id, assigned_to, location, contact_email, urgency, deadline, created_at,
+                updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
+                redacted_description, coding_prompt, implementation_plan, integration_assessment,
+                merge_review, reference_repo_owner, reference_repo_name, final_decision
+            )
+            SELECT
+                CAST(id AS TEXT), type, title, description, username, console_logs, software_info, status, priority,
+                system_id, assigned_to, location, contact_email, urgency, deadline, created_at,
+                updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
+                redacted_description, coding_prompt, implementation_plan, integration_assessment,
+                merge_review, reference_repo_owner, reference_repo_name, final_decision
+            FROM tickets`,
+            'DROP TABLE tickets',
+            'ALTER TABLE tickets__new RENAME TO tickets',
+
+            'DROP TABLE IF EXISTS audit_log__new',
+            `CREATE TABLE audit_log__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT,
+                user TEXT,
+                action TEXT,
+                details TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )`,
+            `INSERT INTO audit_log__new (id, ticket_id, user, action, details, created_at)
+             SELECT id, CAST(ticket_id AS TEXT), user, action, details, created_at FROM audit_log`,
+            'DROP TABLE audit_log',
+            'ALTER TABLE audit_log__new RENAME TO audit_log',
+
+            'DROP TABLE IF EXISTS ticket_notes__new',
+            `CREATE TABLE ticket_notes__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                author TEXT,
+                text TEXT NOT NULL,
+                is_internal INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )`,
+            `INSERT INTO ticket_notes__new (id, ticket_id, author, text, is_internal, created_at)
+             SELECT id, CAST(ticket_id AS TEXT), author, text, is_internal, created_at FROM ticket_notes`,
+            'DROP TABLE ticket_notes',
+            'ALTER TABLE ticket_notes__new RENAME TO ticket_notes',
+
+            'DROP TABLE IF EXISTS ticket_sla__new',
+            `CREATE TABLE ticket_sla__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL UNIQUE,
+                first_response_due DATETIME,
+                first_response_at DATETIME,
+                resolution_due DATETIME,
+                resolution_at DATETIME,
+                first_response_breached INTEGER DEFAULT 0,
+                resolution_breached INTEGER DEFAULT 0,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )`,
+            `INSERT INTO ticket_sla__new (
+                id, ticket_id, first_response_due, first_response_at, resolution_due,
+                resolution_at, first_response_breached, resolution_breached
+            )
+             SELECT
+                id, CAST(ticket_id AS TEXT), first_response_due, first_response_at, resolution_due,
+                resolution_at, first_response_breached, resolution_breached
+             FROM ticket_sla`,
+            'DROP TABLE ticket_sla',
+            'ALTER TABLE ticket_sla__new RENAME TO ticket_sla',
+
+            'DROP TABLE IF EXISTS ticket_feedback__new',
+            `CREATE TABLE ticket_feedback__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL UNIQUE,
+                rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+                comment TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )`,
+            `INSERT INTO ticket_feedback__new (id, ticket_id, rating, comment, created_at)
+             SELECT id, CAST(ticket_id AS TEXT), rating, comment, created_at FROM ticket_feedback`,
+            'DROP TABLE ticket_feedback',
+            'ALTER TABLE ticket_feedback__new RENAME TO ticket_feedback',
+
+            'DROP TABLE IF EXISTS activity_stream__new',
+            `CREATE TABLE activity_stream__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                actor TEXT,
+                action_type TEXT,
+                action_text TEXT,
+                metadata TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+            )`,
+            `INSERT INTO activity_stream__new (id, ticket_id, actor, action_type, action_text, metadata, created_at)
+             SELECT id, CAST(ticket_id AS TEXT), actor, action_type, action_text, metadata, created_at FROM activity_stream`,
+            'DROP TABLE activity_stream',
+            'ALTER TABLE activity_stream__new RENAME TO activity_stream',
+
+            'DROP TABLE IF EXISTS ticket_pins__new',
+            `CREATE TABLE ticket_pins__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                ticket_id TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+                UNIQUE(username, ticket_id)
+            )`,
+            `INSERT INTO ticket_pins__new (id, username, ticket_id, created_at)
+             SELECT id, username, CAST(ticket_id AS TEXT), created_at FROM ticket_pins`,
+            'DROP TABLE ticket_pins',
+            'ALTER TABLE ticket_pins__new RENAME TO ticket_pins',
+
+            'DROP TABLE IF EXISTS ticket_workflow_runs__new',
+            `CREATE TABLE ticket_workflow_runs__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                workflow_id INTEGER,
+                status TEXT CHECK(status IN ('pending','running','waiting_human','completed','failed','rejected')) DEFAULT 'pending',
+                current_stage TEXT,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME,
+                result TEXT,
+                recommended_executor TEXT,
+                dossier_branch TEXT,
+                dossier_commit_sha TEXT,
+                dossier_pr_url TEXT,
+                dossier_exported_at DATETIME,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+                FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id) ON DELETE SET NULL
+            )`,
+            `INSERT INTO ticket_workflow_runs__new (
+                id, ticket_id, workflow_id, status, current_stage, started_at, finished_at, result,
+                recommended_executor, dossier_branch, dossier_commit_sha, dossier_pr_url, dossier_exported_at
+            )
+             SELECT
+                id, CAST(ticket_id AS TEXT), workflow_id, status, current_stage, started_at, finished_at, result,
+                recommended_executor, dossier_branch, dossier_commit_sha, dossier_pr_url, dossier_exported_at
+             FROM ticket_workflow_runs`,
+            'DROP TABLE ticket_workflow_runs',
+            'ALTER TABLE ticket_workflow_runs__new RENAME TO ticket_workflow_runs',
+
+            'DROP TABLE IF EXISTS workflow_artifacts__new',
+            `CREATE TABLE workflow_artifacts__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                run_id INTEGER,
+                step_id INTEGER,
+                stage TEXT,
+                kind TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT DEFAULT 'text/markdown',
+                size INTEGER,
+                content BLOB,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+                FOREIGN KEY (run_id) REFERENCES ticket_workflow_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY (step_id) REFERENCES ticket_workflow_steps(id) ON DELETE SET NULL
+            )`,
+            `INSERT INTO workflow_artifacts__new (
+                id, ticket_id, run_id, step_id, stage, kind, filename, mime_type, size, content, created_at
+            )
+             SELECT
+                id, CAST(ticket_id AS TEXT), run_id, step_id, stage, kind, filename, mime_type, size, content, created_at
+             FROM workflow_artifacts`,
+            'DROP TABLE workflow_artifacts',
+            'ALTER TABLE workflow_artifacts__new RENAME TO workflow_artifacts'
+        ];
+
+        let index = 0;
+        const rollback = (error) => {
+            console.error('[migration] ticket-id Migration fehlgeschlagen:', error.message);
+            db.run('ROLLBACK', () => {
+                db.run('PRAGMA foreign_keys=ON');
+            });
+        };
+
+        const runNext = () => {
+            if (index >= statements.length) {
+                db.run('COMMIT', (commitErr) => {
+                    if (commitErr) {
+                        rollback(commitErr);
+                        return;
+                    }
+                    db.run('PRAGMA foreign_keys=ON');
+                    console.log('[migration] ticket IDs erfolgreich auf TEXT umgestellt');
+                });
+                return;
+            }
+
+            db.run(statements[index], (runErr) => {
+                if (runErr) {
+                    rollback(runErr);
+                    return;
+                }
+                index += 1;
+                runNext();
+            });
+        };
+
+        db.serialize(() => {
+            db.run('PRAGMA foreign_keys=OFF');
+            db.run('BEGIN TRANSACTION', (beginErr) => {
+                if (beginErr) {
+                    console.error('[migration] ticket-id Migration konnte nicht starten:', beginErr.message);
+                    db.run('PRAGMA foreign_keys=ON');
+                    return;
+                }
+                runNext();
+            });
+        });
+    });
+}
+
 // Tabellen erstellen
 function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER,
+        ticket_id TEXT,
         user TEXT,
         action TEXT,
         details TEXT,
@@ -557,7 +818,7 @@ function initDb() {
 
     db.run(`CREATE TABLE IF NOT EXISTS ticket_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL,
+        ticket_id TEXT NOT NULL,
         author TEXT,
         text TEXT NOT NULL,
         is_internal INTEGER DEFAULT 1,
@@ -568,7 +829,7 @@ function initDb() {
     // SLA Tracking
     db.run(`CREATE TABLE IF NOT EXISTS ticket_sla (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL UNIQUE,
+        ticket_id TEXT NOT NULL UNIQUE,
         first_response_due DATETIME,
         first_response_at DATETIME,
         resolution_due DATETIME,
@@ -581,7 +842,7 @@ function initDb() {
     // Feedback
     db.run(`CREATE TABLE IF NOT EXISTS ticket_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL UNIQUE,
+        ticket_id TEXT NOT NULL UNIQUE,
         rating INTEGER CHECK(rating >= 1 AND rating <= 5),
         comment TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -601,7 +862,7 @@ function initDb() {
     // Activity Stream
     db.run(`CREATE TABLE IF NOT EXISTS activity_stream (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL,
+        ticket_id TEXT NOT NULL,
         actor TEXT,
         action_type TEXT,
         action_text TEXT,
@@ -752,7 +1013,7 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS ticket_pins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
-        ticket_id INTEGER NOT NULL,
+        ticket_id TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
         UNIQUE(username, ticket_id)
@@ -1007,7 +1268,7 @@ function initDb() {
     // Workflow-Runs pro Ticket
     db.run(`CREATE TABLE IF NOT EXISTS ticket_workflow_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL,
+        ticket_id TEXT NOT NULL,
         workflow_id INTEGER,
         status TEXT CHECK(status IN ('pending','running','waiting_human','completed','failed','rejected')) DEFAULT 'pending',
         current_stage TEXT,
@@ -1045,7 +1306,7 @@ function initDb() {
     // Persistente Artefakte (z.B. Plan, Integration-Bericht, Coding-Prompt)
     db.run(`CREATE TABLE IF NOT EXISTS workflow_artifacts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id INTEGER NOT NULL,
+        ticket_id TEXT NOT NULL,
         run_id INTEGER,
         step_id INTEGER,
         stage TEXT,
@@ -1113,6 +1374,8 @@ function initDb() {
             });
         }
     });
+
+    migrateTicketIdsToText();
 }
 
 // Bei aelteren DBs enthalten die CHECK-Constraints von staff_roles/workflow_stages/
@@ -1250,7 +1513,7 @@ function seedDefaultWorkflow() {
 function initTicketsTable() {
     db.run(`
         CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             type TEXT CHECK(type IN ('bug', 'feature')) DEFAULT 'bug',
             title TEXT NOT NULL,
             description TEXT,
@@ -1264,13 +1527,21 @@ function initTicketsTable() {
             location TEXT,
             contact_email TEXT,
             urgency TEXT CHECK(urgency IN ('normal','emergency','safety')) DEFAULT 'normal',
+            deadline DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             first_responded_at DATETIME,
             closed_at DATETIME,
             feedback_requested INTEGER DEFAULT 0,
+            workflow_run_id INTEGER,
+            redacted_description TEXT,
+            coding_prompt TEXT,
+            implementation_plan TEXT,
+            integration_assessment TEXT,
+            merge_review TEXT,
             reference_repo_owner TEXT,
-            reference_repo_name TEXT
+            reference_repo_name TEXT,
+            final_decision TEXT
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -1978,7 +2249,7 @@ app.get('/api/ai/providers/health', requireAuth, requireAdmin, async (req, res) 
 // --- API: Workflow ---
 
 app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
-    const ticketId = parseInt(req.params.id, 10);
+    const ticketId = req.params.id;
     db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
@@ -2052,7 +2323,7 @@ app.get('/api/tickets/:id/workflow', requireAuth, (req, res) => {
 });
 
 app.get('/api/tickets/:id/workflow/artifacts/:artId', requireAuth, (req, res) => {
-    const ticketId = parseInt(req.params.id, 10);
+    const ticketId = req.params.id;
     const artId = parseInt(req.params.artId, 10);
     db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -2072,7 +2343,7 @@ app.get('/api/tickets/:id/workflow/artifacts/:artId', requireAuth, (req, res) =>
 });
 
 app.post('/api/tickets/:id/workflow/restart', requireAuth, requireAdmin, async (req, res) => {
-    const ticketId = parseInt(req.params.id, 10);
+    const ticketId = req.params.id;
     db.run('UPDATE tickets SET workflow_run_id = NULL, final_decision = NULL WHERE id = ?', [ticketId], async (err) => {
         if (err) return res.status(500).json({ error: err.message });
         try {
@@ -2085,7 +2356,7 @@ app.post('/api/tickets/:id/workflow/restart', requireAuth, requireAdmin, async (
 });
 
 app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async (req, res) => {
-    const ticketId = parseInt(req.params.id, 10);
+    const ticketId = req.params.id;
     const stepId = parseInt(req.params.stepId, 10);
     const decision = req.body.decision;
     const note = req.body.note ? String(req.body.note).slice(0, 4000) : null;
@@ -2117,7 +2388,7 @@ app.post('/api/tickets/:id/workflow/steps/:stepId/decision', requireAuth, async 
 
 // Re-Run einer abgeschlossenen Stage (Triage/Security/Planning/Integration) mit Zusatzinfo
 app.post('/api/tickets/:id/workflow/steps/:stepId/rerun', requireAuth, async (req, res) => {
-    const ticketId = parseInt(req.params.id, 10);
+    const ticketId = req.params.id;
     const stepId = parseInt(req.params.stepId, 10);
     const extraInfo = req.body.extra_info ? String(req.body.extra_info).slice(0, 8000) : '';
     if (!extraInfo.trim()) return res.status(400).json({ error: 'extra_info darf nicht leer sein' });
@@ -4531,9 +4802,11 @@ app.post('/ticket/new', requireAuth, (req, res) => {
         deadline = calculateDeadline(d.type || 'bug', d.urgency || 'normal', d.priority || 'mittel');
     }
 
-    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const ticketId = generateObfuscatedTicketId();
+    const stmt = `INSERT INTO tickets (id, type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const vals = [
+        ticketId,
         d.type || 'bug', d.title || 'Unbenannt', d.description || '', d.username || null,
         d.console_logs || null, swInfo || null, 'offen', d.priority || 'mittel',
         d.system_id ? parseInt(d.system_id, 10) : null,
@@ -4544,7 +4817,6 @@ app.post('/ticket/new', requireAuth, (req, res) => {
 
     db.run(stmt, vals, function(err) {
         if (err) return res.status(500).send('DB Error: ' + err.message);
-        const ticketId = this.lastID;
         
         // SLA initialisieren
         initSLA(ticketId, d.priority || 'mittel', new Date().toISOString());
