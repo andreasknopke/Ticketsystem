@@ -220,6 +220,11 @@ AI_CODING_VERIFY_BUILD=auto-high
 #   fehlende Klammern/Braces/Backticks beheben kann.
 # - Wert = Anzahl Korrekturversuche nach dem Erstversuch (Default: 2).
 AI_CODING_MAX_CORRECTION_PASSES=2
+
+# Max. Bytes pro allowed_file, die fuer Edit-Assembly/Verifikation voll geladen
+# werden. Muss groesser als grosse Entry-Point-Dateien sein, sonst koennen
+# search/replace-Edits auf abgeschnittenem Inhalt arbeiten (Default: 2 MiB).
+AI_CODING_SOURCE_MAX_BYTES=2097152
 ```
 
 #### Bot erneut auspruefen lassen

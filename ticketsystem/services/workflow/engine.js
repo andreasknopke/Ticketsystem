@@ -172,6 +172,7 @@ const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) 
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = Math.max(1, parseInt(process.env.AI_CODING_MAX_CORRECTION_PASSES, 10) || 2); // Aider-Style: 1 Versuch + n Korrekturen
+const CODING_SOURCE_MAX_BYTES = parseInt(process.env.AI_CODING_SOURCE_MAX_BYTES, 10) || 2 * 1024 * 1024;
 
 let dbRef = null;
 let ioRef = null;
@@ -1902,7 +1903,7 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
     }
     if (integration && allowedFiles.length) {
         try {
-            currentFiles = await fetchFilesFromRepo(integration, allowedFiles, { maxBytes: 200 * 1024 });
+            currentFiles = await fetchFilesFromRepo(integration, allowedFiles, { maxBytes: CODING_SOURCE_MAX_BYTES });
             wfInfo(`runCodingLoop currentFiles | requested=${allowedFiles.length} loaded=${currentFiles.length} existing=${currentFiles.filter(f => f.exists).length} totalBytes=${currentFiles.reduce((s, f) => s + (f.content?.length || 0), 0)}`);
         } catch (e) { wfWarn(`runCodingLoop fetchFiles failed`, e.message); }
     }

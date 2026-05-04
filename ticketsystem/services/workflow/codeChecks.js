@@ -187,11 +187,16 @@ function extractReferencedIdentifiers(code) {
     while ((m = idRe.exec(stripped)) !== null) {
         const name = m[0];
         if (JS_KEYWORDS.has(name)) continue;
-        const before = stripped.slice(0, m.index).replace(/\s+$/g, '');
-        const after = stripped.slice(idRe.lastIndex).replace(/^\s+/g, '');
-        const prev = before[before.length - 1] || '';
+        let prev = '';
+        for (let i = m.index - 1; i >= 0; i--) {
+            if (!/\s/.test(stripped[i])) { prev = stripped[i]; break; }
+        }
+        let next = '';
+        for (let i = idRe.lastIndex; i < stripped.length; i++) {
+            if (!/\s/.test(stripped[i])) { next = stripped[i]; break; }
+        }
         if (prev === '.') continue;                         // property access: obj.foo
-        if (after.startsWith(':') && /[{,]$/.test(before)) continue; // object literal key
+        if (next === ':' && (prev === '{' || prev === ',')) continue; // object literal key
         refs.add(name);
     }
     return refs;
