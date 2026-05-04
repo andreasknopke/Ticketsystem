@@ -182,19 +182,27 @@ function extractDeclaredIdentifiers(code) {
 function extractReferencedIdentifiers(code) {
     const stripped = stripJsLiteralsAndComments(code);
     const refs = new Set();
+    const prevNonWs = new Array(stripped.length + 1).fill('');
+    const nextNonWs = new Array(stripped.length + 1).fill('');
+    let last = '';
+    for (let i = 0; i < stripped.length; i++) {
+        prevNonWs[i] = last;
+        if (!/\s/.test(stripped[i])) last = stripped[i];
+    }
+    prevNonWs[stripped.length] = last;
+    let next = '';
+    for (let i = stripped.length - 1; i >= 0; i--) {
+        nextNonWs[i + 1] = next;
+        if (!/\s/.test(stripped[i])) next = stripped[i];
+    }
+    nextNonWs[0] = next;
     const idRe = /\b[A-Za-z_$][\w$]*\b/g;
     let m;
     while ((m = idRe.exec(stripped)) !== null) {
         const name = m[0];
         if (JS_KEYWORDS.has(name)) continue;
-        let prev = '';
-        for (let i = m.index - 1; i >= 0; i--) {
-            if (!/\s/.test(stripped[i])) { prev = stripped[i]; break; }
-        }
-        let next = '';
-        for (let i = idRe.lastIndex; i < stripped.length; i++) {
-            if (!/\s/.test(stripped[i])) { next = stripped[i]; break; }
-        }
+        const prev = prevNonWs[m.index] || '';
+        const next = nextNonWs[idRe.lastIndex] || '';
         if (prev === '.') continue;                         // property access: obj.foo
         if (next === ':' && (prev === '{' || prev === ',')) continue; // object literal key
         refs.add(name);

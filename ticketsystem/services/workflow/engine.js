@@ -20,8 +20,21 @@ function applyEdits(originalContent, edits) {
     const applied = [];
     const failed = [];
 
-    // Helper: normalize for fuzzy match (collapse whitespace, trim lines)
-    function norm(s) { return s.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n').replace(/\n\s+/g, '\n ').trim(); }
+    // Helper: whitespace-toleranter Regex-Fallback fuer Search/Replace.
+    // Das ist absichtlich nicht auf lange Search-Strings beschraenkt: Gerade
+    // einfache Aufgaben erzeugen oft kurze Suchmuster (z.B. ein Attribut oder
+    // eine einzelne JSX-Zeile), die sonst an minimal abweichender Einrueckung
+    // scheitern und den Correction-Loop blockieren.
+    function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    function fuzzyRegex(search) {
+        const raw = String(search || '').replace(/\r\n/g, '\n');
+        if (!raw.trim()) return null;
+        const parts = raw.split(/\s+/).filter(Boolean).map(escapeRegex);
+        if (!parts.length) return null;
+        const prefix = /^\r?\n/.test(raw) ? '\\s*' : /^[ \t]/.test(raw) ? '[ \\t]*' : '';
+        const suffix = /\r?\n$/.test(raw) ? '\\s*' : /[ \t]$/.test(raw) ? '[ \\t]*' : '';
+        return new RegExp(prefix + parts.join('\\s+') + suffix);
+    }
 
     for (const edit of edits) {
         if (typeof edit.search !== 'string' || typeof edit.replace !== 'string') {
@@ -33,41 +46,20 @@ function applyEdits(originalContent, edits) {
         let idx = content.indexOf(edit.search);
         let usedFuzzy = false;
 
-        // Fallback: fuzzy whitespace-tolerant match line by line
-        if (idx === -1 && edit.search.trim().length > 10) {
-            const searchLines = edit.search.split('\n');
-            const contentLines = content.split('\n');
-            // Find the first matching line (normalized)
-            const normFirstLine = norm(searchLines[0]);
-            let startLine = -1;
-            for (let i = 0; i < contentLines.length; i++) {
-                if (norm(contentLines[i]) === normFirstLine) {
-                    // Check remaining lines
-                    let match = true;
-                    for (let j = 1; j < searchLines.length && i + j < contentLines.length; j++) {
-                        if (norm(contentLines[i + j]) !== norm(searchLines[j])) {
-                            match = false;
-                            break;
-                        }
-                    }
-                    if (match) {
-                        startLine = i;
-                        break;
-                    }
-                }
+        // Fallback: whitespace-toleranter Match fuer alle nicht-leeren Suchen.
+        // Er ersetzt exakt den gefundenen Zeichenbereich statt ganze Zeilen zu
+        // splicen; dadurch funktionieren auch kurze Inline-Edits robust.
+        if (idx === -1 && edit.search.trim().length > 0) {
+            const re = fuzzyRegex(edit.search);
+            const m = re ? re.exec(content) : null;
+            if (m && m.index >= 0) {
+                const line = content.slice(0, m.index).split('\n').length;
+                content = content.slice(0, m.index) + edit.replace + content.slice(m.index + m[0].length);
+                usedFuzzy = true;
+                applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80), fuzzy: true });
+                wfInfo(`applyEdits FUZZY-MATCH | search="${edit.search.slice(0, 50)}..." -> line ${line}`);
+                continue;
             }
-        if (startLine !== -1) {
-            const endLine = startLine + searchLines.length;
-            // Replace the original lines (startLine..endLine) with edit.replace
-            const contentLines = content.split('\n');
-            const replaceLines = edit.replace.split('\n');
-            contentLines.splice(startLine, searchLines.length, ...replaceLines);
-            content = contentLines.join('\n');
-            usedFuzzy = true;
-            applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80), fuzzy: true });
-            wfInfo(`applyEdits FUZZY-MATCH | search="${edit.search.slice(0, 50)}..." -> line ${startLine + 1}`);
-            continue; // skip the normal replacement logic
-        }
         }
 
         if (idx === -1) {
@@ -1568,6 +1560,7 @@ function assembleFilesFromEdits(out, currentFiles) {
                 // Metadaten fuer Nachvollziehbarkeit
                 f._appliedEdits = result.applied.length;
                 f._failedEdits = result.failed.length;
+                f._failedEditSearches = result.failed.map(e => ({ search: e.search, reason: e.reason }));
             } else if (typeof f.content === 'string') {
                 // Fallback: Bot hat trotzdem content geliefert (altes Format)
                 assembledFiles.push({ path: f.path, action: 'update', content: f.content });
@@ -1968,6 +1961,7 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
                 correctionFeedback = buildCorrectionFeedback({
                     scopeViolations: res.scopeViolations,
                     codeCheckViolations: res.codeCheckViolations,
+                    attemptedFiles: res.out?.files || [],
                     syntaxResolveContexts: buildSyntaxResolveContexts(
                         res.codeCheckResult?.violations || [],
                         res.assembledFiles || []

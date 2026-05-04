@@ -161,11 +161,24 @@ function buildCodingBriefing({ ticket, codingLevel, security, plan, integration,
 /**
  * Baut Self-Correction-Feedback aus Verstoessen (Scope, Syntax, Symbol-Preservation).
  */
-function buildCorrectionFeedback({ scopeViolations, codeCheckViolations, syntaxResolveContexts }) {
+function buildCorrectionFeedback({ scopeViolations, codeCheckViolations, attemptedFiles, syntaxResolveContexts }) {
     const parts = [];
     if (Array.isArray(scopeViolations) && scopeViolations.length) {
         parts.push(`Scope-Verstoesse (du hast Pfade ausserhalb der Whitelist angefasst oder Symbole entfernt):`);
         scopeViolations.forEach(v => parts.push(`- ${v}`));
+    }
+    const editAttempts = (Array.isArray(attemptedFiles) ? attemptedFiles : [])
+        .filter(f => f && (f._failedEdits || f._appliedEdits || Array.isArray(f._failedEditSearches)));
+    if (editAttempts.length) {
+        parts.push(`\nEdit-Assembly-Status aus dem letzten Versuch:`);
+        for (const f of editAttempts.slice(0, 5)) {
+            parts.push(`- ${f.path}: angewendet=${f._appliedEdits || 0}, fehlgeschlagen=${f._failedEdits || 0}`);
+            const failed = Array.isArray(f._failedEditSearches) ? f._failedEditSearches : [];
+            failed.slice(0, 3).forEach((e, i) => {
+                parts.push(`  - fehlender search #${i + 1}: ${String(e.search || '').slice(0, 160)}`);
+            });
+        }
+        parts.push(`Wichtig: Wiederhole fehlgeschlagene search-Strings nicht blind. Fordere im Explore-Pass die exakten Original-Zeilen an und verwende im Edit-Pass einen Search-Block, der wortwoertlich im CURRENT FILE vorkommt.`);
     }
     if (Array.isArray(codeCheckViolations) && codeCheckViolations.length) {
         parts.push(`\nSyntax-/Code-Check-Fehler:`);
