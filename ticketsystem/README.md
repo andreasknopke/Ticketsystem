@@ -212,6 +212,14 @@ AI_CODING_AUTO_PR=true
 AI_CODING_VERIFY_LINT=auto-high
 AI_CODING_VERIFY_TYPECHECK=auto-high
 AI_CODING_VERIFY_BUILD=auto-high
+
+# Coding-Bots: Self-Resolve bei Verify-Fehlern
+# - Nach dem ersten Edit-Pass kann der Bot Verify-Fehler automatisch korrigieren.
+# - Syntaxfehler bekommen zusaetzlich den assemblierten Fehler-Kontext
+#   (Zeilenfenster + einfache Delimiter-Bilanz), damit der Bot gezielt
+#   fehlende Klammern/Braces/Backticks beheben kann.
+# - Wert = Anzahl Korrekturversuche nach dem Erstversuch (Default: 2).
+AI_CODING_MAX_CORRECTION_PASSES=2
 ```
 
 #### Bot erneut auspruefen lassen

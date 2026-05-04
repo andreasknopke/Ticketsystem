@@ -171,7 +171,7 @@ const ARCHITECT_TOOLS_ENABLED = process.env.ARCHITECT_TOOLS_ENABLED !== 'false';
 const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) || 6;
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
-const CODING_MAX_CORRECTION_PASSES = 1; // Aider-Style: 1 Versuch + 1 Korrektur
+const CODING_MAX_CORRECTION_PASSES = Math.max(1, parseInt(process.env.AI_CODING_MAX_CORRECTION_PASSES, 10) || 2); // Aider-Style: 1 Versuch + n Korrekturen
 
 let dbRef = null;
 let ioRef = null;
@@ -1583,6 +1583,105 @@ function assembleFilesFromEdits(out, currentFiles) {
     return { editViolations: violations, assembledFiles };
 }
 
+function parseSyntaxLine(message) {
+    const text = String(message || '');
+    const matches = [...text.matchAll(/(?:^|\n|\s)(?:[^\s:]+):(\d+)(?::(\d+))?/g)];
+    if (!matches.length) return null;
+    const m = matches[matches.length - 1];
+    const line = parseInt(m[1], 10);
+    const column = m[2] ? parseInt(m[2], 10) : null;
+    if (!Number.isFinite(line) || line < 1) return null;
+    return { line, column };
+}
+
+function countCharOutsideStrings(code, char) {
+    let count = 0;
+    let quote = null;
+    let escaped = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+    for (let i = 0; i < code.length; i++) {
+        const c = code[i];
+        const n = code[i + 1];
+        if (inLineComment) {
+            if (c === '\n') inLineComment = false;
+            continue;
+        }
+        if (inBlockComment) {
+            if (c === '*' && n === '/') { inBlockComment = false; i++; }
+            continue;
+        }
+        if (quote) {
+            if (escaped) { escaped = false; continue; }
+            if (c === '\\') { escaped = true; continue; }
+            if (c === quote) quote = null;
+            continue;
+        }
+        if (c === '/' && n === '/') { inLineComment = true; i++; continue; }
+        if (c === '/' && n === '*') { inBlockComment = true; i++; continue; }
+        if (c === '\'' || c === '"' || c === '`') { quote = c; continue; }
+        if (c === char) count++;
+    }
+    return count;
+}
+
+function buildDelimiterSummary(content) {
+    const pairs = [
+        ['{', '}'],
+        ['(', ')'],
+        ['[', ']']
+    ];
+    return pairs.map(([open, close]) => {
+        const openCount = countCharOutsideStrings(content, open);
+        const closeCount = countCharOutsideStrings(content, close);
+        const diff = openCount - closeCount;
+        return `${open}/${close}: ${openCount}/${closeCount}${diff ? ` (Differenz ${diff > 0 ? '+' : ''}${diff})` : ' (balanciert)'}`;
+    }).join('; ');
+}
+
+function formatLineWindow(content, centerLine, radius = 35) {
+    const lines = String(content || '').split('\n');
+    const safeCenter = Math.max(1, Math.min(centerLine || lines.length || 1, lines.length || 1));
+    const start = Math.max(1, safeCenter - radius);
+    const end = Math.min(lines.length, safeCenter + radius);
+    const out = [];
+    for (let lineNo = start; lineNo <= end; lineNo++) {
+        out.push(`${String(lineNo).padStart(5)} | ${lines[lineNo - 1] || ''}`);
+    }
+    return { start, end, totalLines: lines.length, content: out.join('\n') };
+}
+
+function buildSyntaxResolveContexts(codeCheckViolations, assembledFiles) {
+    const violations = (codeCheckViolations || []).filter(v => v && v.type === 'syntax' && v.file);
+    if (!violations.length) return [];
+    const assembledMap = new Map((assembledFiles || []).map(f => [f.path, f]));
+    const contexts = [];
+    for (const v of violations.slice(0, 3)) {
+        const assembled = assembledMap.get(v.file);
+        if (!assembled || typeof assembled.content !== 'string') continue;
+        const location = parseSyntaxLine(v.message);
+        const lines = assembled.content.split('\n');
+        const center = location?.line ? Math.min(location.line, lines.length) : lines.length;
+        const win = formatLineWindow(assembled.content, center, 35);
+        const lineNote = location?.line
+            ? `node --check meldet Zeile ${location.line}${location.column ? `, Spalte ${location.column}` : ''}.`
+            : 'node --check lieferte keine parsebare Zeile; Kontext zeigt das Dateiende.';
+        const eofNote = location?.line && location.line >= lines.length
+            ? 'Der Fehler liegt am/nahe Dateiende; wahrscheinlich fehlt ein schliessendes Token in einem vorherigen Edit.'
+            : 'Pruefe den Kontext um die gemeldete Zeile und die direkt vorher angewendeten Edits.';
+        contexts.push([
+            `Datei: ${v.file}`,
+            `${lineNote} Assemblierte Datei hat ${lines.length} Zeilen. ${eofNote}`,
+            `Delimiter-Bilanz ausserhalb von Strings/Kommentaren: ${buildDelimiterSummary(assembled.content)}`,
+            `Assemblierter Kontext L${win.start}-L${win.end}:`,
+            '```',
+            win.content,
+            '```'
+        ].join('\n'));
+    }
+    return contexts;
+}
+
 /**
  * Ein Coding-Pass in 2 Phasen:
  * Phase 1 (Explore): Bot sieht Plan + Symboldex → entscheidet welche Zeilen er braucht
@@ -1867,7 +1966,11 @@ async function runCodingLoop(runId, ticket, codingLevel, dispatchStep, preferred
 
                 correctionFeedback = buildCorrectionFeedback({
                     scopeViolations: res.scopeViolations,
-                    codeCheckViolations: res.codeCheckViolations
+                    codeCheckViolations: res.codeCheckViolations,
+                    syntaxResolveContexts: buildSyntaxResolveContexts(
+                        res.codeCheckResult?.violations || [],
+                        res.assembledFiles || []
+                    )
                 });
             } catch (e) {
                 lastError = e;

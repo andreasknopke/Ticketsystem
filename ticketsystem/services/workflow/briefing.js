@@ -161,7 +161,7 @@ function buildCodingBriefing({ ticket, codingLevel, security, plan, integration,
 /**
  * Baut Self-Correction-Feedback aus Verstoessen (Scope, Syntax, Symbol-Preservation).
  */
-function buildCorrectionFeedback({ scopeViolations, codeCheckViolations }) {
+function buildCorrectionFeedback({ scopeViolations, codeCheckViolations, syntaxResolveContexts }) {
     const parts = [];
     if (Array.isArray(scopeViolations) && scopeViolations.length) {
         parts.push(`Scope-Verstoesse (du hast Pfade ausserhalb der Whitelist angefasst oder Symbole entfernt):`);
@@ -171,9 +171,18 @@ function buildCorrectionFeedback({ scopeViolations, codeCheckViolations }) {
         parts.push(`\nSyntax-/Code-Check-Fehler:`);
         codeCheckViolations.forEach(v => parts.push(`- ${v}`));
     }
+    if (Array.isArray(syntaxResolveContexts) && syntaxResolveContexts.length) {
+        parts.push(`\nSelf-Resolve-Kontext fuer Syntaxfehler:`);
+        parts.push(`Nutze diesen Kontext aus der bereits assemblierten, fehlerhaften Datei. Fordere im Explore-Pass die passenden Original-Zeilen an und liefere im Edit-Pass minimale Korrektur-Edits, die den Syntaxfehler beheben.`);
+        syntaxResolveContexts.forEach((ctx, i) => {
+            parts.push(`\n### Syntax-Kontext ${i + 1}`);
+            parts.push(ctx);
+        });
+    }
     if (!parts.length) return '';
     parts.push(`\nKorrigiere deine edits[] (bei action=update) oder content (bei action=create).`);
     parts.push(`Stelle sicher dass jeder search-String EXAKT im CURRENT FILE vorkommt und eindeutig ist.`);
+    parts.push(`Bei Syntaxfehlern am Dateiende pruefe zuerst fehlende schliessende Klammern/Braces/Backticks in den zuletzt geaenderten Bereichen.`);
     parts.push(`Fasse keine anderen Files an. Behalte alle bisher korrekten Aenderungen bei.`);
     return parts.join('\n');
 }
