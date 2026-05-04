@@ -23,6 +23,10 @@ function verifyPassword(password, stored) {
 function parseCheckbox(value) {
     return value === 'on' || value === '1' || value === 1 ? 1 : 0;
 }
+
+function generateObfuscatedTicketId() {
+    return crypto.randomUUID();
+}
 const nodemailer = require('nodemailer');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -2331,9 +2335,11 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
         deadline = calculateDeadline(d.type || 'bug', d.urgency || 'normal', d.priority || 'mittel');
     }
 
-    const stmt = `INSERT INTO tickets (type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const ticketId = generateObfuscatedTicketId();
+    const stmt = `INSERT INTO tickets (id, type, title, description, username, console_logs, software_info, status, priority, system_id, assigned_to, location, contact_email, urgency, deadline, reference_repo_owner, reference_repo_name)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const vals = [
+        ticketId,
         d.type || 'bug', d.title || 'Unbenannt', d.description || '', d.username || null,
         d.console_logs || null, swInfo || null, 'offen', d.priority || 'mittel',
         d.system_id ? parseInt(d.system_id, 10) : null,
@@ -2344,7 +2350,6 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
 
     db.run(stmt, vals, function(err) {
         if (err) return res.status(500).send('DB Error: ' + err.message);
-        const ticketId = this.lastID;
         
         // SLA initialisieren
         initSLA(ticketId, d.priority || 'mittel', new Date().toISOString());
