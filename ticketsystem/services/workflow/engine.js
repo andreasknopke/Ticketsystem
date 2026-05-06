@@ -826,7 +826,8 @@ async function runArchitectExplore({ ticket, staff, codingPrompt, integration, r
         const toolName = String(parsed.tool || '').trim();
         const toolArgs = parsed.args && typeof parsed.args === 'object' ? parsed.args : {};
         const toolResult = await architectTools.runTool({
-            name: toolName, args: toolArgs, integration
+            name: toolName, args: toolArgs, integration,
+            context: { codingPrompt, systemName, repoInfo }
         });
         // Result trunkieren fuer den Trace (sonst blaeht es den naechsten Prompt auf)
         const resultStr = toolResult.result ? String(toolResult.result).slice(0, 4000) : null;

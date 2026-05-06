@@ -24,6 +24,11 @@ const DOC_FILE_RE = /(^|\/)(README|CHANGELOG)\.md$|\.md$/i;
 const WEAK_GREP_LINE_RE = /^\s*(import|export)\b|require\(|^\s*\/\/|^\s*\/\*|^\s*\*|^\s*#/;
 const UI_PATTERN_HINT_RE = /button|modal|dialog|dropdown|select|input|textarea|checkbox|radio|toggle|label|placeholder|class(name)?|onclick|render|component|page|layout|icon|tooltip|banner|formatier|klassifiz|docx|copy|ui|frontend|css|style/i;
 const UI_LINE_HINT_RE = /<button\b|\bbutton\b|onClick=|className=|title=|aria-label=|placeholder=|<label\b|handle[A-Z]\w*|fetch\(|href=|disabled=|type=\"button\"/;
+const GENERIC_SCOPE_WORDS = new Set([
+    'bitte', 'soll', 'sollen', 'muss', 'muessen', 'müssen', 'wird', 'werden', 'nicht', 'keine', 'kein', 'einen', 'eine', 'einer', 'einem',
+    'button', 'entfernen', 'löschen', 'loeschen', 'remove', 'delete', 'formatieren', 'formatier', 'modus', 'mode', 'formular', 'form',
+    'programm', 'bereich', 'komponente', 'component', 'datei', 'files', 'frontend', 'backend', 'api', 'route', 'funktion'
+]);
 
 function escapeRegexChar(char) {
     return /[\\^$+?.()|[\]{}]/.test(char) ? `\\${char}` : char;
@@ -113,6 +118,22 @@ function looksLikeUiSearch(pattern, glob) {
     return UI_PATTERN_HINT_RE.test(haystack);
 }
 
+function extractScopeTerms(text) {
+    const matches = String(text || '').match(/[A-Za-zÄÖÜäöüß0-9_-]{4,}/g) || [];
+    return [...new Set(matches
+        .map(token => token.toLowerCase())
+        .filter(token => !GENERIC_SCOPE_WORDS.has(token))
+        .filter(token => !/^\d+$/.test(token))
+    )].slice(0, 20);
+}
+
+function inferSearchIntent(pattern, glob, context) {
+    return {
+        isUiSearch: looksLikeUiSearch(pattern, glob),
+        scopeTerms: extractScopeTerms(context && context.codingPrompt)
+    };
+}
+
 function globExplicitlyTargetsExcluded(glob) {
     if (!glob || typeof glob !== 'string') return false;
     return /(docs?|tickets?|artifacts?|\.md|README|CHANGELOG)/i.test(glob);
@@ -126,25 +147,35 @@ function shouldIgnoreSearchPath(filePath, glob) {
     return false;
 }
 
-function scoreCandidatePath(filePath, isUiSearch) {
+function scoreCandidatePath(filePath, intent) {
     let score = 0;
     if (SOURCE_FILE_RE.test(filePath)) score += 60;
     if (/package\.json$/i.test(filePath)) score += 10;
     if (/\.(tsx|jsx)$/i.test(filePath)) score += 40;
     if (/\.(ts|js|ejs|html)$/i.test(filePath)) score += 20;
-    if (isUiSearch && UI_PRIORITY_PATH_RE.test(filePath)) score += 140;
-    if (isUiSearch && /(^|\/)(lib|hooks)(\/|$)/i.test(filePath)) score += 20;
+    if (intent.isUiSearch && UI_PRIORITY_PATH_RE.test(filePath)) score += 140;
+    if (intent.isUiSearch && /(^|\/)(lib|hooks)(\/|$)/i.test(filePath)) score += 20;
+    if (intent.scopeTerms && intent.scopeTerms.length) {
+        const lowerPath = filePath.toLowerCase();
+        const pathScopeHits = intent.scopeTerms.filter(term => lowerPath.includes(term)).length;
+        if (pathScopeHits) score += Math.min(pathScopeHits * 80, 240);
+    }
     if (/(^|\/)(tests?|__tests__|fixtures)(\/|$)/i.test(filePath)) score -= 40;
     return score;
 }
 
-function scoreGrepLine(filePath, line, isUiSearch) {
-    let score = scoreCandidatePath(filePath, isUiSearch);
+function scoreGrepLine(filePath, line, intent) {
+    let score = scoreCandidatePath(filePath, intent);
     const text = typeof line === 'string' ? line.trim() : '';
     if (!text) return score - 50;
     if (WEAK_GREP_LINE_RE.test(text)) score -= 180;
     if (/^\s*<\/?[A-Z]/.test(text)) score += 10;
-    if (isUiSearch && UI_LINE_HINT_RE.test(text)) score += 150;
+    if (intent.isUiSearch && UI_LINE_HINT_RE.test(text)) score += 150;
+    if (intent.scopeTerms && intent.scopeTerms.length) {
+        const haystack = `${filePath}\n${text}`.toLowerCase();
+        const lineScopeHits = intent.scopeTerms.filter(term => haystack.includes(term)).length;
+        if (lineScopeHits) score += Math.min(lineScopeHits * 70, 210);
+    }
     if (/\bfunction\b|=>|async function|const\s+handle[A-Z]/.test(text)) score += 20;
     if (/\btitle\s*=|\bplaceholder\s*=|\baria-label\s*=/.test(text)) score += 20;
     return score;
@@ -236,7 +267,7 @@ async function tool_read_file({ integration, path, start_line, end_line }) {
 // ---- Tool: grep ------------------------------------------------------------
 // pattern: regex string (case-insensitive)
 // glob: optional Pfad-Filter (z.B. "ticketsystem/**/*.js")
-async function tool_grep({ integration, pattern, glob }) {
+async function tool_grep({ integration, pattern, glob, context }) {
     if (!integration) return { error: 'Kein Repo-Kontext' };
     if (typeof pattern !== 'string' || !pattern) return { error: 'Parameter "pattern" fehlt' };
     let re;
@@ -244,7 +275,7 @@ async function tool_grep({ integration, pattern, glob }) {
     catch (e) { return { error: `Ungueltige Regex: ${e.message}` }; }
 
     try {
-        const isUiSearch = looksLikeUiSearch(pattern, glob);
+        const intent = inferSearchIntent(pattern, glob, context);
         const codeSearchTerms = extractCodeSearchTerms(pattern);
         const pathFilter = glob ? globToRegex(glob) : null;
         const tree = await fetchRepoTreeLight(integration, { maxEntries: 2000 });
@@ -257,7 +288,7 @@ async function tool_grep({ integration, pattern, glob }) {
         candidates = candidates.filter(filePath => !shouldIgnoreSearchPath(filePath, glob));
         // Bevorzugt relevante Source-Files statt alphabetischem Zufall.
         candidates = candidates
-            .map(filePath => ({ filePath, score: scoreCandidatePath(filePath, isUiSearch) }))
+            .map(filePath => ({ filePath, score: scoreCandidatePath(filePath, intent) }))
             .sort((left, right) => {
                 if (right.score !== left.score) return right.score - left.score;
                 return left.filePath.localeCompare(right.filePath);
@@ -283,7 +314,7 @@ async function tool_grep({ integration, pattern, glob }) {
                     if (seenHits.has(key)) continue;
                     seenHits.add(key);
                     hits.push({
-                        score: scoreCandidatePath(item.path, isUiSearch) + 220,
+                        score: scoreCandidatePath(item.path, intent) + 220,
                         filePath: item.path,
                         lineNumber: 0,
                         text: `[code-search] ${textMatch}`
@@ -301,7 +332,7 @@ async function tool_grep({ integration, pattern, glob }) {
                     if (seenHits.has(key)) continue;
                     seenHits.add(key);
                     hits.push({
-                        score: scoreGrepLine(f.path, lines[i], isUiSearch),
+                        score: scoreGrepLine(f.path, lines[i], intent),
                         filePath: f.path,
                         lineNumber: i + 1,
                         text: safeStr(lines[i].trim(), 240)
@@ -344,7 +375,7 @@ const TOOLS = {
         run: tool_read_file
     },
     grep: {
-        description: 'Sucht ein Regex-Pattern (case-insensitive) im Repo. Optional auf glob einschraenken (z.B. "ticketsystem/**/*.js"). Max ' + MAX_GREP_HITS + ' Treffer aus ' + MAX_GREP_FILES + ' Dateien.',
+        description: 'Sucht ein Regex-Pattern (case-insensitive) im Repo. Optional auf glob einschraenken (z.B. "ticketsystem/**/*.js"). Treffer werden gegen den Ticket-Kontext gerankt, damit promptfremde Bereiche nicht dominieren. Max ' + MAX_GREP_HITS + ' Treffer aus ' + MAX_GREP_FILES + ' Dateien.',
         params: '{ "pattern": "decideHumanStep|workflow_steps", "glob": "ticketsystem/**/*.js" }',
         run: tool_grep
     }
@@ -360,11 +391,11 @@ function describeTools() {
  * Fuehrt einen einzelnen Tool-Call aus. Liefert IMMER ein Objekt mit
  * `result` ODER `error`. Niemals werfen.
  */
-async function runTool({ name, args, integration }) {
+async function runTool({ name, args, integration, context }) {
     const tool = TOOLS[name];
     if (!tool) return { error: `Unbekanntes Tool: "${name}"` };
     try {
-        return await tool.run({ integration, ...(args && typeof args === 'object' ? args : {}) });
+        return await tool.run({ integration, context, ...(args && typeof args === 'object' ? args : {}) });
     } catch (e) {
         return { error: `Tool "${name}" fehlgeschlagen: ${e.message}` };
     }

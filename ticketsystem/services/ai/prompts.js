@@ -78,7 +78,9 @@ function buildArchitectSearchHints(codingPrompt) {
   const hints = [
     'Begrenze grep/list_dir zuerst auf fachlich passende Pfade statt breit ueber den ganzen Repo-Baum zu suchen.',
     'Ignoriere standardmaessig docs/, tickets/, artifacts/, README/ und andere Dossier-/Dokupfade, sofern das Ticket nicht explizit Doku betrifft.',
-    'Import-/Export-only Treffer, Re-Exports und Kommentare zaehlen NICHT als Existenzbeleg fuer ein Feature. Suche nach Render-, Handler-, fetch- oder persistenter UI-/Business-Logik.'
+    'Import-/Export-only Treffer, Re-Exports und Kommentare zaehlen NICHT als Existenzbeleg fuer ein Feature. Suche nach Render-, Handler-, fetch- oder persistenter UI-/Business-Logik.',
+    'Leite aus dem Auftrag zuerst den fachlichen Scope ab: welcher Modus, Bereich, Formular, Tab, User-Flow oder Screen ist gemeint? Treffer ausserhalb dieses Scopes sind nur Nebenfunde und duerfen NICHT als Ziel fuer allowed_files/steps verwendet werden, solange der Auftrag sie nicht explizit nennt.',
+    'Wenn mehrere Treffer denselben Text/Button/API-Aufruf enthalten, lies den umgebenden Code und waehle nur den Treffer, dessen Screen/User-Flow zum Prompt passt. Dokumentiere den Scope-Bezug in findings_so_far.'
   ];
   if (isUiTicket) {
     hints.unshift('UI-/Frontend-Ticket erkannt: beginne mit app/, components/, src/, pages/ oder ui/-Pfade, bevor du lib/ oder generische Glue-Code-Dateien pruefst.');
@@ -112,6 +114,13 @@ HARTE REGELN — werden vom System geprueft:
 - Ein leeres oder schwaches Doku-/Import-/Export-Ergebnis ist KEIN Beweis fuer
   Nicht-Existenz. Fuer "non_existent" musst du in fachlich passenden Pfaden
   gesucht haben.
+- Du MUSST den Scope des Auftrags respektieren. Wenn der Prompt einen bestimmten
+  Modus, Screen, Tab, Formular, Workflow oder Programmbereich beschreibt, dann
+  sind Treffer in anderen Bereichen nur Nebenfunde. Plane NICHT auf einem
+  Nebenfund, nur weil er denselben Button-Text oder API-String enthaelt.
+- Bevor du allowed_files setzt, verifiziere per read_file, dass der Treffer im
+  gleichen fachlichen Scope wie der Auftrag liegt. Schreibe diesen Scope-Bezug
+  explizit in findings_so_far.
 - Knappe, gezielte Calls. Maximal die Zeilen, die du wirklich brauchst.
 - Bevor du "done": true setzt, gehe deine eigenen Findings durch und stelle
   sicher: jeder Punkt, den du spaeter im Plan ansprechen willst, ist entweder
