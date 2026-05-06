@@ -176,9 +176,14 @@ function buildCorrectionFeedback({ scopeViolations, codeCheckViolations, attempt
             const failed = Array.isArray(f._failedEditSearches) ? f._failedEditSearches : [];
             failed.slice(0, 3).forEach((e, i) => {
                 parts.push(`  - fehlender search #${i + 1}: ${String(e.search || '').slice(0, 160)}`);
+                if (e.reason) parts.push(`    Grund: ${e.reason}`);
+                if (e.context) {
+                    parts.push(`    Kontext-Hilfe:`);
+                    parts.push(String(e.context).split('\n').map(line => `    ${line}`).join('\n'));
+                }
             });
         }
-        parts.push(`Wichtig: Wiederhole fehlgeschlagene search-Strings nicht blind. Fordere im Explore-Pass die exakten Original-Zeilen an und verwende im Edit-Pass einen Search-Block, der wortwoertlich im CURRENT FILE vorkommt.`);
+        parts.push(`Wichtig: Wiederhole fehlgeschlagene search-Strings nicht blind. Nutze die Kontext-Hilfe oder fordere im Explore-Pass die exakten Original-Zeilen an und verwende im Edit-Pass einen Search-Block aus 2-8 vollstaendigen Zeilen, der wortwoertlich im CURRENT FILE vorkommt.`);
     }
     if (Array.isArray(codeCheckViolations) && codeCheckViolations.length) {
         parts.push(`\nSyntax-/Code-Check-Fehler:`);
@@ -194,7 +199,7 @@ function buildCorrectionFeedback({ scopeViolations, codeCheckViolations, attempt
     }
     if (!parts.length) return '';
     parts.push(`\nKorrigiere deine edits[] (bei action=update) oder content (bei action=create).`);
-    parts.push(`Stelle sicher dass jeder search-String EXAKT im CURRENT FILE vorkommt und eindeutig ist.`);
+    parts.push(`Stelle sicher dass jeder search-String EXAKT im CURRENT FILE vorkommt, eindeutig ist und nicht nur aus einem kurzen Label/Token besteht.`);
     parts.push(`Bei Syntaxfehlern am Dateiende pruefe zuerst fehlende schliessende Klammern/Braces/Backticks in den zuletzt geaenderten Bereichen.`);
     parts.push(`Fasse keine anderen Files an. Behalte alle bisher korrekten Aenderungen bei.`);
     return parts.join('\n');

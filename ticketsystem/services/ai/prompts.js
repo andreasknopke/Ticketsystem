@@ -541,6 +541,8 @@ HARTE REGELN:
      Keine Abweichungen, keine Tippfehler, keine aus dem Gedaechtnis erfundenen Code.
      Wenn du Zeile 42-45 siehst, kopiere diese EXAKT als search-String.
    - Der "replace"-String enthaelt die geaenderte Version desselben Abschnitts.
+   - Verwende niemals nur ein einzelnes Label/Token wie "Formatieren" als search.
+     Nimm 2-8 vollstaendige Originalzeilen mit stabilem Kontext um das zu aendernde JSX/Statement.
    - Nie mehr als ~20 Zeilen pro search-Block
    - Jeder search-String muss EINDEUTIG sein (nur 1 Treffer im File)
 3. Bei action="create": Liefere "content" (vollstaendig). KEIN "edits"!
@@ -560,6 +562,7 @@ Dann ist ein korrekter search-String:
   "function handleApproval(req, res) {\\n  const user = req.session.user;\\n  return { approver: user };"
 
 FALSCH waere, Code aus dem Gedaechtnis zu erfinden, der nicht in den geladenen Zeilen steht.
+Ebenso FALSCH waere ein fragiler search-String wie " Formatieren". Nutze stattdessen den vollstaendigen Button-/JSX-Block inklusive umgebender Zeilen.
 
 Antworte ausschliesslich als JSON:
 {
@@ -616,7 +619,9 @@ Antworte ausschliesslich als JSON:
             loadedRanges.forEach(f => {
                 const marker = f.exists ? '' : ' (NEU — wird erstellt)';
                 const truncNote = f.truncated ? ' [TRUNCATED]' : '';
-                parts.push(`\n### CURRENT FILE: ${f.path}${marker}${truncNote}`);
+                const fullNote = f.fullFileContext ? ' [FULL FILE CONTEXT]' : '';
+                parts.push(`\n### CURRENT FILE: ${f.path}${marker}${truncNote}${fullNote}`);
+                if (f.fullFileContext) parts.push('Die komplette Datei ist geladen. Wenn ein Edit fehlschlaegt, suche den Zielblock hier selbst und kopiere einen stabilen mehrzeiligen search-Block.');
                 if (f.content) {
                     parts.push('```');
                     const lines = f.content.split('\n');

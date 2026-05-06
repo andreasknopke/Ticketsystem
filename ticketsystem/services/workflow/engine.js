@@ -20,11 +20,9 @@ function applyEdits(originalContent, edits) {
     const applied = [];
     const failed = [];
 
-    // Helper: whitespace-toleranter Regex-Fallback fuer Search/Replace.
-    // Das ist absichtlich nicht auf lange Search-Strings beschraenkt: Gerade
-    // einfache Aufgaben erzeugen oft kurze Suchmuster (z.B. ein Attribut oder
-    // eine einzelne JSX-Zeile), die sonst an minimal abweichender Einrueckung
-    // scheitern und den Correction-Loop blockieren.
+    // Helper: whitespace-toleranter Regex-Fallback fuer robuste Search/Replace.
+    // Fragile Kurz-Suchen werden vorher abgelehnt, damit der Bot in der
+    // Correction-Schleife stabile Original-Bloecke statt Label-Snippets liefert.
     function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     function fuzzyRegex(search) {
         const raw = String(search || '').replace(/\r\n/g, '\n');
@@ -33,7 +31,26 @@ function applyEdits(originalContent, edits) {
         if (!parts.length) return null;
         const prefix = /^\r?\n/.test(raw) ? '\\s*' : /^[ \t]/.test(raw) ? '[ \\t]*' : '';
         const suffix = /\r?\n$/.test(raw) ? '\\s*' : /[ \t]$/.test(raw) ? '[ \\t]*' : '';
-        return new RegExp(prefix + parts.join('\\s+') + suffix);
+        return new RegExp(prefix + parts.join('\\s+') + suffix, 'g');
+    }
+
+    function countExact(haystack, needle) {
+        if (!needle) return 0;
+        let count = 0;
+        let idx = haystack.indexOf(needle);
+        while (idx !== -1) {
+            count += 1;
+            idx = haystack.indexOf(needle, idx + needle.length);
+        }
+        return count;
+    }
+
+    function isFragileSearch(search) {
+        const trimmed = String(search || '').trim();
+        if (trimmed.length < 20) return true;
+        const nonEmptyLines = trimmed.split('\n').filter(line => line.trim()).length;
+        if (nonEmptyLines >= 2) return false;
+        return trimmed.length < 45;
     }
 
     for (const edit of edits) {
@@ -42,8 +59,27 @@ function applyEdits(originalContent, edits) {
             continue;
         }
 
+        if (isFragileSearch(edit.search)) {
+            failed.push({
+                search: edit.search.slice(0, 80),
+                reason: 'search-String ist zu kurz/fragil; nutze 2-8 exakt kopierte Zeilen mit stabilem Kontext',
+                context: buildSearchFailureContext(content, edit.search)
+            });
+            continue;
+        }
+
         // Try exact match first
-        let idx = content.indexOf(edit.search);
+        const exactCount = countExact(content, edit.search);
+        if (exactCount > 1) {
+            failed.push({
+                search: edit.search.slice(0, 80),
+                reason: `search-String ist nicht eindeutig (${exactCount} Treffer); erweitere ihn um umgebende Zeilen`,
+                context: buildSearchFailureContext(content, edit.search)
+            });
+            continue;
+        }
+
+        let idx = exactCount === 1 ? content.indexOf(edit.search) : -1;
         let usedFuzzy = false;
 
         // Fallback: whitespace-toleranter Match fuer alle nicht-leeren Suchen.
@@ -51,7 +87,16 @@ function applyEdits(originalContent, edits) {
         // splicen; dadurch funktionieren auch kurze Inline-Edits robust.
         if (idx === -1 && edit.search.trim().length > 0) {
             const re = fuzzyRegex(edit.search);
-            const m = re ? re.exec(content) : null;
+            const matches = re ? [...content.matchAll(re)] : [];
+            if (matches.length > 1) {
+                failed.push({
+                    search: edit.search.slice(0, 80),
+                    reason: `whitespace-toleranter search-String ist nicht eindeutig (${matches.length} Treffer); erweitere ihn um umgebende Zeilen`,
+                    context: buildSearchFailureContext(content, edit.search)
+                });
+                continue;
+            }
+            const m = matches[0] || null;
             if (m && m.index >= 0) {
                 const line = content.slice(0, m.index).split('\n').length;
                 content = content.slice(0, m.index) + edit.replace + content.slice(m.index + m[0].length);
@@ -63,7 +108,11 @@ function applyEdits(originalContent, edits) {
         }
 
         if (idx === -1) {
-            failed.push({ search: edit.search.slice(0, 80), reason: 'search-String nicht im aktuellen Datei-Inhalt gefunden' });
+            failed.push({
+                search: edit.search.slice(0, 80),
+                reason: 'search-String nicht im aktuellen Datei-Inhalt gefunden',
+                context: buildSearchFailureContext(content, edit.search)
+            });
             continue;
         }
 
@@ -71,6 +120,33 @@ function applyEdits(originalContent, edits) {
         applied.push({ search: edit.search.slice(0, 80), replace: edit.replace.slice(0, 80), fuzzy: usedFuzzy });
     }
     return { content, applied, failed };
+}
+
+function buildSearchFailureContext(content, search) {
+    const lines = String(content || '').split('\n');
+    const rawTokens = String(search || '').match(/[A-Za-zÄÖÜäöüß0-9_$-]{3,}/g) || [];
+    const stop = new Set(['const', 'let', 'var', 'function', 'return', 'class', 'div', 'span', 'button']);
+    const tokens = [...new Set(rawTokens.map(t => t.trim()).filter(t => t && !stop.has(t.toLowerCase())))]
+        .sort((a, b) => b.length - a.length)
+        .slice(0, 6);
+
+    for (const token of tokens) {
+        const lower = token.toLowerCase();
+        const index = lines.findIndex(line => line.toLowerCase().includes(lower));
+        if (index !== -1) {
+            const win = formatLineWindow(content, index + 1, 10);
+            return [
+                `Aehnlicher Token gefunden: "${token}" in Zeile ${index + 1}.`,
+                `Kopiere fuer den naechsten search-String 2-8 vollstaendige Originalzeilen aus diesem Kontext:`,
+                win.content
+            ].join('\n');
+        }
+    }
+
+    const preview = String(search || '').trim().slice(0, 80);
+    return preview
+        ? `Kein robuster Kontext gefunden fuer search-Preview: "${preview}". Fordere im Explore-Pass die relevanten Originalzeilen erneut an.`
+        : 'Leerer search-String. Fordere im Explore-Pass die relevanten Originalzeilen erneut an.';
 }
 
 /**
@@ -165,6 +241,7 @@ const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = Math.max(1, parseInt(process.env.AI_CODING_MAX_CORRECTION_PASSES, 10) || 2); // Aider-Style: 1 Versuch + n Korrekturen
 const CODING_SOURCE_MAX_BYTES = parseInt(process.env.AI_CODING_SOURCE_MAX_BYTES, 10) || 2 * 1024 * 1024;
+const CODING_SINGLE_FILE_FULL_CONTEXT_BYTES = parseInt(process.env.AI_CODING_SINGLE_FILE_FULL_CONTEXT_BYTES, 10) || 120 * 1024;
 
 let dbRef = null;
 let ioRef = null;
@@ -1561,7 +1638,7 @@ function assembleFilesFromEdits(out, currentFiles) {
                 // Metadaten fuer Nachvollziehbarkeit
                 f._appliedEdits = result.applied.length;
                 f._failedEdits = result.failed.length;
-                f._failedEditSearches = result.failed.map(e => ({ search: e.search, reason: e.reason }));
+                f._failedEditSearches = result.failed.map(e => ({ search: e.search, reason: e.reason, context: e.context || '' }));
             } else if (typeof f.content === 'string') {
                 // Fallback: Bot hat trotzdem content geliefert (altes Format)
                 assembledFiles.push({ path: f.path, action: 'update', content: f.content });
@@ -1713,6 +1790,28 @@ function loadRequestedRanges(requestedFiles, allowedFiles, currentMap) {
     return ranges;
 }
 
+function buildSmallSingleFileContext(allowedFiles, changeKind, currentMap) {
+    if (!Array.isArray(allowedFiles) || allowedFiles.length !== 1) return null;
+    if (changeKind === 'new') return null;
+
+    const path = allowedFiles[0];
+    const cur = currentMap.get(path);
+    if (!cur || !cur.exists || typeof cur.content !== 'string') return null;
+
+    const bytes = Buffer.byteLength(cur.content, 'utf-8');
+    if (bytes > CODING_SINGLE_FILE_FULL_CONTEXT_BYTES) return null;
+
+    return {
+        path,
+        exists: true,
+        content: cur.content,
+        startLine: 1,
+        truncated: !!cur.truncated,
+        fullFileContext: true,
+        bytes
+    };
+}
+
 async function singleCodingPass({ ticket, staff, codingLevel, security, plan, integration, currentFiles, integrationCfg, approverNote, correctionFeedback, systemName, repoInfo }) {
     const allowedFiles = Array.isArray(plan?.allowed_files) ? plan.allowed_files : [];
     const changeKind = plan?.change_kind || 'extend';
@@ -1760,6 +1859,11 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
 
     // Phase 1b: Kontext-Nachbesserung wenn Bot need_more_context gesetzt hat
     let finalLoadedRanges = loadedRanges;
+    const singleFileContext = buildSmallSingleFileContext(allowedFiles, changeKind, currentMap);
+    if (singleFileContext) {
+        finalLoadedRanges = [singleFileContext];
+        wfInfo(`Stage:CODING FULL_CONTEXT | ${singleFileContext.path} bytes=${singleFileContext.bytes}`);
+    }
     if (exploreOut.need_more_context && integration) {
         const extraPaths = requestedFiles
             .map(f => f.path)
@@ -1776,7 +1880,7 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
         }
         const exploreExtraFiles = requestedFiles.filter(f => f.path && !allowedFiles.includes(f.path));
         const extraRanges = loadRequestedRanges(exploreExtraFiles, [...allowedFiles, ...extraPaths], currentMap);
-        finalLoadedRanges = [...loadedRanges, ...extraRanges];
+        finalLoadedRanges = singleFileContext ? [singleFileContext, ...extraRanges] : [...loadedRanges, ...extraRanges];
 
         const contextGaps = Array.isArray(exploreOut.context_gaps) ? exploreOut.context_gaps : [];
         wfInfo(`Stage:CODING EXPLORE_RE-RUN | context_gaps=${contextGaps.length} extra_ranges=${extraRanges.length}`);
@@ -1796,7 +1900,7 @@ async function singleCodingPass({ ticket, staff, codingLevel, security, plan, in
                 if (!seen.has(rr.path)) { finalLoadedRanges.push(rr); seen.add(rr.path); }
                 else {
                     const idx = finalLoadedRanges.findIndex(r => r.path === rr.path);
-                    if (idx >= 0) finalLoadedRanges[idx] = rr;
+                    if (idx >= 0 && !finalLoadedRanges[idx].fullFileContext) finalLoadedRanges[idx] = rr;
                 }
             }
         }
