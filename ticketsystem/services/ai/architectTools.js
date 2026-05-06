@@ -24,16 +24,82 @@ const WEAK_GREP_LINE_RE = /^\s*(import|export)\b|require\(|^\s*\/\/|^\s*\/\*|^\s
 const UI_PATTERN_HINT_RE = /button|modal|dialog|dropdown|select|input|textarea|checkbox|radio|toggle|label|placeholder|class(name)?|onclick|render|component|page|layout|icon|tooltip|banner|formatier|klassifiz|docx|copy|ui|frontend|css|style/i;
 const UI_LINE_HINT_RE = /<button\b|\bbutton\b|onClick=|className=|title=|aria-label=|placeholder=|<label\b|handle[A-Z]\w*|fetch\(|href=|disabled=|type=\"button\"/;
 
-// Sehr grobe Glob -> RegExp Konvertierung (* und **). Ausreichend fuer
-// Pfade wie "ticketsystem/**/*.js" oder "**/*.md".
+function escapeRegexChar(char) {
+    return /[\\^$+?.()|[\]{}]/.test(char) ? `\\${char}` : char;
+}
+
+function splitBraceOptions(text) {
+    const parts = [];
+    let current = '';
+    let depth = 0;
+    for (const char of text) {
+        if (char === ',' && depth === 0) {
+            parts.push(current);
+            current = '';
+            continue;
+        }
+        if (char === '{') depth += 1;
+        if (char === '}') depth = Math.max(0, depth - 1);
+        current += char;
+    }
+    parts.push(current);
+    return parts;
+}
+
+// Glob -> RegExp Konvertierung mit Unterstuetzung fuer *, **, ? und {a,b}.
 function globToRegex(glob) {
     if (!glob || typeof glob !== 'string') return null;
-    const escaped = glob
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*/g, '@@DOUBLESTAR@@')
-        .replace(/\*/g, '[^/]*')
-        .replace(/@@DOUBLESTAR@@/g, '.*');
-    return new RegExp('^' + escaped + '$');
+
+    function convert(pattern) {
+        let out = '';
+        for (let i = 0; i < pattern.length; i++) {
+            const char = pattern[i];
+            const next = pattern[i + 1];
+
+            if (char === '*') {
+                if (next === '*') {
+                    const afterDoubleStar = pattern[i + 2];
+                    if (afterDoubleStar === '/') {
+                        out += '(?:.*\/)?';
+                        i += 2;
+                    } else {
+                        out += '.*';
+                        i += 1;
+                    }
+                } else {
+                    out += '[^/]*';
+                }
+                continue;
+            }
+
+            if (char === '?') {
+                out += '[^/]';
+                continue;
+            }
+
+            if (char === '{') {
+                let depth = 1;
+                let j = i + 1;
+                while (j < pattern.length && depth > 0) {
+                    if (pattern[j] === '{') depth += 1;
+                    else if (pattern[j] === '}') depth -= 1;
+                    j += 1;
+                }
+                if (depth === 0) {
+                    const body = pattern.slice(i + 1, j - 1);
+                    const options = splitBraceOptions(body).map(option => convert(option));
+                    out += `(?:${options.join('|')})`;
+                    i = j - 1;
+                    continue;
+                }
+            }
+
+            out += escapeRegexChar(char);
+        }
+        return out;
+    }
+
+    return new RegExp('^' + convert(glob) + '$');
 }
 
 function safeStr(s, max = 200) {
