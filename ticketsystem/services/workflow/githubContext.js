@@ -186,7 +186,7 @@ function truncateForOverview(file) {
     };
 }
 
-module.exports = { fetchRepoContext, commitFilesAsPR, commitFilesToBranch, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight, truncateForOverview };
+module.exports = { fetchRepoContext, commitFilesAsPR, commitFilesToBranch, fetchFilesFromRepo, fetchRepoTree, fetchRepoTreeLight, truncateForOverview, searchCodeInRepo };
 
 /**
  * Light-Version des Repo-Trees: nutzt Git Trees API mit recursive=1
@@ -262,6 +262,63 @@ async function fetchFilesFromRepo(integration, paths, { maxBytes } = {}) {
         out.push({ path, exists: true, content, truncated });
     }
     return out;
+}
+
+/**
+ * Nutzt GitHub Code Search auf dem Default-Branch des verknuepften Repos.
+ * Liefert tokenarme Treffer mit optionalen Text-Matches; Pfadfilterung erfolgt
+ * primaer durch den Aufrufer.
+ */
+async function searchCodeInRepo(integration, terms, { perPage } = {}) {
+    const safeTerms = Array.isArray(terms)
+        ? terms.map(t => String(t || '').trim()).filter(Boolean).slice(0, 6)
+        : [];
+    if (!integration || !integration.repo_owner || !integration.repo_name || !safeTerms.length) {
+        return { results: [], incomplete: false };
+    }
+
+    const client = getOctokit(integration.access_token);
+    const owner = integration.repo_owner;
+    const repo = integration.repo_name;
+    const out = [];
+    let incomplete = false;
+
+    for (const term of safeTerms) {
+        const exact = /[^A-Za-z0-9_]/.test(term);
+        const queryTerm = exact ? `"${term.replace(/"/g, '\\"')}"` : term;
+        const q = `${queryTerm} repo:${owner}/${repo}`;
+        try {
+            const response = await client.request('GET /search/code', {
+                q,
+                per_page: Math.min(Math.max(Number(perPage) || 10, 1), 20),
+                headers: {
+                    accept: 'application/vnd.github.text-match+json'
+                }
+            });
+            incomplete = incomplete || !!response.data?.incomplete_results;
+            for (const item of response.data?.items || []) {
+                out.push({
+                    term,
+                    path: item.path,
+                    html_url: item.html_url,
+                    text_matches: Array.isArray(item.text_matches)
+                        ? item.text_matches.map(match => ({
+                            fragment: match.fragment || '',
+                            property: match.property || ''
+                        }))
+                        : []
+                });
+            }
+        } catch (e) {
+            return {
+                results: out,
+                incomplete: true,
+                error: `code search fehlgeschlagen: ${e.message}`
+            };
+        }
+    }
+
+    return { results: out, incomplete };
 }
 
 /**

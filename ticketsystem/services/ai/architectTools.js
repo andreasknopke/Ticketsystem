@@ -7,7 +7,8 @@
 
 const {
     fetchRepoTreeLight,
-    fetchFilesFromRepo
+    fetchFilesFromRepo,
+    searchCodeInRepo
 } = require('../workflow/githubContext');
 
 const MAX_GREP_BYTES_PER_FILE = 120 * 1024;    // 120 KB Cap je Datei beim Grep
@@ -149,6 +150,30 @@ function scoreGrepLine(filePath, line, isUiSearch) {
     return score;
 }
 
+function extractCodeSearchTerms(pattern) {
+    const terms = [];
+    const pieces = String(pattern || '').split('|');
+    for (const piece of pieces) {
+        const matches = piece.match(/[A-Za-zÄÖÜäöüß0-9_./-]{3,}/g) || [];
+        for (const match of matches) {
+            const cleaned = match.replace(/^\/+|\/+$/g, '');
+            if (!cleaned) continue;
+            terms.push(cleaned);
+        }
+    }
+    const weakTerms = new Set(['tsx', 'ts', 'jsx', 'js', 'json', 'html', 'css', 'scss', 'sass', 'less']);
+    return [...new Set(terms)]
+        .filter(term => !weakTerms.has(term.toLowerCase()))
+        .sort((left, right) => right.length - left.length)
+        .slice(0, 6);
+}
+
+function formatCodeSearchFragment(fragment, term) {
+    const text = String(fragment || '').replace(/\s+/g, ' ').trim();
+    if (text) return safeStr(text, 240);
+    return `[GitHub Code Search Treffer fuer "${term}"]`;
+}
+
 // ---- Tool: list_tree -------------------------------------------------------
 async function tool_list_tree({ integration }) {
     if (!integration) return { error: 'Kein Repo-Kontext (integration fehlt)' };
@@ -220,6 +245,8 @@ async function tool_grep({ integration, pattern, glob }) {
 
     try {
         const isUiSearch = looksLikeUiSearch(pattern, glob);
+        const codeSearchTerms = extractCodeSearchTerms(pattern);
+        const pathFilter = glob ? globToRegex(glob) : null;
         const tree = await fetchRepoTreeLight(integration, { maxEntries: 2000 });
         const text = typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.join('\n') : String(tree || '');
         let candidates = text.split('\n').filter(p => p && !p.endsWith('/'));
@@ -238,13 +265,41 @@ async function tool_grep({ integration, pattern, glob }) {
             .map(entry => entry.filePath)
             .slice(0, MAX_GREP_FILES);
         if (!candidates.length) return { result: '(kein Datei-Treffer fuer dieses Glob)' };
-        const files = await fetchFilesFromRepo(integration, candidates, { maxBytes: MAX_GREP_BYTES_PER_FILE });
         const hits = [];
+        const seenHits = new Set();
+
+        if (codeSearchTerms.length) {
+            const codeSearch = await searchCodeInRepo(integration, codeSearchTerms, { perPage: 10 });
+            for (const item of codeSearch.results || []) {
+                if (!item.path) continue;
+                if (pathFilter && !pathFilter.test(item.path)) continue;
+                if (shouldIgnoreSearchPath(item.path, glob)) continue;
+                const fragments = item.text_matches && item.text_matches.length
+                    ? item.text_matches
+                    : [{ fragment: '', property: '' }];
+                for (const match of fragments) {
+                    const textMatch = formatCodeSearchFragment(match.fragment, item.term);
+                    const key = `code:${item.path}:${textMatch}`;
+                    if (seenHits.has(key)) continue;
+                    seenHits.add(key);
+                    hits.push({
+                        score: scoreCandidatePath(item.path, isUiSearch) + 220,
+                        filePath: item.path,
+                        lineNumber: 0,
+                        text: `[code-search] ${textMatch}`
+                    });
+                }
+            }
+        }
+        const files = await fetchFilesFromRepo(integration, candidates, { maxBytes: MAX_GREP_BYTES_PER_FILE });
         for (const f of files) {
             if (!f.exists || !f.content) continue;
             const lines = f.content.split('\n');
             for (let i = 0; i < lines.length; i++) {
                 if (re.test(lines[i])) {
+                    const key = `file:${f.path}:${i + 1}:${lines[i]}`;
+                    if (seenHits.has(key)) continue;
+                    seenHits.add(key);
                     hits.push({
                         score: scoreGrepLine(f.path, lines[i], isUiSearch),
                         filePath: f.path,
@@ -262,7 +317,7 @@ async function tool_grep({ integration, pattern, glob }) {
         });
         const topHits = hits.slice(0, MAX_GREP_HITS);
         return {
-            result: topHits.map(hit => `${hit.filePath}:${hit.lineNumber}: ${hit.text}`).join('\n'),
+            result: topHits.map(hit => `${hit.filePath}:${hit.lineNumber > 0 ? hit.lineNumber : 1}: ${hit.text}`).join('\n'),
             files_searched: candidates.length,
             hit_count: topHits.length,
             truncated: hits.length > MAX_GREP_HITS
