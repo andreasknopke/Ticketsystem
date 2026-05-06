@@ -1,0 +1,87 @@
+{
+  "ticket_id": "9ccb62ec-292d-4117-b872-49e1776f04b6",
+  "title": "Key User im Projekt",
+  "type": "bug",
+  "urgency": "normal",
+  "system": {
+    "id": 4,
+    "name": "Ticketsystem",
+    "repo": "andreasknopke/Ticketsystem"
+  },
+  "run": {
+    "id": 118,
+    "started_at": "2026-05-06 10:59:48",
+    "current_stage": "planning",
+    "recommended_executor": null
+  },
+  "steps": [
+    {
+      "id": 762,
+      "stage": "triage",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 5,
+      "staff_name": "Triage-Bot",
+      "provider": "openai_local",
+      "model": "gemma-4",
+      "duration_ms": 2938
+    },
+    {
+      "id": 763,
+      "stage": "security",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 7,
+      "staff_name": "Security-Bot",
+      "provider": "openai_local",
+      "model": "gemma-4",
+      "duration_ms": 7318
+    },
+    {
+      "id": 764,
+      "stage": "approval",
+      "status": "done",
+      "executor_kind": "human",
+      "staff_id": 1,
+      "staff_name": "Christian",
+      "provider": null,
+      "model": null,
+      "duration_ms": null
+    },
+    {
+      "id": 765,
+      "stage": "planning",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 6,
+      "staff_name": "Architect-Bot",
+      "provider": "openrouter",
+      "model": "inclusionai/ling-2.6-1t:free",
+      "duration_ms": 1931
+    },
+    {
+      "id": 766,
+      "stage": "integration",
+      "status": "done",
+      "executor_kind": "ai",
+      "staff_id": 8,
+      "staff_name": "Integration-Bot",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "duration_ms": 24272
+    },
+    {
+      "id": 767,
+      "stage": "approval",
+      "status": "waiting_human",
+      "executor_kind": "human",
+      "staff_id": 2,
+      "staff_name": "Andreas",
+      "provider": null,
+      "model": null,
+      "duration_ms": null
+    }
+  ],
+  "exported_at": "2026-05-06T11:12:23.879Z",
+  "dispatch_note": null
+}
