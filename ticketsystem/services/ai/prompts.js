@@ -75,15 +75,20 @@ Triage-Empfehlung: ${triageAction || '-'}`
 function buildArchitectSearchHints(codingPrompt) {
   const text = String(codingPrompt || '');
   const isUiTicket = /button|modal|dialog|dropdown|select|input|textarea|checkbox|radio|label|placeholder|render|layout|component|page|ui|frontend|css|style|icon|tooltip|banner|formatier|klassifiz|docx|kopier|ansicht/i.test(text);
+  const isUiRemovalTicket = isUiTicket && /entfern|löschen|loeschen|remove|delete|nicht mehr anzeigen|ausblenden/i.test(text);
   const hints = [
     'Begrenze grep/list_dir zuerst auf fachlich passende Pfade statt breit ueber den ganzen Repo-Baum zu suchen.',
     'Ignoriere standardmaessig docs/, tickets/, artifacts/, README/ und andere Dossier-/Dokupfade, sofern das Ticket nicht explizit Doku betrifft.',
     'Import-/Export-only Treffer, Re-Exports und Kommentare zaehlen NICHT als Existenzbeleg fuer ein Feature. Suche nach Render-, Handler-, fetch- oder persistenter UI-/Business-Logik.',
     'Leite aus dem Auftrag zuerst den fachlichen Scope ab: welcher Modus, Bereich, Formular, Tab, User-Flow oder Screen ist gemeint? Treffer ausserhalb dieses Scopes sind nur Nebenfunde und duerfen NICHT als Ziel fuer allowed_files/steps verwendet werden, solange der Auftrag sie nicht explizit nennt.',
-    'Wenn mehrere Treffer denselben Text/Button/API-Aufruf enthalten, lies den umgebenden Code und waehle nur den Treffer, dessen Screen/User-Flow zum Prompt passt. Dokumentiere den Scope-Bezug in findings_so_far.'
+    'Wenn mehrere Treffer denselben Text/Button/API-Aufruf enthalten, lies den umgebenden Code und waehle nur den Treffer, dessen Screen/User-Flow zum Prompt passt. Dokumentiere den Scope-Bezug in findings_so_far.',
+    'Wenn ein vermuteter Scope 0 Treffer fuer das Ziel-Label/Handler/API liefert, ist der Scope NICHT verifiziert. Suche danach global in passenden UI-Pfaden weiter, statt einen funktionalen Ersatz-Trigger zu erfinden.'
   ];
   if (isUiTicket) {
     hints.unshift('UI-/Frontend-Ticket erkannt: beginne mit app/, components/, src/, pages/ oder ui/-Pfade, bevor du lib/ oder generische Glue-Code-Dateien pruefst.');
+  }
+  if (isUiRemovalTicket) {
+    hints.unshift('UI-Entfernung erkannt: Plane KEINE Datei, solange du das konkrete zu entfernende UI-Element nicht positiv per read_file mit Zeilenbeleg gefunden hast (sichtbares Label, aria/title, onClick-Handler oder API-Aufruf).');
   }
   return hints.map(hint => `- ${hint}`).join('\n');
 }
@@ -111,6 +116,11 @@ HARTE REGELN — werden vom System geprueft:
   per Tool verifiziert hast. Wenn du etwas vermutest, pruefe es zuerst.
 - Wenn ein Tool-Call ein Symbol/eine Datei nicht findet, suche aktiv mit grep
   nach dem realen Namen, BEVOR du einen Schritt darum herum baust.
+- Bei UI-Entfernungen (Button/Toggle/Ansicht entfernen): Ein Plan ist nur erlaubt,
+  wenn du das konkrete zu entfernende Render-Element positiv per read_file mit
+  Zeilenbeleg gefunden hast. Wenn ein vermuteter Scope 0 Treffer fuer Label,
+  Handler oder API liefert, MUSST du die Suche auf passende UI-Pfade erweitern
+  und darfst keinen "funktionalen Ersatz" annehmen.
 - Ein leeres oder schwaches Doku-/Import-/Export-Ergebnis ist KEIN Beweis fuer
   Nicht-Existenz. Fuer "non_existent" musst du in fachlich passenden Pfaden
   gesucht haben.
@@ -199,6 +209,11 @@ KONSISTENZ-PFLICHT (wird vom System geprueft):
   erweitern", aber Webhook existiert nicht), baue den Plan UM dieses Loch
   herum (z.B. "direkter Hook im engine-Code, kein neuer Webhook"). Notiere
   die Anpassung in "constraints" oder "risks".
+- Bei UI-Entfernungen darfst du NICHT aus einer verbotenen Annahme wie
+  "Label/Handler/API nicht im vermuteten Scope gefunden" ableiten, dass dort
+  ein anders benannter, funktional aequivalenter Button entfernt werden soll.
+  Ohne positiven Zeilenbeleg fuer das konkrete Render-Element: allowed_files=[]
+  und eine technische open_question fuer weitere Repo-Suche formulieren.
 - Wenn du unsicher bist, triff eine REASONABLE ASSUMPTION und notiere sie in "risks".
   KEINE open_questions fuer Dinge die du selbst ableiten kannst.
 - Wenn dir eine zusaetzliche Datei fehlen wuerde um den Plan zu perfektionieren, formuliere
@@ -231,10 +246,21 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+        if (architectEvidence?.required) {
+            parts.push(`\n--- EVIDENCE-CONTRACT (systemseitig erzwungen) ---`);
+            parts.push(`Dieses Ticket ist eine UI-Entfernung. Du darfst allowed_files nur auf konkrete, positiv verifizierte Zielpfade setzen.`);
+            parts.push(`Suchbegriffe: ${(architectEvidence.terms || []).join(', ') || '(keine)'}`);
+            if (architectEvidence.found) {
+                parts.push(`Belegte Zielpfade: ${(architectEvidence.paths || []).map(p => '`' + p + '`').join(', ')}`);
+                parts.push(`Plane NUR auf diesen belegten Zielpfaden. Wenn du einen anderen Scope fuer plausibel haeltst, ignoriere ihn ohne positiven Codefund.`);
+            } else {
+                parts.push(`Kein konkretes Render-Element wurde systemseitig gefunden. Gib allowed_files=[] zurueck und formuliere eine technische open_question fuer weitere Repo-Suche; rate keinen Ersatz-Scope.`);
+            }
+        }
         if (Array.isArray(exploreFindings) && exploreFindings.length) {
             parts.push(`\n--- VERIFIZIERTE FAKTEN (aus deiner Repo-Recherche) ---`);
             parts.push(`Diese Fakten hast du selbst per Tools verifiziert. Verwende GENAU diese Symbole, Tabellen und Pfade — keine Erfindungen.`);

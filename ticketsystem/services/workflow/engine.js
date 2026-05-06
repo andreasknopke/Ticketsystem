@@ -237,6 +237,7 @@ const architectTools = require('../ai/architectTools');
 
 const ARCHITECT_TOOLS_ENABLED = process.env.ARCHITECT_TOOLS_ENABLED !== 'false';
 const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) || 6;
+const ARCHITECT_UI_REMOVAL_BUDGET = parseInt(process.env.ARCHITECT_UI_REMOVAL_BUDGET, 10) || Math.max(ARCHITECT_TOOLS_BUDGET, 10);
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = Math.max(1, parseInt(process.env.AI_CODING_MAX_CORRECTION_PASSES, 10) || 2); // Aider-Style: 1 Versuch + n Korrekturen
@@ -614,6 +615,146 @@ function normalizePlanningOutput(out) {
     return out;
 }
 
+function isUiRemovalTask(text) {
+    const s = String(text || '');
+    return /button|toggle|ansicht|view|ui|frontend|jsx|tsx|komponente|component|render/i.test(s)
+        && /entfern|löschen|loeschen|remove|delete|ausblenden|nicht mehr anzeigen/i.test(s);
+}
+
+function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractUiRemovalProbeTerms(text) {
+    const s = String(text || '');
+    const terms = [];
+    const quotedRe = /['"`]([^'"`]{3,80})['"`]/g;
+    let m;
+    while ((m = quotedRe.exec(s)) !== null) {
+        const value = String(m[1] || '').trim();
+        if (value && !/^(button|toggle|view|ansicht|ui|frontend)$/i.test(value)) terms.push(value);
+    }
+    const apiMatches = s.match(/\/api\/[A-Za-z0-9_./-]+/g) || [];
+    terms.push(...apiMatches);
+    const handlerMatches = s.match(/\bhandle[A-Z][A-Za-z0-9_]*\b/g) || [];
+    terms.push(...handlerMatches);
+    if (/formatier|format/i.test(s)) {
+        terms.push('Formatieren', 'formatieren', 'handleFormat', '/api/format');
+    }
+    return [...new Set(terms.map(t => t.trim()).filter(Boolean))].slice(0, 8);
+}
+
+function parseToolHitLines(result) {
+    return String(result || '').split('\n').map(line => {
+        const m = line.match(/^([^:]+):(\d+):\s*(.*)$/);
+        if (!m) return null;
+        return { path: m[1], line: parseInt(m[2], 10) || 1, text: m[3] || '' };
+    }).filter(Boolean);
+}
+
+async function runUiRemovalEvidenceProbe({ codingPrompt, integration }) {
+    const required = isUiRemovalTask(codingPrompt);
+    const terms = required ? extractUiRemovalProbeTerms(codingPrompt) : [];
+    const probe = { required, found: false, terms, paths: [], findings: [], trace: [] };
+    if (!required || !integration || !terms.length) return probe;
+
+    wfInfo(`PLANNING evidence probe start | terms=${terms.join(', ')}`);
+    const pattern = terms.map(escapeRegExp).join('|');
+    const grepResult = await architectTools.runTool({
+        name: 'grep',
+        args: { pattern, glob: '**/*.{tsx,jsx,ts,js}' },
+        integration,
+        context: { codingPrompt }
+    });
+    probe.trace.push({
+        iteration: 0,
+        thought: 'Deterministischer Evidence-Probe fuer UI-Entfernung: konkrete Zielbegriffe global in UI/Source-Dateien suchen.',
+        tool: 'grep',
+        args: { pattern, glob: '**/*.{tsx,jsx,ts,js}' },
+        result: grepResult.result ? String(grepResult.result).slice(0, 4000) : null,
+        error: grepResult.error ? String(grepResult.error).slice(0, 400) : null,
+        deterministic: true
+    });
+
+    if (grepResult.error || !grepResult.result) return probe;
+    const hits = parseToolHitLines(grepResult.result)
+        .filter(hit => /(^|\/)(app|components|src|pages|ui)(\/|$)/i.test(hit.path));
+    const byPath = new Map();
+    for (const hit of hits) {
+        const existing = byPath.get(hit.path);
+        const hitIsConcrete = hit.line > 1 && !String(hit.text || '').startsWith('[code-search]');
+        const existingIsConcrete = existing && existing.line > 1 && !String(existing.text || '').startsWith('[code-search]');
+        if (!existing || (hitIsConcrete && !existingIsConcrete)) byPath.set(hit.path, hit);
+    }
+
+    for (const hit of [...byPath.values()].slice(0, 4)) {
+        const start = Math.max(1, hit.line - 25);
+        const end = hit.line + 35;
+        const readResult = await architectTools.runTool({
+            name: 'read_file',
+            args: { path: hit.path, start_line: start, end_line: end },
+            integration,
+            context: { codingPrompt }
+        });
+        probe.trace.push({
+            iteration: 0,
+            thought: `Evidence-Probe liest Trefferkontext fuer ${hit.path}:${hit.line}.`,
+            tool: 'read_file',
+            args: { path: hit.path, start_line: start, end_line: end },
+            result: readResult.result ? String(readResult.result).slice(0, 4000) : null,
+            error: readResult.error ? String(readResult.error).slice(0, 400) : null,
+            deterministic: true
+        });
+        if (readResult.error || !readResult.result) continue;
+        const context = String(readResult.result);
+        const matchedTerms = terms.filter(term => context.toLowerCase().includes(term.toLowerCase()));
+        if (!matchedTerms.length) continue;
+        probe.found = true;
+        probe.paths.push(hit.path);
+        probe.findings.push(`EVIDENCE: UI-Remove-Ziel in ${hit.path}:${hit.line} verifiziert; Treffer fuer ${matchedTerms.map(t => `'${t}'`).join(', ')}. Kontext per read_file geladen.`);
+    }
+
+    probe.paths = [...new Set(probe.paths)];
+    if (!probe.found) {
+        probe.findings.push(`EVIDENCE-BLOCKER: UI-Remove-Zielbegriffe (${terms.join(', ')}) wurden nicht positiv in einem UI-Renderkontext verifiziert. Kein Plan mit allowed_files darf geraten werden.`);
+    }
+    wfInfo(`PLANNING evidence probe done | found=${probe.found} paths=${probe.paths.join(', ') || '-'}`);
+    return probe;
+}
+
+function enforceEvidenceBackedPlan(out, evidenceProbe) {
+    if (!evidenceProbe?.required) return [];
+    const violations = [];
+    out.risks = Array.isArray(out.risks) ? out.risks : [];
+    out.constraints = Array.isArray(out.constraints) ? out.constraints : [];
+    out.steps = Array.isArray(out.steps) ? out.steps : [];
+
+    if (!evidenceProbe.found) {
+        violations.push('UI-Remove-Plan blockiert: kein positiver Evidence-Probe fuer das konkrete Render-Element.');
+        out.allowed_files = [];
+        out.steps = [];
+        out.constraints.push('BLOCKED_BY_EVIDENCE: Erst konkretes UI-Element per read_file finden; keinen Ersatz-Scope annehmen.');
+        out.risks.push('BLOCKED_BY_EVIDENCE: Der Architect konnte das zu entfernende UI-Element nicht positiv verifizieren.');
+        return violations;
+    }
+
+    const evidencePaths = new Set(evidenceProbe.paths);
+    const before = Array.isArray(out.allowed_files) ? out.allowed_files : [];
+    const filtered = before.filter(path => evidencePaths.has(path));
+    if (before.length && !filtered.length) {
+        violations.push(`UI-Remove-Plan blockiert: allowed_files (${before.join(', ')}) enthalten keinen belegten Zielpfad (${[...evidencePaths].join(', ')}).`);
+    } else if (filtered.length !== before.length) {
+        violations.push(`UI-Remove-Plan eingegrenzt: nicht belegte allowed_files entfernt (${before.filter(path => !evidencePaths.has(path)).join(', ')}).`);
+    }
+    out.allowed_files = filtered.length ? filtered : [...evidencePaths].slice(0, 1);
+    out.steps = out.steps.map(step => ({
+        ...step,
+        files: Array.isArray(step.files) ? step.files.filter(path => out.allowed_files.includes(path)) : step.files
+    }));
+    out.constraints.push(`EVIDENCE_CONTRACT: Aendere nur belegte UI-Zielpfade: ${out.allowed_files.join(', ')}.`);
+    return violations;
+}
+
 function renderPlanMarkdown(out) {
     const lines = [];
     if (out.summary) lines.push(`**Zusammenfassung:** ${out.summary}`);
@@ -649,6 +790,17 @@ function renderPlanMarkdown(out) {
         out.architect_explore.findings.forEach(f => lines.push(`- ${f}`));
         const calls = out.architect_explore.tool_calls?.length || 0;
         if (calls) lines.push(`\n_Basierend auf ${calls} Tool-Call(s)._`);
+    }
+    if (out.architect_explore?.evidence_probe?.required) {
+        const ev = out.architect_explore.evidence_probe;
+        lines.push(`\n**Evidence-Contract:**`);
+        lines.push(`- UI-Entfernung erkannt: ja`);
+        lines.push(`- Zielbegriffe: ${(ev.terms || []).join(', ') || '-'}`);
+        lines.push(`- Positiver Codefund: ${ev.found ? 'ja' : 'nein'}`);
+        if (ev.paths?.length) lines.push(`- Belegte Zielpfade: ${ev.paths.map(p => '`' + p + '`').join(', ')}`);
+        if (out.architect_explore.evidence_violations?.length) {
+            out.architect_explore.evidence_violations.forEach(v => lines.push(`- Evidence-Warnung: ${v}`));
+        }
     }
     if (out.architect_explore?.non_existent?.length) {
         lines.push(`\n**Verbotene Annahmen (per Tool als nicht-existent verifiziert):**`);
@@ -721,14 +873,18 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     let exploreNonExistent = [];
     let toolTrace = [];
     let exploreTokens = { prompt: 0, completion: 0 };
+    let evidenceProbe = { required: false, found: false, terms: [], paths: [], findings: [], trace: [] };
     if (ARCHITECT_TOOLS_ENABLED && integration) {
+        evidenceProbe = await runUiRemovalEvidenceProbe({ codingPrompt, integration });
+        exploreFindings.push(...evidenceProbe.findings);
+        toolTrace.push(...evidenceProbe.trace);
         const result = await runArchitectExplore({
             ticket, staff, codingPrompt, integration, repoTree, systemName,
-            budget: ARCHITECT_TOOLS_BUDGET
+            budget: evidenceProbe.required ? ARCHITECT_UI_REMOVAL_BUDGET : ARCHITECT_TOOLS_BUDGET
         });
-        exploreFindings = result.findings;
-        exploreNonExistent = result.nonExistent;
-        toolTrace = result.trace;
+        exploreFindings.push(...result.findings);
+        exploreNonExistent.push(...result.nonExistent);
+        toolTrace.push(...result.trace);
         exploreTokens = result.tokens;
         wfInfo(`Stage:PLANNING explore done | calls=${toolTrace.length} findings=${exploreFindings.length} non_existent=${exploreNonExistent.length} prompt_tok=${exploreTokens.prompt} compl_tok=${exploreTokens.completion}`);
     } else if (!integration) {
@@ -753,7 +909,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         currentFiles: boundaryForOverview,
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo,
-        exploreFindings, exploreNonExistent
+        exploreFindings, exploreNonExistent,
+        architectEvidence: evidenceProbe
     });
 
     let r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -774,7 +931,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 currentFiles: boundaryForOverview,
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo,
-                exploreFindings, exploreNonExistent
+                exploreFindings, exploreNonExistent,
+                architectEvidence: evidenceProbe
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
             out = r.parsed || out;
@@ -790,6 +948,35 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     }
 
     normalizePlanningOutput(out);
+
+    if (evidenceProbe.required && evidenceProbe.found) {
+        const evidencePaths = new Set(evidenceProbe.paths || []);
+        const hasEvidencePath = out.allowed_files.some(path => evidencePaths.has(path));
+        if (!hasEvidencePath) {
+            const evidenceCorrection = [
+                'SYSTEM-EVIDENCE-CORRECTION:',
+                `Dieses UI-Entfernungs-Ticket hat konkrete Zielbelege in: ${(evidenceProbe.paths || []).join(', ')}.`,
+                'Dein Plan darf KEINEN anderen Scope/allowed_file verwenden.',
+                'Erstelle den Plan neu und setze allowed_files auf den belegten Zielpfad. Ignoriere plausibel wirkende, aber unbelegte UI-Screens.'
+            ].join('\n');
+            wfWarn('Stage:PLANNING re-running with evidence correction', evidenceCorrection);
+            const evidencePrompt = prompts.PLANNING.buildUser({
+                codingPrompt, repoTree,
+                currentFiles: boundaryForOverview,
+                resolverAnswers: [resolverAnswersText, evidenceCorrection].filter(Boolean).join('\n\n'),
+                systemName, repoInfo: planningRepoInfo,
+                exploreFindings, exploreNonExistent,
+                architectEvidence: evidenceProbe
+            });
+            const evidenceRun = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt: evidencePrompt });
+            if (evidenceRun.parsed) {
+                r = evidenceRun;
+                out = evidenceRun.parsed;
+                normalizePlanningOutput(out);
+                out.open_questions = [];
+            }
+        }
+    }
 
     // Konsistenz-Check: hat der Architect Begriffe verplant, die er selbst
     // als nicht-existent markiert hatte? Verstoesse landen automatisch in
@@ -824,6 +1011,14 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         }
     }
 
+    const evidenceViolations = enforceEvidenceBackedPlan(out, evidenceProbe);
+    if (evidenceViolations.length) {
+        evidenceViolations.forEach(v => {
+            out.risks.push(v);
+            wfWarn(`PLANNING evidence-contract`, v.slice(0, 240));
+        });
+    }
+
     // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
     if (toolTrace.length || exploreFindings.length || exploreNonExistent.length) {
         out.architect_explore = {
@@ -831,6 +1026,8 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             non_existent: exploreNonExistent,
             consistency_violations: consistencyViolations,
             tree_validation_warnings: treeValidation.warnings,
+            evidence_probe: evidenceProbe,
+            evidence_violations: evidenceViolations,
             tool_calls: toolTrace,
             tokens: exploreTokens
         };
@@ -952,13 +1149,31 @@ function checkPlanConsistency(out, nonExistent) {
     ].join('\n').toLowerCase();
 
     const violations = [];
+    const generic = new Set([
+        'existiert', 'keine', 'kein', 'nicht', 'vorhanden', 'gefunden', 'treffer', 'datei', 'funktion', 'tabelle', 'modul',
+        'scope', 'bereich', 'verifiziert', 'ui', 'screen', 'ansicht', 'komponente', 'component', 'components', 'button',
+        'arztbrief', 'befund', 'modus', 'mode', 'repo', 'pfad', 'handler', 'aufruf'
+    ]);
+
+    function extractNegatedTargets(entry) {
+        const text = String(entry || '');
+        const quoted = [];
+        const quoteRe = /['"`]([^'"`]{3,80})['"`]/g;
+        let m;
+        while ((m = quoteRe.exec(text)) !== null) {
+            const value = String(m[1] || '').trim().toLowerCase();
+            if (value && !generic.has(value)) quoted.push(value);
+        }
+        if (quoted.length) return [...new Set(quoted)];
+
+        return [...new Set((text.toLowerCase().match(/[a-z_./-][a-z0-9_./-]{4,}/g) || [])
+            .filter(t => !generic.has(t))
+            .filter(t => /[A-Z]/.test(t) || t.includes('/') || t.includes('_') || t.includes('-'))
+        )];
+    }
+
     for (const entry of nonExistent) {
-        const lower = String(entry).toLowerCase();
-        // Ignoriere generische Negations-Floskeln, picke Identifier-Tokens raus.
-        const tokens = (lower.match(/[a-z_][a-z0-9_]{4,}/g) || [])
-            .filter(t => !['existiert', 'keine', 'kein', 'nicht', 'vorhanden', 'gefunden', 'treffer', 'webhook_handler', 'datei', 'funktion', 'tabelle', 'modul'].includes(t))
-            .filter((t, i, a) => a.indexOf(t) === i);
-        // Pruefe jedes Token einzeln. Hit, wenn das Token im Plan vorkommt.
+        const tokens = extractNegatedTargets(entry);
         const hits = tokens.filter(t => planText.includes(t));
         if (hits.length) {
             violations.push({ entry, hit_tokens: hits.slice(0, 5) });
