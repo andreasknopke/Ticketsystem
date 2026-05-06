@@ -163,17 +163,71 @@ async function seed() {
             console.log('Schreibdienst Meilensteine hinzugefügt.');
         }
 
-        // Key-User zuweisen
+        // Externe Key-User pro Projekt anlegen
+        const seededKeyUsers = {
+            CuraFlow: [
+                {
+                    name: 'Mara König',
+                    email: 'mara.koenig@projekt.example',
+                    phone: '+49 30 555 0101',
+                    role: 'key_user',
+                    notes: 'Stationsleitung Innere Medizin',
+                    training_status: 'Basisschulung abgeschlossen',
+                    test_protocol: 'Ersten Pilottest auf Station A durchgeführt'
+                },
+                {
+                    name: 'David Scholz',
+                    email: 'david.scholz@projekt.example',
+                    phone: '+49 30 555 0102',
+                    role: 'evaluator',
+                    notes: 'Verantwortlich für Feedback aus dem Pilotbetrieb',
+                    training_status: 'Vertiefungsschulung geplant',
+                    test_protocol: 'Testfälle zur Dienstwunschlogik dokumentiert'
+                }
+            ],
+            Schreibdienst: [
+                {
+                    name: 'Lea Richter',
+                    email: 'lea.richter@projekt.example',
+                    phone: '+49 30 555 0201',
+                    role: 'key_user',
+                    notes: 'Key User Radiologie',
+                    training_status: 'Headset-Einweisung abgeschlossen',
+                    test_protocol: 'Offline-Diktat erfolgreich geprüft'
+                },
+                {
+                    name: 'Jonas Weber',
+                    email: 'jonas.weber@projekt.example',
+                    phone: '+49 30 555 0202',
+                    role: 'decision_maker',
+                    notes: 'Entscheider für flächendeckenden Rollout',
+                    training_status: 'Management-Briefing erfolgt',
+                    test_protocol: 'Abnahme nach RIS/KIS-Test ausstehend'
+                }
+            ]
+        };
+
         for (const proj of projectRows) {
-            for (const staff of staffRows.slice(0, 2)) {
+            const entries = seededKeyUsers[proj.name] || [];
+            for (const entry of entries) {
                 try {
-                    const role = staff.name === 'Michael' ? 'key_user' : staff.name === 'Andreas' ? 'evaluator' : 'decision_maker';
-                    await runQuery('INSERT INTO project_key_users (project_id, staff_id, role, notes) VALUES (?, ?, ?, ?)',
-                        [proj.id, staff.id, role, 'Seed-Key-User']);
-                } catch(e) {}
+                    await runQuery(`INSERT INTO project_key_users
+                        (project_id, name, email, phone, role, notes, training_status, test_protocol)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        proj.id,
+                        entry.name,
+                        entry.email,
+                        entry.phone,
+                        entry.role,
+                        entry.notes,
+                        entry.training_status,
+                        entry.test_protocol
+                    ]);
+                } catch (e) {}
             }
         }
-        console.log('Key-User hinzugefügt.');
+        console.log('Externe Key-User hinzugefügt.');
 
         // Wiki-Seiten für CuraFlow
         if (curaProj) {

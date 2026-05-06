@@ -24,6 +24,12 @@ function parseCheckbox(value) {
     return value === 'on' || value === '1' || value === 1 ? 1 : 0;
 }
 
+function normalizeOptionalText(value) {
+    if (value === undefined || value === null) return null;
+    const text = String(value).trim();
+    return text ? text : null;
+}
+
 function generateObfuscatedTicketId() {
     return crypto.randomUUID();
 }
@@ -711,6 +717,103 @@ function migrateTicketIdsToText() {
     });
 }
 
+function migrateProjectKeyUsersToExternalContacts() {
+    db.all('PRAGMA table_info(project_key_users)', (pragmaErr, rows) => {
+        if (pragmaErr) {
+            console.error('[migration] project_key_users PRAGMA fehlgeschlagen:', pragmaErr.message);
+            return;
+        }
+        if (!rows || rows.length === 0) return;
+
+        const cols = rows.map(col => col.name);
+        const staffIdCol = rows.find(col => col.name === 'staff_id');
+        const nameCol = rows.find(col => col.name === 'name');
+        const needsRebuild = !cols.includes('email')
+            || !cols.includes('phone')
+            || !cols.includes('training_status')
+            || !cols.includes('test_protocol')
+            || !nameCol
+            || Number(nameCol.notnull || 0) !== 1
+            || (staffIdCol && Number(staffIdCol.notnull || 0) === 1);
+
+        if (!needsRebuild) return;
+
+        console.log('[migration] project_key_users auf externe Projektkontakte umstellen...');
+
+        const staffIdExpr = cols.includes('staff_id') ? 'k.staff_id' : 'NULL';
+        const nameExpr = cols.includes('name') ? "NULLIF(TRIM(k.name), '')" : 'NULL';
+        const emailExpr = cols.includes('email') ? "NULLIF(TRIM(k.email), '')" : 'NULL';
+        const phoneExpr = cols.includes('phone') ? "NULLIF(TRIM(k.phone), '')" : 'NULL';
+        const notesExpr = cols.includes('notes') ? 'k.notes' : 'NULL';
+        const trainingExpr = cols.includes('training_status') ? 'k.training_status' : 'NULL';
+        const testExpr = cols.includes('test_protocol') ? 'k.test_protocol' : 'NULL';
+        const staffJoin = cols.includes('staff_id') ? 'LEFT JOIN staff s ON k.staff_id = s.id' : 'LEFT JOIN staff s ON 1 = 0';
+
+        const statements = [
+            'DROP TABLE IF EXISTS project_key_users__new',
+            'PRAGMA foreign_keys=OFF',
+            `CREATE TABLE project_key_users__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                staff_id INTEGER,
+                name TEXT NOT NULL,
+                email TEXT,
+                phone TEXT,
+                role TEXT CHECK(role IN ('key_user','evaluator','decision_maker')) DEFAULT 'key_user',
+                notes TEXT,
+                training_status TEXT,
+                test_protocol TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL
+            )`,
+            `INSERT INTO project_key_users__new (
+                id, project_id, staff_id, name, email, phone, role, notes, training_status, test_protocol
+            )
+            SELECT
+                k.id,
+                k.project_id,
+                ${staffIdExpr},
+                COALESCE(${nameExpr}, NULLIF(TRIM(s.name), ''), 'Unbenannter Key-User'),
+                COALESCE(${emailExpr}, NULLIF(TRIM(s.email), '')),
+                COALESCE(${phoneExpr}, NULLIF(TRIM(s.phone), '')),
+                COALESCE(k.role, 'key_user'),
+                ${notesExpr},
+                ${trainingExpr},
+                ${testExpr}
+            FROM project_key_users k
+            ${staffJoin}`,
+            'DROP TABLE project_key_users',
+            'ALTER TABLE project_key_users__new RENAME TO project_key_users',
+            'PRAGMA foreign_keys=ON'
+        ];
+
+        let index = 0;
+        const finish = () => {
+            console.log('[migration] project_key_users erfolgreich migriert');
+        };
+        const rollback = (error) => {
+            console.error('[migration] project_key_users Migration fehlgeschlagen:', error.message);
+            db.run('PRAGMA foreign_keys=ON');
+        };
+        const runNext = () => {
+            if (index >= statements.length) {
+                finish();
+                return;
+            }
+            db.run(statements[index], (runErr) => {
+                if (runErr) {
+                    rollback(runErr);
+                    return;
+                }
+                index += 1;
+                runNext();
+            });
+        };
+
+        db.serialize(runNext);
+    });
+}
+
 // Tabellen erstellen
 function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS audit_log (
@@ -960,12 +1063,23 @@ function initDb() {
     db.run(`CREATE TABLE IF NOT EXISTS project_key_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
-        staff_id INTEGER NOT NULL,
+        staff_id INTEGER,
+        name TEXT NOT NULL,
+        email TEXT,
+        phone TEXT,
         role TEXT CHECK(role IN ('key_user','evaluator','decision_maker')) DEFAULT 'key_user',
         notes TEXT,
+        training_status TEXT,
+        test_protocol TEXT,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
-    )`);
+        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL
+    )`, (err) => {
+        if (err) {
+            console.error('Project key users table error:', err.message);
+            return;
+        }
+        migrateProjectKeyUsersToExternalContacts();
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS project_documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3167,11 +3281,10 @@ app.get('/api/milestones/:milestoneId/steps/:stepId/attachments/:blobId', requir
 
 app.get('/api/projects/:projectId/keyusers', requireAuth, (req, res) => {
     db.all(`
-        SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
-        FROM project_key_users k
-        JOIN staff s ON k.staff_id = s.id
-        WHERE k.project_id = ?
-        ORDER BY k.role, s.name
+        SELECT *
+        FROM project_key_users
+        WHERE project_id = ?
+        ORDER BY role, name
     `, [req.params.projectId], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
@@ -3179,9 +3292,37 @@ app.get('/api/projects/:projectId/keyusers', requireAuth, (req, res) => {
 });
 
 app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, res) => {
-    const { staff_id, role, notes } = req.body;
-    db.run(`INSERT INTO project_key_users (project_id, staff_id, role, notes) VALUES (?, ?, ?, ?)`,
-        [req.params.projectId, staff_id, role || 'key_user', notes || null],
+    const allowedRoles = new Set(['key_user', 'evaluator', 'decision_maker']);
+    const keyUserId = normalizeOptionalText(req.body.id);
+    const name = normalizeOptionalText(req.body.name);
+    const email = normalizeOptionalText(req.body.email);
+    const phone = normalizeOptionalText(req.body.phone);
+    const notes = normalizeOptionalText(req.body.notes);
+    const trainingStatus = normalizeOptionalText(req.body.training_status);
+    const testProtocol = normalizeOptionalText(req.body.test_protocol);
+    const role = allowedRoles.has(req.body.role) ? req.body.role : 'key_user';
+
+    if (!name) {
+        return res.status(400).json({ error: 'Name ist erforderlich.' });
+    }
+
+    if (keyUserId) {
+        db.run(`UPDATE project_key_users
+                SET name = ?, email = ?, phone = ?, role = ?, notes = ?, training_status = ?, test_protocol = ?, staff_id = NULL
+                WHERE id = ? AND project_id = ?`,
+        [name, email, phone, role, notes, trainingStatus, testProtocol, keyUserId, req.params.projectId],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: 'Key-User nicht gefunden.' });
+            io.emit('keyuser:updated', { projectId: req.params.projectId });
+            res.json({ id: Number(keyUserId), updated: true });
+        });
+        return;
+    }
+
+    db.run(`INSERT INTO project_key_users (project_id, staff_id, name, email, phone, role, notes, training_status, test_protocol)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.params.projectId, name, email, phone, role, notes, trainingStatus, testProtocol],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
             io.emit('keyuser:updated', { projectId: req.params.projectId });
@@ -4901,9 +5042,10 @@ app.get('/project/:id', requireAuth, (req, res) => {
             db.all('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY sort_order, start_date',
                 [projectId], (err, milestones) => {
                     db.all(`
-                        SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
-                        FROM project_key_users k JOIN staff s ON k.staff_id = s.id
-                        WHERE k.project_id = ? ORDER BY k.role, s.name
+                        SELECT *
+                        FROM project_key_users
+                        WHERE project_id = ?
+                        ORDER BY role, name
                     `, [projectId], (err, keyUsers) => {
                         db.all(`SELECT t.*, st.name as assigned_name, s.name as system_name
                             FROM tickets t LEFT JOIN staff st ON t.assigned_to = st.id
@@ -5027,19 +5169,17 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
         [req.params.id], (err, project) => {
             if (err || !project) return res.status(404).send('Projekt nicht gefunden');
             db.all(`
-                SELECT k.*, s.name as staff_name, s.email as staff_email, s.phone as staff_phone
-                FROM project_key_users k JOIN staff s ON k.staff_id = s.id
-                WHERE k.project_id = ? ORDER BY k.role, s.name
+                SELECT *
+                FROM project_key_users
+                WHERE project_id = ?
+                ORDER BY role, name
             `, [req.params.id], (err, keyUsers) => {
-                db.all('SELECT id, name FROM staff WHERE active = 1 ORDER BY name', [], (err, staffList) => {
-                    res.render('project-keyusers', {
-                        project,
-                        keyUsers: keyUsers || [],
-                        staffList: staffList || [],
-                        user: req.session.user,
-                        role: req.session.role || 'user',
-                        canManage: isAdminRole(req.session.role)
-                    });
+                res.render('project-keyusers', {
+                    project,
+                    keyUsers: keyUsers || [],
+                    user: req.session.user,
+                    role: req.session.role || 'user',
+                    canManage: isAdminRole(req.session.role)
                 });
             });
         });
