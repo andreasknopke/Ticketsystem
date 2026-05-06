@@ -72,6 +72,20 @@ Triage-Zusammenfassung: ${triageSummary || '-'}
 Triage-Empfehlung: ${triageAction || '-'}`
 };
 
+function buildArchitectSearchHints(codingPrompt) {
+  const text = String(codingPrompt || '');
+  const isUiTicket = /button|modal|dialog|dropdown|select|input|textarea|checkbox|radio|label|placeholder|render|layout|component|page|ui|frontend|css|style|icon|tooltip|banner|formatier|klassifiz|docx|kopier|ansicht/i.test(text);
+  const hints = [
+    'Begrenze grep/list_dir zuerst auf fachlich passende Pfade statt breit ueber den ganzen Repo-Baum zu suchen.',
+    'Ignoriere standardmaessig docs/, tickets/, artifacts/, README/ und andere Dossier-/Dokupfade, sofern das Ticket nicht explizit Doku betrifft.',
+    'Import-/Export-only Treffer, Re-Exports und Kommentare zaehlen NICHT als Existenzbeleg fuer ein Feature. Suche nach Render-, Handler-, fetch- oder persistenter UI-/Business-Logik.'
+  ];
+  if (isUiTicket) {
+    hints.unshift('UI-/Frontend-Ticket erkannt: beginne mit app/, components/, src/, pages/ oder ui/-Pfade, bevor du lib/ oder generische Glue-Code-Dateien pruefst.');
+  }
+  return hints.map(hint => `- ${hint}`).join('\n');
+}
+
 // -----------------------------------------------------------------------------
 // PLANNING_EXPLORE (Architect, Pre-Plan) — ReAct-Loop mit Tools
 // Ziel: Bevor der Architect den finalen Plan schreibt, kann er gezielt
@@ -95,6 +109,9 @@ HARTE REGELN — werden vom System geprueft:
   per Tool verifiziert hast. Wenn du etwas vermutest, pruefe es zuerst.
 - Wenn ein Tool-Call ein Symbol/eine Datei nicht findet, suche aktiv mit grep
   nach dem realen Namen, BEVOR du einen Schritt darum herum baust.
+- Ein leeres oder schwaches Doku-/Import-/Export-Ergebnis ist KEIN Beweis fuer
+  Nicht-Existenz. Fuer "non_existent" musst du in fachlich passenden Pfaden
+  gesucht haben.
 - Knappe, gezielte Calls. Maximal die Zeilen, die du wirklich brauchst.
 - Bevor du "done": true setzt, gehe deine eigenen Findings durch und stelle
   sicher: jeder Punkt, den du spaeter im Plan ansprechen willst, ist entweder
@@ -122,6 +139,7 @@ Wenn done=true, lass tool=null und args={}. Die naechste Antwort wird der Plan.`
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+      parts.push(`\n--- SEARCH-HINWEISE ---\n${buildArchitectSearchHints(codingPrompt)}`);
         parts.push(`\n--- TOOLS ---\n${toolDescriptions}`);
         if (repoTree) parts.push(`\n--- REPO-TREE (zum Orientieren) ---\n${repoTree}`);
         if (Array.isArray(history) && history.length) {

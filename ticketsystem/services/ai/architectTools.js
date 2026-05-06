@@ -16,6 +16,13 @@ const MAX_GREP_FILES = 200;                     // max. Dateien je grep-Aufruf
 const MAX_READ_LINES = 200;                     // max. Zeilen per read_file
 const MAX_LIST_ENTRIES = 200;                   // max. Eintraege in list_dir
 const MAX_TREE_ENTRIES = 1000;                  // max. Eintraege in list_tree
+const EXCLUDED_SEARCH_PATH_RE = /(^|\/)(docs?|tickets?|artifacts?|coverage|dist|build|node_modules|\.git|\.next|\.cache|cache)(\/|$)/i;
+const UI_PRIORITY_PATH_RE = /(^|\/)(app|src|components|pages|ui)(\/|$)/i;
+const SOURCE_FILE_RE = /\.(tsx|jsx|ts|js|mjs|cjs|css|scss|sass|less|html|ejs)$/i;
+const DOC_FILE_RE = /(^|\/)(README|CHANGELOG)\.md$|\.md$/i;
+const WEAK_GREP_LINE_RE = /^\s*(import|export)\b|require\(|^\s*\/\/|^\s*\/\*|^\s*\*|^\s*#/;
+const UI_PATTERN_HINT_RE = /button|modal|dialog|dropdown|select|input|textarea|checkbox|radio|toggle|label|placeholder|class(name)?|onclick|render|component|page|layout|icon|tooltip|banner|formatier|klassifiz|docx|copy|ui|frontend|css|style/i;
+const UI_LINE_HINT_RE = /<button\b|\bbutton\b|onClick=|className=|title=|aria-label=|placeholder=|<label\b|handle[A-Z]\w*|fetch\(|href=|disabled=|type=\"button\"/;
 
 // Sehr grobe Glob -> RegExp Konvertierung (* und **). Ausreichend fuer
 // Pfade wie "ticketsystem/**/*.js" oder "**/*.md".
@@ -32,6 +39,48 @@ function globToRegex(glob) {
 function safeStr(s, max = 200) {
     if (typeof s !== 'string') return '';
     return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+function looksLikeUiSearch(pattern, glob) {
+    const haystack = `${pattern || ''} ${glob || ''}`;
+    return UI_PATTERN_HINT_RE.test(haystack);
+}
+
+function globExplicitlyTargetsExcluded(glob) {
+    if (!glob || typeof glob !== 'string') return false;
+    return /(docs?|tickets?|artifacts?|\.md|README|CHANGELOG)/i.test(glob);
+}
+
+function shouldIgnoreSearchPath(filePath, glob) {
+    if (!filePath) return true;
+    if (globExplicitlyTargetsExcluded(glob)) return false;
+    if (EXCLUDED_SEARCH_PATH_RE.test(filePath)) return true;
+    if (DOC_FILE_RE.test(filePath) && !/package\.json$/i.test(filePath)) return true;
+    return false;
+}
+
+function scoreCandidatePath(filePath, isUiSearch) {
+    let score = 0;
+    if (SOURCE_FILE_RE.test(filePath)) score += 60;
+    if (/package\.json$/i.test(filePath)) score += 10;
+    if (/\.(tsx|jsx)$/i.test(filePath)) score += 40;
+    if (/\.(ts|js|ejs|html)$/i.test(filePath)) score += 20;
+    if (isUiSearch && UI_PRIORITY_PATH_RE.test(filePath)) score += 140;
+    if (isUiSearch && /(^|\/)(lib|hooks)(\/|$)/i.test(filePath)) score += 20;
+    if (/(^|\/)(tests?|__tests__|fixtures)(\/|$)/i.test(filePath)) score -= 40;
+    return score;
+}
+
+function scoreGrepLine(filePath, line, isUiSearch) {
+    let score = scoreCandidatePath(filePath, isUiSearch);
+    const text = typeof line === 'string' ? line.trim() : '';
+    if (!text) return score - 50;
+    if (WEAK_GREP_LINE_RE.test(text)) score -= 180;
+    if (/^\s*<\/?[A-Z]/.test(text)) score += 10;
+    if (isUiSearch && UI_LINE_HINT_RE.test(text)) score += 150;
+    if (/\bfunction\b|=>|async function|const\s+handle[A-Z]/.test(text)) score += 20;
+    if (/\btitle\s*=|\bplaceholder\s*=|\baria-label\s*=/.test(text)) score += 20;
+    return score;
 }
 
 // ---- Tool: list_tree -------------------------------------------------------
@@ -104,6 +153,7 @@ async function tool_grep({ integration, pattern, glob }) {
     catch (e) { return { error: `Ungueltige Regex: ${e.message}` }; }
 
     try {
+        const isUiSearch = looksLikeUiSearch(pattern, glob);
         const tree = await fetchRepoTreeLight(integration, { maxEntries: 2000 });
         const text = typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.join('\n') : String(tree || '');
         let candidates = text.split('\n').filter(p => p && !p.endsWith('/'));
@@ -111,9 +161,15 @@ async function tool_grep({ integration, pattern, glob }) {
             const gre = globToRegex(glob);
             if (gre) candidates = candidates.filter(p => gre.test(p));
         }
-        // Bevorzugt Source-Files, sonst alphabetisch
+        candidates = candidates.filter(filePath => !shouldIgnoreSearchPath(filePath, glob));
+        // Bevorzugt relevante Source-Files statt alphabetischem Zufall.
         candidates = candidates
-            .sort((a, b) => a.localeCompare(b))
+            .map(filePath => ({ filePath, score: scoreCandidatePath(filePath, isUiSearch) }))
+            .sort((left, right) => {
+                if (right.score !== left.score) return right.score - left.score;
+                return left.filePath.localeCompare(right.filePath);
+            })
+            .map(entry => entry.filePath)
             .slice(0, MAX_GREP_FILES);
         if (!candidates.length) return { result: '(kein Datei-Treffer fuer dieses Glob)' };
         const files = await fetchFilesFromRepo(integration, candidates, { maxBytes: MAX_GREP_BYTES_PER_FILE });
@@ -123,18 +179,27 @@ async function tool_grep({ integration, pattern, glob }) {
             const lines = f.content.split('\n');
             for (let i = 0; i < lines.length; i++) {
                 if (re.test(lines[i])) {
-                    hits.push(`${f.path}:${i + 1}: ${safeStr(lines[i].trim(), 240)}`);
-                    if (hits.length >= MAX_GREP_HITS) break;
+                    hits.push({
+                        score: scoreGrepLine(f.path, lines[i], isUiSearch),
+                        filePath: f.path,
+                        lineNumber: i + 1,
+                        text: safeStr(lines[i].trim(), 240)
+                    });
                 }
             }
-            if (hits.length >= MAX_GREP_HITS) break;
         }
         if (!hits.length) return { result: `(keine Treffer fuer Pattern "${pattern}" in ${candidates.length} Dateien)` };
+        hits.sort((left, right) => {
+            if (right.score !== left.score) return right.score - left.score;
+            if (left.filePath !== right.filePath) return left.filePath.localeCompare(right.filePath);
+            return left.lineNumber - right.lineNumber;
+        });
+        const topHits = hits.slice(0, MAX_GREP_HITS);
         return {
-            result: hits.join('\n'),
+            result: topHits.map(hit => `${hit.filePath}:${hit.lineNumber}: ${hit.text}`).join('\n'),
             files_searched: candidates.length,
-            hit_count: hits.length,
-            truncated: hits.length >= MAX_GREP_HITS
+            hit_count: topHits.length,
+            truncated: hits.length > MAX_GREP_HITS
         };
     } catch (e) {
         return { error: `grep fehlgeschlagen: ${e.message}` };
