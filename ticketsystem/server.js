@@ -21,7 +21,7 @@ function verifyPassword(password, stored) {
 }
 
 function parseCheckbox(value) {
-    return value === 'on' || value === '1' || value === 1 ? 1 : 0;
+    return value === true || value === 'true' || value === 'on' || value === '1' || value === 1 ? 1 : 0;
 }
 
 function normalizeOptionalText(value) {
@@ -2673,6 +2673,7 @@ app.get('/api/feedback/stats', requireAuth, requireAdmin, (req, res) => {
 
 app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireApiKey, (req, res) => {
     const d = req.body;
+    const skipBotPipeline = parseCheckbox(d.skip_bot_pipeline);
     d.title = normalizeText(d.title || 'Unbenannt', 200) || 'Unbenannt';
     d.description = normalizeText(d.description || '', 5000);
     d.username = normalizeText(d.username || d.reporterName || d.userName || '', 120) || null;
@@ -2751,7 +2752,7 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
             }
         });
         // KI-Workflow asynchron starten
-        workflowEngine.startForTicket(ticketId).catch(e => console.error('Workflow-Start (API):', e.message));
+        workflowEngine.startForTicket(ticketId, { skipBotPipeline: !!skipBotPipeline }).catch(e => console.error('Workflow-Start (API):', e.message));
         return res.status(201).json({
             id: ticketId,
             status: 'created',
@@ -4928,6 +4929,7 @@ app.post('/ticket/:id/notes', requireAuth, (req, res) => {
 
 app.post('/ticket/new', requireAuth, (req, res) => {
     const d = req.body;
+    const skipBotPipeline = canManageTickets(req) ? parseCheckbox(d.skip_bot_pipeline) : 0;
     d.title = normalizeText(d.title || 'Unbenannt', 200) || 'Unbenannt';
     d.description = normalizeText(d.description || '', 5000);
     d.username = normalizeText(d.username || req.session.user, 120) || req.session.user;
@@ -4974,7 +4976,7 @@ app.post('/ticket/new', requireAuth, (req, res) => {
             }
         });
         // KI-Workflow asynchron starten
-        workflowEngine.startForTicket(ticketId).catch(e => console.error('Workflow-Start (UI):', e.message));
+        workflowEngine.startForTicket(ticketId, { skipBotPipeline: !!skipBotPipeline }).catch(e => console.error('Workflow-Start (UI):', e.message));
         res.redirect(`/ticket/${ticketId}`);
     });
 });

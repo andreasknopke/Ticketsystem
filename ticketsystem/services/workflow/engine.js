@@ -447,6 +447,25 @@ async function startStep(runId, stage, sortOrder, staff) {
     return r.lastID;
 }
 
+async function waitForHumanApproval(runId, ticket, sortOrder, payload) {
+    const approverStaff = await pickStaff('approval', 'human');
+    const stepId = await startStep(runId, 'approval', sortOrder, approverStaff);
+    await run(`UPDATE ticket_workflow_steps SET status='waiting_human', output_payload=? WHERE id = ?`, [JSON.stringify(payload || {}), stepId]);
+    await run(`UPDATE ticket_workflow_runs SET status='waiting_human', current_stage='approval' WHERE id = ?`, [runId]);
+    if (approverStaff) {
+        await run('UPDATE tickets SET assigned_to = ? WHERE id = ?', [approverStaff.id, ticket.id]);
+    }
+    emit('workflow:waiting_human', {
+        runId,
+        ticketId: ticket.id,
+        stepId,
+        staff_id: approverStaff?.id || null,
+        stage: 'approval',
+        phase: payload?.phase || null
+    });
+    return { stepId, approverStaff };
+}
+
 async function finishStep(stepId, { status, output, ai, actualApproverId }) {
     await run(`UPDATE ticket_workflow_steps SET
         status = ?, output_payload = ?, provider = ?, model = ?,
@@ -1327,7 +1346,8 @@ async function loadDefaultWorkflow() {
     return { workflow: wf, stages };
 }
 
-async function startForTicket(ticketId) {
+async function startForTicket(ticketId, options) {
+    options = options || {};
     if ((process.env.AI_WORKFLOW_ENABLED || 'true').toLowerCase() !== 'true') {
         wfInfo(`startForTicket ticket=${ticketId} SKIP: AI_WORKFLOW_ENABLED=false`);
         return null;
@@ -1355,6 +1375,17 @@ async function startForTicket(ticketId) {
     await run('UPDATE tickets SET workflow_run_id = ? WHERE id = ?', [runId, ticketId]);
     emit('workflow:started', { ticketId, runId });
     wfInfo(`WORKFLOW START | ticket=${ticketId} run=${runId} type=${ticket.type} priority=${ticket.priority} system_id=${ticket.system_id || 'none'}`);
+
+    if (options.skipBotPipeline) {
+        wfInfo(`WORKFLOW DIRECT_APPROVAL | ticket=${ticketId} run=${runId} skipBotPipeline=true`);
+        await waitForHumanApproval(runId, ticket, wf.stages[0]?.sort_order || 1, {
+            phase: 'final',
+            decision_context: 'manual_ticket_skip_bot_pipeline',
+            markdown: 'Bot-Pipeline wurde beim Erstellen dieses manuellen Tickets uebersprungen. Das Ticket wartet direkt auf menschliche Freigabe.',
+            note: 'Bot-Pipeline uebersprungen'
+        });
+        return runId;
+    }
 
     runStages(runId, ticket, wf.stages).catch(async (err) => {
         wfError(`Workflow-Engine FATAL ticket=${ticketId} run=${runId}`, err.message);
@@ -1604,7 +1635,8 @@ async function decideHumanStep(runId, stepId, decision, note, actor, options) {
         const codingDone = await getRow(
             `SELECT COUNT(*) AS c FROM ticket_workflow_steps
              WHERE run_id = ? AND stage = 'coding' AND status = 'done'`, [runId]);
-        const isDispatchPhase = (codingDone?.c || 0) === 0;
+        const forcedFinalPhase = stepOutput?.phase === 'final';
+        const isDispatchPhase = !forcedFinalPhase && (codingDone?.c || 0) === 0;
         wfInfo(`decideHumanStep APPROVAL | run=${runId} isDispatch=${isDispatchPhase} codingDone=${codingDone?.c || 0}`);
 
         if (isDispatchPhase && (decision === 'dispatch_medium' || decision === 'dispatch_high')) {

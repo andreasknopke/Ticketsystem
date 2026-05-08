@@ -168,6 +168,16 @@
                     </div>
                     <% } %>
 
+                    <% if (canManageTickets) { %>
+                    <label class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                        <input type="checkbox" name="skip_bot_pipeline" value="1" class="mt-1 rounded border-gray-300 text-primary-600 focus:ring-primary-500">
+                        <span>
+                            <span class="block text-sm font-medium text-amber-900">Bot-Pipeline überspringen</span>
+                            <span class="block text-xs text-amber-800 mt-1">Springt direkt zu Approve by human, damit bereits anderswo umgesetzte Features nachträglich als Ticket erfasst werden können.</span>
+                        </span>
+                    </label>
+                    <% } %>
+
                     <div class="flex gap-4 pt-4">
                         <button type="submit" class="btn-primary">Ticket erstellen</button>
                         <a href="/" class="btn-secondary">Abbrechen</a>
