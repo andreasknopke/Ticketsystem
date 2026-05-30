@@ -259,6 +259,9 @@
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-umgesetzt" style="background:#ccfbf1;border-color:#5eead4;color:#115e59"><input type="checkbox" class="status-filter rounded" value="umgesetzt" checked onchange="filterTable()"> Umgesetzt</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-überprüft" style="background:#e0e7ff;border-color:#a5b4fc;color:#3730a3"><input type="checkbox" class="status-filter rounded" value="überprüft" checked onchange="filterTable()"> Überprüft</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border opacity-60 hover:opacity-100" id="lbl-geschlossen" style="background:#d1fae5;border-color:#6ee7b7;color:#065f46"><input type="checkbox" class="status-filter rounded" value="geschlossen" onchange="filterTable()"> Geschlossen</label>
+                    <select id="systemFilter" class="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white" onchange="filterTable()" aria-label="Nach System filtern">
+                        <option value="">Alle Systeme</option>
+                    </select>
             </div>
             <div class="card-body p-0">
                 <div class="overflow-x-auto">
@@ -277,7 +280,7 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="ticketTableBody">
                             <% tickets.forEach(t => { %>
-                            <tr class="hover:bg-gray-50" data-status="<%= t.status %>" data-id="<%= t.id %>" <%= pinnedIds.includes(t.id) ? 'style="background:#fff7ed"' : '' %>>
+                            <tr class="hover:bg-gray-50" data-status="<%= t.status %>" data-id="<%= t.id %>" data-system-id="<%= t.system_id || '' %>" <%= pinnedIds.includes(t.id) ? 'style="background:#fff7ed"' : '' %>>
                                 <td class="px-2 py-4 whitespace-nowrap text-center">
                                     <button onclick="togglePin(event, <%= t.id %>)" class="text-lg leading-none <%= pinnedIds.includes(t.id) ? 'text-orange-500' : 'text-gray-300 hover:text-orange-400' %>" title="<%= pinnedIds.includes(t.id) ? 'Angepinnt' : 'Anpinnen' %>"><%= pinnedIds.includes(t.id) ? '📌' : '📍' %></button>
                                 </td>
@@ -349,14 +352,39 @@
             }
         });
 
-        // Status-Filter
+        // Status- und System-Filter
         function filterTable() {
             const checked = Array.from(document.querySelectorAll('.status-filter:checked')).map(cb => cb.value);
+            const systemSelect = document.getElementById('systemFilter');
+            const selectedSystem = systemSelect ? systemSelect.value : '';
             document.querySelectorAll('#ticketTableBody tr').forEach(row => {
-                row.style.display = checked.includes(row.dataset.status) ? '' : 'none';
+                const statusOk = checked.includes(row.dataset.status);
+                const systemOk = !selectedSystem || row.dataset.systemId === selectedSystem;
+                row.style.display = (statusOk && systemOk) ? '' : 'none';
             });
         }
         filterTable(); // initial aufrufen (geschlossen standardmäßig ausgeblendet)
+
+        // System-Dropdown befuellen
+        (function loadSystemFilter() {
+            const select = document.getElementById('systemFilter');
+            if (!select) return;
+            fetch('/api/systems', { credentials: 'same-origin' })
+                .then(resp => resp.ok ? resp.json() : [])
+                .then(systems => {
+                    if (!Array.isArray(systems)) return;
+                    systems
+                        .slice()
+                        .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                        .forEach(sys => {
+                            const opt = document.createElement('option');
+                            opt.value = String(sys.id);
+                            opt.textContent = sys.name || ('System #' + sys.id);
+                            select.appendChild(opt);
+                        });
+                })
+                .catch(() => { /* still works without dropdown options */ });
+        })();
 
         // Pin-Toggle
         async function togglePin(event, ticketId) {
