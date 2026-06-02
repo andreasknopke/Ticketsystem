@@ -1081,6 +1081,28 @@ function initDb() {
         migrateProjectKeyUsersToExternalContacts();
     });
 
+    db.run(`CREATE TABLE IF NOT EXISTS project_training_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_training_goals_project ON project_training_goals(project_id)`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS key_user_training_selections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_user_id INTEGER NOT NULL,
+        training_goal_id INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (key_user_id) REFERENCES project_key_users(id) ON DELETE CASCADE,
+        FOREIGN KEY (training_goal_id) REFERENCES project_training_goals(id) ON DELETE CASCADE,
+        UNIQUE(key_user_id, training_goal_id)
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_keyuser ON key_user_training_selections(key_user_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_goal ON key_user_training_selections(training_goal_id)`);
+
     db.run(`CREATE TABLE IF NOT EXISTS project_documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
@@ -3280,6 +3302,63 @@ app.get('/api/milestones/:milestoneId/steps/:stepId/attachments/:blobId', requir
 
 // --- API: Key Users ---
 
+// --- Helpers: training goals ---
+
+function sanitizeTrainingGoalIds(raw) {
+    if (!Array.isArray(raw)) return null;
+    const cleaned = [];
+    const seen = new Set();
+    for (const v of raw) {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n <= 0) continue;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        cleaned.push(n);
+    }
+    return cleaned;
+}
+
+function replaceKeyUserTrainingGoals(keyUserId, projectId, goalIds, cb) {
+    const ids = goalIds || [];
+    const finish = (err) => cb(err);
+    const apply = () => {
+        db.serialize(() => {
+            db.run('BEGIN IMMEDIATE', (beginErr) => {
+                if (beginErr) return finish(beginErr);
+                db.run('DELETE FROM key_user_training_selections WHERE key_user_id = ?', [keyUserId], (delErr) => {
+                    if (delErr) return db.run('ROLLBACK', () => finish(delErr));
+                    if (ids.length === 0) {
+                        return db.run('COMMIT', (cErr) => finish(cErr || null));
+                    }
+                    const stmt = db.prepare('INSERT INTO key_user_training_selections (key_user_id, training_goal_id) VALUES (?, ?)');
+                    let insertErr = null;
+                    for (const gid of ids) {
+                        stmt.run([keyUserId, gid], (e) => { if (e && !insertErr) insertErr = e; });
+                    }
+                    stmt.finalize((finErr) => {
+                        const e = insertErr || finErr;
+                        if (e) return db.run('ROLLBACK', () => finish(e));
+                        db.run('COMMIT', (cErr) => finish(cErr || null));
+                    });
+                });
+            });
+        });
+    };
+
+    if (ids.length === 0) return apply();
+    const placeholders = ids.map(() => '?').join(',');
+    db.all(`SELECT id FROM project_training_goals WHERE project_id = ? AND id IN (${placeholders})`,
+        [projectId, ...ids], (err, rows) => {
+            if (err) return cb(err);
+            if (!rows || rows.length !== ids.length) {
+                const error = new Error('Ungueltige training_goal_ids.');
+                error.statusCode = 400;
+                return cb(error);
+            }
+            apply();
+        });
+}
+
 app.get('/api/projects/:projectId/keyusers', requireAuth, (req, res) => {
     db.all(`
         SELECT *
@@ -3288,8 +3367,78 @@ app.get('/api/projects/:projectId/keyusers', requireAuth, (req, res) => {
         ORDER BY role, name
     `, [req.params.projectId], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
+        db.all(`
+            SELECT s.key_user_id, s.training_goal_id
+            FROM key_user_training_selections s
+            JOIN project_key_users k ON k.id = s.key_user_id
+            WHERE k.project_id = ?
+        `, [req.params.projectId], (selErr, sels) => {
+            if (selErr) return res.status(500).json({ error: selErr.message });
+            const byKey = new Map();
+            (sels || []).forEach(s => {
+                if (!byKey.has(s.key_user_id)) byKey.set(s.key_user_id, []);
+                byKey.get(s.key_user_id).push(s.training_goal_id);
+            });
+            res.json((rows || []).map(r => ({ ...r, training_goal_ids: byKey.get(r.id) || [] })));
+        });
     });
+});
+
+// --- API: Training Goals (Projekt) ---
+
+app.get('/api/projects/:projectId/training-goals', requireAuth, (req, res) => {
+    db.all(`SELECT id, project_id, label, sort_order, created_at
+            FROM project_training_goals
+            WHERE project_id = ?
+            ORDER BY sort_order, id`, [req.params.projectId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows || []);
+    });
+});
+
+app.post('/api/projects/:projectId/training-goals', requireAuth, requireAdmin, (req, res) => {
+    const label = normalizeOptionalText(req.body.label);
+    if (!label) return res.status(400).json({ error: 'Label ist erforderlich.' });
+    const sortOrder = Number.isInteger(Number(req.body.sort_order)) ? Number(req.body.sort_order) : 0;
+    db.run(`INSERT INTO project_training_goals (project_id, label, sort_order) VALUES (?, ?, ?)`,
+        [req.params.projectId, label, sortOrder], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            io.emit('keyuser:updated', { projectId: req.params.projectId });
+            res.status(201).json({ id: this.lastID, label, sort_order: sortOrder });
+        });
+});
+
+app.put('/api/projects/:projectId/training-goals/:goalId', requireAuth, requireAdmin, (req, res) => {
+    const label = normalizeOptionalText(req.body.label);
+    if (!label) return res.status(400).json({ error: 'Label ist erforderlich.' });
+    const sortOrder = Number.isInteger(Number(req.body.sort_order)) ? Number(req.body.sort_order) : 0;
+    db.run(`UPDATE project_training_goals SET label = ?, sort_order = ?
+            WHERE id = ? AND project_id = ?`,
+        [label, sortOrder, req.params.goalId, req.params.projectId], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: 'Schulungsziel nicht gefunden.' });
+            io.emit('keyuser:updated', { projectId: req.params.projectId });
+            res.json({ id: Number(req.params.goalId), updated: true });
+        });
+});
+
+app.delete('/api/projects/:projectId/training-goals/:goalId', requireAuth, requireAdmin, (req, res) => {
+    db.get(`SELECT COUNT(*) AS cnt FROM key_user_training_selections s
+            JOIN project_key_users k ON k.id = s.key_user_id
+            WHERE s.training_goal_id = ? AND k.project_id = ?`,
+        [req.params.goalId, req.params.projectId], (err, row) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (row && row.cnt > 0) {
+                return res.status(409).json({ error: 'Schulungsziel ist Key-Usern zugeordnet und kann nicht geloescht werden.', assigned: row.cnt });
+            }
+            db.run(`DELETE FROM project_training_goals WHERE id = ? AND project_id = ?`,
+                [req.params.goalId, req.params.projectId], function(delErr) {
+                    if (delErr) return res.status(500).json({ error: delErr.message });
+                    if (this.changes === 0) return res.status(404).json({ error: 'Schulungsziel nicht gefunden.' });
+                    io.emit('keyuser:updated', { projectId: req.params.projectId });
+                    res.json({ status: 'deleted' });
+                });
+        });
 });
 
 app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, res) => {
@@ -3302,10 +3451,16 @@ app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, r
     const trainingStatus = normalizeOptionalText(req.body.training_status);
     const testProtocol = normalizeOptionalText(req.body.test_protocol);
     const role = allowedRoles.has(req.body.role) ? req.body.role : 'key_user';
+    const goalIds = sanitizeTrainingGoalIds(req.body.training_goal_ids);
 
     if (!name) {
         return res.status(400).json({ error: 'Name ist erforderlich.' });
     }
+
+    const applyGoals = (kuId, done) => {
+        if (goalIds === null) return done(null);
+        replaceKeyUserTrainingGoals(kuId, req.params.projectId, goalIds, done);
+    };
 
     if (keyUserId) {
         db.run(`UPDATE project_key_users
@@ -3315,8 +3470,11 @@ app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, r
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
             if (this.changes === 0) return res.status(404).json({ error: 'Key-User nicht gefunden.' });
-            io.emit('keyuser:updated', { projectId: req.params.projectId });
-            res.json({ id: Number(keyUserId), updated: true });
+            applyGoals(Number(keyUserId), (gErr) => {
+                if (gErr) return res.status(gErr.statusCode || 500).json({ error: gErr.message });
+                io.emit('keyuser:updated', { projectId: req.params.projectId });
+                res.json({ id: Number(keyUserId), updated: true });
+            });
         });
         return;
     }
@@ -3326,8 +3484,12 @@ app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, r
         [req.params.projectId, name, email, phone, role, notes, trainingStatus, testProtocol],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
-            io.emit('keyuser:updated', { projectId: req.params.projectId });
-            res.status(201).json({ id: this.lastID });
+            const newId = this.lastID;
+            applyGoals(newId, (gErr) => {
+                if (gErr) return res.status(gErr.statusCode || 500).json({ error: gErr.message });
+                io.emit('keyuser:updated', { projectId: req.params.projectId });
+                res.status(201).json({ id: newId });
+            });
         });
 });
 
@@ -5176,12 +5338,27 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                 WHERE project_id = ?
                 ORDER BY role, name
             `, [req.params.id], (err, keyUsers) => {
-                res.render('project-keyusers', {
-                    project,
-                    keyUsers: keyUsers || [],
-                    user: req.session.user,
-                    role: req.session.role || 'user',
-                    canManage: isAdminRole(req.session.role)
+                db.all(`SELECT id, label, sort_order FROM project_training_goals
+                        WHERE project_id = ? ORDER BY sort_order, id`, [req.params.id], (gErr, goals) => {
+                    db.all(`SELECT s.key_user_id, s.training_goal_id
+                            FROM key_user_training_selections s
+                            JOIN project_key_users k ON k.id = s.key_user_id
+                            WHERE k.project_id = ?`, [req.params.id], (sErr, sels) => {
+                        const goalIdsByKeyUser = {};
+                        (sels || []).forEach(s => {
+                            if (!goalIdsByKeyUser[s.key_user_id]) goalIdsByKeyUser[s.key_user_id] = [];
+                            goalIdsByKeyUser[s.key_user_id].push(s.training_goal_id);
+                        });
+                        res.render('project-keyusers', {
+                            project,
+                            keyUsers: keyUsers || [],
+                            trainingGoals: goals || [],
+                            goalIdsByKeyUser,
+                            user: req.session.user,
+                            role: req.session.role || 'user',
+                            canManage: isAdminRole(req.session.role)
+                        });
+                    });
                 });
             });
         });
