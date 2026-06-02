@@ -1081,14 +1081,16 @@ function initDb() {
         migrateProjectKeyUsersToExternalContacts();
     });
 
+    // Hinweis: bewusst ohne FOREIGN KEY auf project_key_users, da die Legacy-Migration
+    // (migrateProjectKeyUsersToExternalContacts) project_key_users via DROP/RENAME neu aufbaut
+    // und SQLites moderne ALTER-Schema-Logik dabei dependent tables beschaedigen kann.
     db.run(`CREATE TABLE IF NOT EXISTS project_training_goals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
         label TEXT NOT NULL,
         sort_order INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-    )`);
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`, (err) => { if (err) console.error('project_training_goals table error:', err.message); });
     db.run(`CREATE INDEX IF NOT EXISTS idx_training_goals_project ON project_training_goals(project_id)`);
 
     db.run(`CREATE TABLE IF NOT EXISTS key_user_training_selections (
@@ -1096,10 +1098,8 @@ function initDb() {
         key_user_id INTEGER NOT NULL,
         training_goal_id INTEGER NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (key_user_id) REFERENCES project_key_users(id) ON DELETE CASCADE,
-        FOREIGN KEY (training_goal_id) REFERENCES project_training_goals(id) ON DELETE CASCADE,
         UNIQUE(key_user_id, training_goal_id)
-    )`);
+    )`, (err) => { if (err) console.error('key_user_training_selections table error:', err.message); });
     db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_keyuser ON key_user_training_selections(key_user_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_goal ON key_user_training_selections(training_goal_id)`);
 
@@ -3495,10 +3495,13 @@ app.post('/api/projects/:projectId/keyusers', requireAuth, requireAdmin, (req, r
 
 app.delete('/api/keyusers/:id', requireAuth, requireAdmin, (req, res) => {
     db.get('SELECT project_id FROM project_key_users WHERE id = ?', [req.params.id], (err, row) => {
-        db.run('DELETE FROM project_key_users WHERE id = ?', [req.params.id], function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            if (row) io.emit('keyuser:updated', { projectId: row.project_id });
-            res.json({ status: 'deleted' });
+        db.run('DELETE FROM key_user_training_selections WHERE key_user_id = ?', [req.params.id], (selErr) => {
+            if (selErr) return res.status(500).json({ error: selErr.message });
+            db.run('DELETE FROM project_key_users WHERE id = ?', [req.params.id], function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+                if (row) io.emit('keyuser:updated', { projectId: row.project_id });
+                res.json({ status: 'deleted' });
+            });
         });
     });
 });
