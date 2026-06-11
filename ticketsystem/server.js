@@ -479,7 +479,7 @@ function migrateTicketIdsToText() {
                 username TEXT,
                 console_logs TEXT,
                 software_info TEXT,
-                status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen',
+                status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft', 'verworfen')) DEFAULT 'offen',
                 priority TEXT CHECK(priority IN ('niedrig', 'mittel', 'hoch', 'kritisch')) DEFAULT 'mittel',
                 system_id INTEGER,
                 assigned_to INTEGER,
@@ -500,21 +500,24 @@ function migrateTicketIdsToText() {
                 merge_review TEXT,
                 reference_repo_owner TEXT,
                 reference_repo_name TEXT,
-                final_decision TEXT
+                final_decision TEXT,
+                discard_reason TEXT
             )`,
             `INSERT INTO tickets__new (
                 id, type, title, description, username, console_logs, software_info, status, priority,
                 system_id, assigned_to, location, contact_email, urgency, deadline, created_at,
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
-                merge_review, reference_repo_owner, reference_repo_name, final_decision
+                merge_review, reference_repo_owner, reference_repo_name, final_decision,
+                discard_reason
             )
             SELECT
                 CAST(id AS TEXT), type, title, description, username, console_logs, software_info, status, priority,
                 system_id, assigned_to, location, contact_email, urgency, deadline, created_at,
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
-                merge_review, reference_repo_owner, reference_repo_name, final_decision
+                merge_review, reference_repo_owner, reference_repo_name, final_decision,
+                NULL AS discard_reason
             FROM tickets`,
             'DROP TABLE tickets',
             'ALTER TABLE tickets__new RENAME TO tickets',
@@ -1325,6 +1328,49 @@ function initDb() {
         });
     });
 
+    // Migration: tickets.status CHECK-Constraint um 'verworfen' erweitern + discard_reason Spalte.
+    db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'", (sqlErr, row) => {
+        if (sqlErr || !row || !row.sql) return;
+        if (row.sql.includes("'verworfen'")) return;
+        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
+        console.log('[migration] tickets.status CHECK erweitern (verworfen) + discard_reason Spalte…');
+        console.log('[migration] DDL preview:', row.sql.replace(/\n/g, ' ').substring(0, 200));
+        db.serialize(() => {
+            db.run('DROP TABLE IF EXISTS tickets__new');
+            db.run('PRAGMA foreign_keys=OFF');
+            db.run('BEGIN TRANSACTION');
+            // Status-Check erweitern und discard_reason-Spalte anfügen
+            const newDdl = row.sql
+                .replace(
+                    /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'offen'/,
+                    "status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft', 'verworfen')) DEFAULT 'offen'"
+                )
+                .replace(/CREATE\s+TABLE\s+["']?tickets["']?/i, 'CREATE TABLE tickets__new')
+                .replace(/(final_decision TEXT[^)]*)\)\s*$/, '$1,\n            discard_reason TEXT\n        )');
+            console.log('[migration] newDdl starts with:', newDdl.substring(0, 80));
+            db.run(newDdl, (e1) => {
+                if (e1) { console.error('[migration] CREATE tickets__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                db.all('PRAGMA table_info(tickets)', (e2, cols) => {
+                    if (e2) { console.error('[migration] PRAGMA fehlgeschlagen:', e2.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                    const colList = cols.map(c => c.name).join(', ');
+                    db.run(`INSERT INTO tickets__new (${colList}) SELECT ${colList} FROM tickets`, (e3) => {
+                        if (e3) { console.error('[migration] Datenkopie fehlgeschlagen:', e3.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                        db.run('DROP TABLE tickets', (e4) => {
+                            if (e4) { console.error('[migration] DROP fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                            db.run('ALTER TABLE tickets__new RENAME TO tickets', (e5) => {
+                                if (e5) { console.error('[migration] RENAME fehlgeschlagen:', e5.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                                db.run('COMMIT', () => {
+                                    db.run('PRAGMA foreign_keys=ON');
+                                    console.log('[migration] tickets.status erfolgreich erweitert (verworfen) + discard_reason');
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    });
+
     // --- KI-Workflow: Erweiterungen Mitarbeiter & Systeme ---
 
     // n:m Mitarbeiter <-> Workflow-Rollen
@@ -1656,7 +1702,7 @@ function initTicketsTable() {
             username TEXT,
             console_logs TEXT,
             software_info TEXT,
-            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft')) DEFAULT 'offen',
+            status TEXT CHECK(status IN ('offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'überprüft', 'verworfen')) DEFAULT 'offen',
             priority TEXT CHECK(priority IN ('niedrig', 'mittel', 'hoch', 'kritisch')) DEFAULT 'mittel',
             system_id INTEGER,
             assigned_to INTEGER,
@@ -1677,7 +1723,8 @@ function initTicketsTable() {
             merge_review TEXT,
             reference_repo_owner TEXT,
             reference_repo_name TEXT,
-            final_decision TEXT
+            final_decision TEXT,
+            discard_reason TEXT
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -1912,14 +1959,15 @@ function getReminderInfo(ticket) {
 
     const now = new Date();
     const diffMs = deadline.getTime() - now.getTime();
-    const isClosed = ticket.status === 'geschlossen';
+    const isClosed = ticket.status === 'geschlossen' || ticket.status === 'verworfen';
     const deadlineText = app.locals.formatDateTime(ticket.deadline);
 
     if (isClosed) {
+        const label = ticket.status === 'verworfen' ? 'verworfen' : 'geschlossen';
         return {
             level: 'closed',
             title: 'Frist dokumentiert',
-            message: `Frist war ${deadlineText}. Ticket ist bereits geschlossen.`,
+            message: `Frist war ${deadlineText}. Ticket ist ${label}.`,
             deadlineText
         };
     }
@@ -2856,7 +2904,7 @@ app.get('/api/tickets/:id', requireAuth, (req, res) => {
 });
 
 app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
-    const allowed = ['title', 'description', 'status', 'priority', 'type', 'username', 'console_logs', 'software_info', 'system_id', 'assigned_to', 'location', 'contact_email', 'urgency'];
+    const allowed = ['title', 'description', 'status', 'priority', 'type', 'username', 'console_logs', 'software_info', 'system_id', 'assigned_to', 'location', 'contact_email', 'urgency', 'discard_reason'];
     const updates = {};
     for (const key of allowed) {
         if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -2864,6 +2912,9 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     if (Object.keys(updates).length === 0) {
         return res.status(400).json({ error: 'Keine gueltigen Felder zum Aktualisieren' });
     }
+
+    const isClosedStatus = (s) => s === 'geschlossen' || s === 'verworfen';
+    const wasClosedBefore = (t) => isClosedStatus(t.status);
 
     db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, oldTicket) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -2877,12 +2928,21 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
             );
         }
 
-        if (updates.status === 'geschlossen' && oldTicket.status !== 'geschlossen') {
+        if (updates.status && isClosedStatus(updates.status) && !wasClosedBefore(oldTicket)) {
             updates.closed_at = new Date().toISOString();
             updates.feedback_requested = 0;
-        } else if (updates.status && updates.status !== 'geschlossen' && oldTicket.status === 'geschlossen') {
+            if (updates.status === 'verworfen') {
+                updates.discard_reason = normalizeOptionalText(updates.discard_reason);
+            } else {
+                updates.discard_reason = null;
+            }
+        } else if (updates.status && !isClosedStatus(updates.status) && wasClosedBefore(oldTicket)) {
             updates.closed_at = null;
             updates.feedback_requested = 0;
+            updates.discard_reason = null;
+        } else if (updates.discard_reason !== undefined && oldTicket.status !== 'verworfen') {
+            // discard_reason nur bei Status 'verworfen' speichern
+            delete updates.discard_reason;
         }
 
         if (updates.software_info && typeof updates.software_info === 'object') {
@@ -2907,9 +2967,13 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
                         new: updates.status
                     });
                     mailStatusChange(ticket, oldTicket.status);
-                    if (updates.status === 'geschlossen') {
+                    if (isClosedStatus(updates.status)) {
                         updateSLAResolution(req.params.id);
-                        addActivity(req.params.id, getActor(req), 'closed', 'Ticket geschlossen', {});
+                        if (updates.status === 'verworfen') {
+                            addActivity(req.params.id, getActor(req), 'discarded', 'Ticket verworfen', { reason: updates.discard_reason || '' });
+                        } else {
+                            addActivity(req.params.id, getActor(req), 'closed', 'Ticket geschlossen', {});
+                        }
                     }
                 }
                 if (updates.assigned_to && (!oldTicket || oldTicket.assigned_to !== updates.assigned_to)) {
@@ -2928,7 +2992,7 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
             res.json({
                 id: req.params.id,
                 status: 'updated',
-                redirect: updates.status === 'geschlossen' ? '/' : null
+                redirect: isClosedStatus(updates.status) ? '/' : null
             });
         });
     });
@@ -4266,18 +4330,18 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
         ] = await Promise.all([
             dbGet(`SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
-                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
-                SUM(CASE WHEN deadline IS NOT NULL AND status != 'geschlossen' AND deadline < ? THEN 1 ELSE 0 END) AS overdue_deadline,
-                SUM(CASE WHEN assigned_to IS NULL AND status != 'geschlossen' THEN 1 ELSE 0 END) AS unassigned_open
+                SUM(CASE WHEN status NOT IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed_total,
+                SUM(CASE WHEN deadline IS NOT NULL AND status NOT IN ('geschlossen', 'verworfen') AND deadline < ? THEN 1 ELSE 0 END) AS overdue_deadline,
+                SUM(CASE WHEN assigned_to IS NULL AND status NOT IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS unassigned_open
                 FROM tickets WHERE 1=1${ticketPeriodRaw.clause}`, [nowIso, ...ticketPeriodRaw.params]),
             dbAll(`SELECT status, COUNT(*) AS count FROM tickets WHERE 1=1${ticketPeriodRaw.clause} GROUP BY status ORDER BY count DESC`, ticketPeriodRaw.params),
             dbAll(`SELECT priority, COUNT(*) AS count FROM tickets WHERE 1=1${ticketPeriodRaw.clause} GROUP BY priority ORDER BY
                 CASE priority WHEN 'kritisch' THEN 1 WHEN 'hoch' THEN 2 WHEN 'mittel' THEN 3 WHEN 'niedrig' THEN 4 ELSE 5 END`, ticketPeriodRaw.params),
             dbAll(`SELECT COALESCE(s.name, 'Ohne System') AS name,
                 COUNT(t.id) AS total,
-                SUM(CASE WHEN t.status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
-                SUM(CASE WHEN t.status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
+                SUM(CASE WHEN t.status NOT IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN t.status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed_total,
                 ROUND(AVG(CASE WHEN COALESCE(ts.first_response_at, t.first_responded_at) IS NOT NULL
                     THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
                 ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
@@ -4290,9 +4354,9 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 ORDER BY total DESC, name ASC`, ticketPeriod.params),
             dbAll(`SELECT COALESCE(st.name, 'Nicht zugewiesen') AS name,
                 COUNT(t.id) AS total,
-                SUM(CASE WHEN t.status != 'geschlossen' THEN 1 ELSE 0 END) AS open_total,
-                SUM(CASE WHEN t.status = 'geschlossen' THEN 1 ELSE 0 END) AS closed_total,
-                SUM(CASE WHEN t.status != 'geschlossen' AND t.deadline IS NOT NULL AND t.deadline < ? THEN 1 ELSE 0 END) AS overdue_total,
+                SUM(CASE WHEN t.status NOT IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS open_total,
+                SUM(CASE WHEN t.status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed_total,
+                SUM(CASE WHEN t.status NOT IN ('geschlossen', 'verworfen') AND t.deadline IS NOT NULL AND t.deadline < ? THEN 1 ELSE 0 END) AS overdue_total,
                 ROUND(AVG(CASE WHEN COALESCE(ts.first_response_at, t.first_responded_at) IS NOT NULL
                     THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
                 ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
@@ -4308,9 +4372,9 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                     THEN (julianday(COALESCE(ts.first_response_at, t.first_responded_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_response_minutes,
                 ROUND(AVG(CASE WHEN COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
                     THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes,
-                ROUND(AVG(CASE WHEN t.status != 'geschlossen'
+                ROUND(AVG(CASE WHEN t.status NOT IN ('geschlossen', 'verworfen')
                     THEN (julianday('now') - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_open_age_minutes,
-                ROUND(AVG(CASE WHEN t.status = 'geschlossen' AND COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
+                ROUND(AVG(CASE WHEN t.status IN ('geschlossen', 'verworfen') AND COALESCE(ts.resolution_at, t.closed_at) IS NOT NULL
                     THEN (julianday(COALESCE(ts.resolution_at, t.closed_at)) - julianday(t.created_at)) * 24 * 60 END), 0) AS avg_closed_cycle_minutes
                 FROM tickets t
                 LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id
@@ -4332,8 +4396,8 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 WHERE 1=1${ticketPeriod.clause}`, ticketPeriod.params),
             dbAll(`SELECT strftime('%Y-W%W', created_at) AS period,
                 COUNT(*) AS created,
-                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
-                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                SUM(CASE WHEN status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status IN ('geschlossen', 'verworfen') AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
                 FROM tickets
                 WHERE created_at >= date('now', '-12 weeks')${ticketPeriodRaw.clause}
                 GROUP BY period
@@ -4341,8 +4405,8 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 LIMIT 12`, ticketPeriodRaw.params),
             dbAll(`SELECT strftime('%Y-%m', created_at) AS period,
                 COUNT(*) AS created,
-                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
-                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                SUM(CASE WHEN status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status IN ('geschlossen', 'verworfen') AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
                 FROM tickets
                 WHERE created_at >= date('now', '-12 months')${ticketPeriodRaw.clause}
                 GROUP BY period
@@ -4350,8 +4414,8 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 LIMIT 12`, ticketPeriodRaw.params),
             dbAll(`SELECT strftime('%Y', created_at) AS period,
                 COUNT(*) AS created,
-                SUM(CASE WHEN status = 'geschlossen' THEN 1 ELSE 0 END) AS closed,
-                ROUND(AVG(CASE WHEN status = 'geschlossen' AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
+                SUM(CASE WHEN status IN ('geschlossen', 'verworfen') THEN 1 ELSE 0 END) AS closed,
+                ROUND(AVG(CASE WHEN status IN ('geschlossen', 'verworfen') AND closed_at IS NOT NULL THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60 END), 0) AS avg_resolution_minutes
                 FROM tickets
                 WHERE 1=1${ticketPeriodRaw.clause}
                 GROUP BY period
@@ -4366,14 +4430,14 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                         ELSE '> 14 Tage'
                     END AS bucket
                     FROM tickets
-                    WHERE status != 'geschlossen'${ticketPeriodRaw.clause}
+                    WHERE status NOT IN ('geschlossen', 'verworfen')${ticketPeriodRaw.clause}
                 ) grouped
                 GROUP BY bucket
                 ORDER BY CASE bucket WHEN '< 1 Tag' THEN 1 WHEN '1-3 Tage' THEN 2 WHEN '3-7 Tage' THEN 3 WHEN '7-14 Tage' THEN 4 ELSE 5 END`, ticketPeriodRaw.params),
             dbAll(`SELECT t.id, t.title, t.priority, t.status, t.created_at, s.name AS system_name
                 FROM tickets t
                 LEFT JOIN systems s ON t.system_id = s.id
-                WHERE t.assigned_to IS NULL AND t.status != 'geschlossen'${ticketPeriod.clause}
+                WHERE t.assigned_to IS NULL AND t.status NOT IN ('geschlossen', 'verworfen')${ticketPeriod.clause}
                 ORDER BY t.created_at ASC
                 LIMIT 10`, ticketPeriod.params),
             dbAll(`SELECT t.id, t.title, t.priority, t.status, t.created_at, t.deadline, s.name AS system_name, st.name AS assigned_name,
@@ -4382,7 +4446,7 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 LEFT JOIN systems s ON t.system_id = s.id
                 LEFT JOIN staff st ON t.assigned_to = st.id
                 LEFT JOIN ticket_sla ts ON ts.ticket_id = t.id
-                WHERE t.status != 'geschlossen' AND (
+                WHERE t.status NOT IN ('geschlossen', 'verworfen') AND (
                     (ts.first_response_at IS NULL AND ts.first_response_due IS NOT NULL AND ts.first_response_due < ?) OR
                     (ts.resolution_at IS NULL AND ts.resolution_due IS NOT NULL AND ts.resolution_due < ?) OR
                     (t.deadline IS NOT NULL AND t.deadline < ?)
@@ -4394,7 +4458,7 @@ app.get('/stats', requireAuth, requireAdmin, async (req, res) => {
                 FROM tickets t
                 LEFT JOIN systems s ON t.system_id = s.id
                 LEFT JOIN staff st ON t.assigned_to = st.id
-                WHERE t.status != 'geschlossen'${ticketPeriod.clause}
+                WHERE t.status NOT IN ('geschlossen', 'verworfen')${ticketPeriod.clause}
                 ORDER BY t.created_at ASC
                 LIMIT 10`, ticketPeriod.params),
             dbAll(`SELECT COALESCE(NULLIF(TRIM(username), ''), 'Unbekannt') AS name, COUNT(*) AS total
@@ -4701,16 +4765,16 @@ app.get('/', requireAuth, (req, res) => {
         hasWhere = true;
     }
     if (view === 'unassigned') {
-        ticketQuery += hasWhere ? ' AND t.assigned_to IS NULL AND t.status != ?' : ' WHERE t.assigned_to IS NULL AND t.status != ?';
-        ticketParams.push('geschlossen');
+        ticketQuery += hasWhere ? ' AND t.assigned_to IS NULL AND t.status NOT IN (?, ?)' : ' WHERE t.assigned_to IS NULL AND t.status NOT IN (?, ?)';
+        ticketParams.push('geschlossen', 'verworfen');
         hasWhere = true;
     } else if (view === 'overdue') {
-        ticketQuery += hasWhere ? ' AND t.status != ? AND t.deadline < ?' : ' WHERE t.status != ? AND t.deadline < ?';
-        ticketParams.push('geschlossen', now);
+        ticketQuery += hasWhere ? ' AND t.status NOT IN (?, ?) AND t.deadline < ?' : ' WHERE t.status NOT IN (?, ?) AND t.deadline < ?';
+        ticketParams.push('geschlossen', 'verworfen', now);
         hasWhere = true;
     } else if (view === 'critical') {
-        ticketQuery += hasWhere ? ' AND t.priority = ? AND t.status != ?' : ' WHERE t.priority = ? AND t.status != ?';
-        ticketParams.push('kritisch', 'geschlossen');
+        ticketQuery += hasWhere ? ' AND t.priority = ? AND t.status NOT IN (?, ?)' : ' WHERE t.priority = ? AND t.status NOT IN (?, ?)';
+        ticketParams.push('kritisch', 'geschlossen', 'verworfen');
         hasWhere = true;
     } else if (view === 'waiting') {
         ticketQuery += hasWhere ? ' AND t.status = ?' : ' WHERE t.status = ?';
@@ -4878,24 +4942,33 @@ app.post('/ticket/:id/delete', requireAuth, requireAdmin, (req, res) => {
 });
 
 app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
-    const { status } = req.body;
+    const { status, discard_reason } = req.body;
     const ticketId = req.params.id;
     const actor = getActor(req);
     
-    if (!['offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen'].includes(status)) {
+    if (!['offen', 'in_bearbeitung', 'wartend', 'umgesetzt', 'geschlossen', 'verworfen'].includes(status)) {
         return res.status(400).send('Ungueltiger Status');
     }
+    
+    const isClosedStatus = status === 'geschlossen' || status === 'verworfen';
+    const wasClosedBefore = (old) => old.status === 'geschlossen' || old.status === 'verworfen';
     
     db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, oldTicket) => {
         if (err || !oldTicket) return res.status(404).send('Ticket nicht gefunden');
         
         const updates = { status };
-        if (status === 'geschlossen') {
+        if (isClosedStatus) {
             updates.closed_at = new Date().toISOString();
             updates.feedback_requested = 0;
-        } else if (oldTicket.status === 'geschlossen') {
+            if (status === 'verworfen') {
+                updates.discard_reason = normalizeOptionalText(discard_reason);
+            } else {
+                updates.discard_reason = null;
+            }
+        } else if (wasClosedBefore(oldTicket)) {
             updates.closed_at = null;
             updates.feedback_requested = 0;
+            updates.discard_reason = null;
         }
 
         const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -4909,13 +4982,17 @@ app.post('/ticket/:id/status', requireAuth, requireAdmin, (req, res) => {
             
             mailStatusChange({ ...oldTicket, status }, oldTicket.status);
 
-            if (status === 'geschlossen') {
+            if (isClosedStatus) {
                 updateSLAResolution(ticketId);
-                addActivity(ticketId, actor, 'closed', 'Ticket geschlossen', {});
+                if (status === 'verworfen') {
+                    addActivity(ticketId, actor, 'discarded', 'Ticket verworfen', { reason: updates.discard_reason || '' });
+                } else {
+                    addActivity(ticketId, actor, 'closed', 'Ticket geschlossen', {});
+                }
             }
 
             io.to(`ticket-${ticketId}`).emit('ticket-updated', { ticketId, updates: { status }, actor });
-            res.redirect(status === 'geschlossen' ? '/' : '/ticket/' + ticketId);
+            res.redirect(isClosedStatus ? '/' : '/ticket/' + ticketId);
         });
     });
 });

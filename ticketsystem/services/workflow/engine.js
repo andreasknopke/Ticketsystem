@@ -311,7 +311,7 @@ async function markTicketUmgesetzt(ticketId, reason) {
     try {
         const t = await getRow('SELECT id, status FROM tickets WHERE id = ?', [ticketId]);
         if (!t) return false;
-        if (t.status === 'umgesetzt' || t.status === 'geschlossen') {
+        if (t.status === 'umgesetzt' || t.status === 'geschlossen' || t.status === 'verworfen') {
             wfInfo(`markTicketUmgesetzt SKIP | ticket=${ticketId} status=${t.status}`);
             return false;
         }
