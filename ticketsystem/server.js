@@ -4799,14 +4799,14 @@ app.get('/', requireAuth, (req, res) => {
             // Overdue tickets
             db.all(`SELECT t.*, s.name as system_name FROM tickets t 
                 LEFT JOIN systems s ON t.system_id = s.id 
-                WHERE t.status != 'geschlossen' AND t.deadline < ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, ...statsVisibility.params], (err, overdue) => {
+                WHERE t.status NOT IN ('geschlossen', 'verworfen') AND t.deadline < ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, ...statsVisibility.params], (err, overdue) => {
                 if (err) overdue = [];
 
                 // Due soon (next 2 hours)
                 const soon = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
                 db.all(`SELECT t.*, s.name as system_name FROM tickets t 
                     LEFT JOIN systems s ON t.system_id = s.id 
-                    WHERE t.status != 'geschlossen' AND t.deadline BETWEEN ? AND ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, soon, ...statsVisibility.params], (err, dueSoon) => {
+                    WHERE t.status NOT IN ('geschlossen', 'verworfen') AND t.deadline BETWEEN ? AND ?${statsVisibility.clause} ORDER BY t.deadline ASC`, [now, soon, ...statsVisibility.params], (err, dueSoon) => {
                     if (err) dueSoon = [];
 
                     // SLA Stats
