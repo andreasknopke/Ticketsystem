@@ -277,7 +277,22 @@
                                     <option value="umgesetzt" <%= ticket.status === 'umgesetzt' ? 'selected' : '' %>>Umgesetzt</option>
                                     <option value="überprüft" <%= ticket.status === 'überprüft' ? 'selected' : '' %>>Überprüft</option>
                                     <option value="geschlossen" <%= ticket.status === 'geschlossen' ? 'selected' : '' %>>Geschlossen</option>
+                                    <option value="verworfen" <%= ticket.status === 'verworfen' ? 'selected' : '' %>>Verworfen</option>
                                 </select>
+                                <!-- Begründung bei Verwerfung -->
+                                <div id="discard-reason-group" class="mt-3 <%= ticket.status === 'verworfen' ? '' : 'hidden' %>">
+                                    <label class="block text-xs font-medium text-gray-500 mb-1.5">Grund der Verwerfung (optional)</label>
+                                    <input type="text" name="discard_reason" id="discard-reason-input" list="discard-reasons" class="form-input text-sm" placeholder="Grund auswählen oder eingeben…" value="<%= ticket.discard_reason || '' %>">
+                                    <datalist id="discard-reasons">
+                                        <option value="Kein Bug">Kein Bug</option>
+                                        <option value="Kein gutes Feature">Kein gutes Feature</option>
+                                        <option value="Feature existiert bereits">Feature existiert bereits</option>
+                                        <option value="Nicht reproduzierbar">Nicht reproduzierbar</option>
+                                        <option value="Doppelt">Doppelt</option>
+                                        <option value="Ungültig">Ungültig</option>
+                                    </datalist>
+                                    <p class="text-xs text-gray-400 mt-1">Freitext oder Auswahl aus Vorschlägen</p>
+                                </div>
                             </form>
                         </div>
                         <form method="post" action="/ticket/<%= ticket.id %>/assign" class="space-y-3">
@@ -404,6 +419,12 @@
                                     <% } %>
                                 </dd>
                             </div>
+                            <% if (ticket.discard_reason) { %>
+                            <div>
+                                <dt class="text-sm font-medium text-gray-500">Verworfen-Grund</dt>
+                                <dd class="mt-1 text-sm text-gray-900"><%= ticket.discard_reason %></dd>
+                            </div>
+                            <% } %>
                         </dl>
                     </div>
                 </div>
@@ -525,6 +546,21 @@
                     alert('Fehler beim Speichern des Feedbacks.');
                 }
             });
+        }
+
+        // --- Verwerfungsgrund ein-/ausblenden ---
+        const statusSelect = document.getElementById('ticket-status-select');
+        const discardReasonGroup = document.getElementById('discard-reason-group');
+        if (statusSelect && discardReasonGroup) {
+            function toggleDiscardReason() {
+                if (statusSelect.value === 'verworfen') {
+                    discardReasonGroup.classList.remove('hidden');
+                } else {
+                    discardReasonGroup.classList.add('hidden');
+                }
+            }
+            statusSelect.addEventListener('change', toggleDiscardReason);
+            toggleDiscardReason();
         }
 
         // --- KI-Workflow ---

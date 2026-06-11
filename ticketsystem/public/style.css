@@ -2037,6 +2037,13 @@ video {
   color: rgb(55 48 163 / var(--tw-text-opacity, 1));
 }
 
+.badge-status-verworfen {
+  --tw-bg-opacity: 1;
+  background-color: rgb(254 243 199 / var(--tw-bg-opacity, 1));
+  --tw-text-opacity: 1;
+  color: rgb(146 64 14 / var(--tw-text-opacity, 1));
+}
+
 .badge-priority-niedrig {
   --tw-bg-opacity: 1;
   background-color: rgb(243 244 246 / var(--tw-bg-opacity, 1));
