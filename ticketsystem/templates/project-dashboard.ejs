@@ -56,9 +56,17 @@
                 <h1 class="text-2xl font-bold text-gray-900"><%= project.name %></h1>
                 <% if (project.system_name) { %><p class="text-sm text-primary-600 mt-1"><%= project.system_name %></p><% } %>
             </div>
-            <span class="badge text-lg px-4 py-1 <%= project.status === 'active' ? 'bg-green-100 text-green-800' : project.status === 'planning' ? 'bg-blue-100 text-blue-800' : project.status === 'maintenance' ? 'bg-yellow-100 text-yellow-800' : project.status === 'proposed' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-800' %>">
-                <%= {planning:'Planung',active:'Aktiv',maintenance:'Wartung',completed:'Abgeschlossen',proposed:'Vorgeschlagen'}[project.status] || project.status %>
-            </span>
+            <div class="flex items-center gap-2">
+                <span class="badge text-lg px-4 py-1 <%= project.status === 'active' ? 'bg-green-100 text-green-800' : project.status === 'planning' ? 'bg-blue-100 text-blue-800' : project.status === 'maintenance' ? 'bg-yellow-100 text-yellow-800' : project.status === 'proposed' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-800' %>">
+                    <%= {planning:'Planung',active:'Aktiv',maintenance:'Wartung',completed:'Abgeschlossen',proposed:'Vorgeschlagen'}[project.status] || project.status %>
+                </span>
+                <% if (canManage) { %>
+                <button onclick="toggleProjectEdit()" class="btn-secondary text-sm ml-2">
+                    <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    Bearbeiten
+                </button>
+                <% } %>
+            </div>
         </div>
 
         <div class="flex flex-wrap gap-2 mb-6">
@@ -71,6 +79,82 @@
         </div>
 
         <p class="text-gray-600 mb-6"><%= project.description || 'Keine Beschreibung' %></p>
+
+        <% if (canManage) { %>
+        <!-- Projekt bearbeiten -->
+        <div id="projectEditForm" class="card mb-8 hidden">
+            <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Projekt bearbeiten</h2></div>
+            <div class="card-body space-y-6">
+                <!-- Stammdaten -->
+                <form id="updateProjectForm" onsubmit="saveProject(event)" class="space-y-4">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
+                            <textarea name="description" class="form-input" rows="4"><%= project.description || '' %></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                            <select name="status" class="form-input">
+                                <option value="proposed" <%= project.status === 'proposed' ? 'selected' : '' %>>Vorgeschlagen</option>
+                                <option value="planning" <%= project.status === 'planning' ? 'selected' : '' %>>Planung</option>
+                                <option value="active" <%= project.status === 'active' ? 'selected' : '' %>>Aktiv</option>
+                                <option value="maintenance" <%= project.status === 'maintenance' ? 'selected' : '' %>>Wartung</option>
+                                <option value="completed" <%= project.status === 'completed' ? 'selected' : '' %>>Abgeschlossen</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Startdatum</label>
+                            <input type="date" name="start_date" class="form-input" value="<%= project.start_date ? project.start_date.substring(0,10) : '' %>">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Enddatum</label>
+                            <input type="date" name="end_date" class="form-input" value="<%= project.end_date ? project.end_date.substring(0,10) : '' %>">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-primary">Änderungen speichern</button>
+                </form>
+
+                <hr class="border-gray-200">
+
+                <!-- GitHub Integration -->
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">GitHub Integration</h3>
+                    <% if (github) { %>
+                    <div class="flex items-center gap-2 text-sm text-green-700 mb-2">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                        <span><%= github.repo_owner %>/<%= github.repo_name %></span>
+                    </div>
+                    <a href="/project/<%= project.id %>/github" class="btn-secondary text-sm">GitHub-Einstellungen bearbeiten</a>
+                    <% } else { %>
+                    <p class="text-sm text-gray-500 mb-2">Noch kein GitHub-Repository verbunden.</p>
+                    <a href="/project/<%= project.id %>/github" class="btn-secondary text-sm">GitHub Repository verbinden</a>
+                    <% } %>
+                </div>
+
+                <hr class="border-gray-200">
+
+                <!-- Dateien hochladen -->
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Dokumente anhängen</h3>
+                    <form id="uploadAttachmentsForm" onsubmit="uploadAttachments(event)" class="space-y-3">
+                        <input type="file" name="attachments" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.txt">
+                        <button type="submit" class="btn-secondary text-sm">Hochladen</button>
+                    </form>
+                    <% if (attachments && attachments.length > 0) { %>
+                    <div class="mt-3 space-y-1">
+                        <% attachments.forEach(a => { %>
+                        <div class="flex items-center justify-between text-sm py-1">
+                            <a href="/uploads/projects/<%= a.filename %>" target="_blank" class="text-primary-600 hover:text-primary-800 truncate"><%= a.original_name %></a>
+                            <button onclick="deleteAttachment(<%= a.id %>)" class="text-red-500 hover:text-red-700 text-xs ml-2">&times;</button>
+                        </div>
+                        <% }); %>
+                    </div>
+                    <% } %>
+                </div>
+            </div>
+        </div>
+        <% } %>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
             <div class="card">
@@ -212,5 +296,53 @@
         </div>
         <% } %>
     </main>
+
+    <script>
+        const CSRF_TOKEN = '<%= csrfToken %>';
+        const PROJECT_ID = <%= project.id %>;
+
+        function toggleProjectEdit() {
+            document.getElementById('projectEditForm').classList.toggle('hidden');
+        }
+
+        async function saveProject(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const body = {};
+            for (const [k, v] of fd.entries()) body[k] = v;
+            const resp = await fetch('/api/projects/' + PROJECT_ID, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                body: JSON.stringify(body)
+            });
+            if (resp.ok) { location.reload(); }
+            else { alert('Fehler: ' + ((await resp.json().catch(() => ({}))).error || resp.statusText)); }
+        }
+
+        async function uploadAttachments(e) {
+            e.preventDefault();
+            const input = e.target.querySelector('input[type="file"]');
+            if (!input.files.length) return alert('Bitte Dateien auswählen.');
+            const fd = new FormData();
+            for (const f of input.files) fd.append('attachments', f);
+            const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': CSRF_TOKEN },
+                body: fd
+            });
+            if (resp.ok) { location.reload(); }
+            else { alert('Fehler: ' + ((await resp.json().catch(() => ({}))).error || resp.statusText)); }
+        }
+
+        async function deleteAttachment(id) {
+            if (!confirm('Dokument löschen?')) return;
+            const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments/' + id, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': CSRF_TOKEN }
+            });
+            if (resp.ok) { location.reload(); }
+            else { alert('Fehler beim Löschen.'); }
+        }
+    </script>
 </body>
 </html>

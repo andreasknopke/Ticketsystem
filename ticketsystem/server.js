@@ -3121,7 +3121,7 @@ app.get('/api/projects', requireAuth, (req, res) => {
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
         ORDER BY
-            CASE WHEN p.status = 'proposed' THEN 0 ELSE 1 END,
+            CASE WHEN p.status = 'proposed' THEN 1 ELSE 0 END,
             p.status, p.name
     `, [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -5386,7 +5386,7 @@ app.get('/projects', requireAuth, (req, res) => {
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
         ORDER BY
-            CASE WHEN p.status = 'proposed' THEN 0 ELSE 1 END,
+            CASE WHEN p.status = 'proposed' THEN 1 ELSE 0 END,
             p.status, p.name
     `, [], (err, projects) => {
         if (err) return res.status(500).send('DB Error');

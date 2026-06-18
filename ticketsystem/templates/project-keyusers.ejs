@@ -379,8 +379,8 @@
             }
 
             rows.sort((a, b) => {
-                let va = (a.dataset['sort-' + col] || '').trim();
-                let vb = (b.dataset['sort-' + col] || '').trim();
+                let va = (a.getAttribute('data-sort-' + col) || '').trim();
+                let vb = (b.getAttribute('data-sort-' + col) || '').trim();
                 let cmp = 0;
 
                 if (type === 'number') {

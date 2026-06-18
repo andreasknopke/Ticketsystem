@@ -928,6 +928,21 @@ video {
   padding: 0 1rem;
 }
 
+.vis-timeline-container .vis-item.vis-item-milestone-range {
+  background: linear-gradient(90deg, rgb(233 213 255 / 1), rgb(216 180 254 / 1));
+  border: 2px solid rgb(126 34 206 / 1);
+  border-radius: 6px;
+  color: rgb(15 23 42 / 1);
+  font-weight: 600;
+  font-size: 0.85rem;
+  line-height: 1.8rem;
+  box-shadow: 0 2px 8px rgba(126, 34, 206, 0.15);
+}
+
+.vis-timeline-container .vis-item.vis-item-milestone-range .vis-item-content {
+  padding: 0 0.6rem;
+}
+
 .vis-timeline-container .vis-item.vis-item-milestone .vis-dot {
   border-color: rgb(88 28 135 / 1);
   border-width: 4px;

@@ -105,16 +105,30 @@
                 });
             }
             milestones.forEach((milestone) => {
-                const anchor = milestone.end_date || milestone.start_date;
-                if (!anchor) return;
-                timelineItems.push({
-                    id: 'milestone-' + milestone.id,
-                    content: milestone.title,
-                    start: anchor,
-                    type: 'point',
-                    className: 'vis-item-milestone',
-                    title: 'Meilenstein: ' + milestone.title + ' (' + formatDate(milestone.start_date) + ' - ' + formatDate(milestone.end_date) + ')',
-                });
+                if (milestone.start_date && milestone.end_date) {
+                    // Range bar for milestones with both dates
+                    timelineItems.push({
+                        id: 'milestone-' + milestone.id,
+                        content: milestone.title,
+                        start: milestone.start_date,
+                        end: milestone.end_date,
+                        type: 'range',
+                        className: 'vis-item-milestone-range',
+                        title: milestone.title + ' (' + formatDate(milestone.start_date) + ' – ' + formatDate(milestone.end_date) + ')',
+                    });
+                } else {
+                    const anchor = milestone.end_date || milestone.start_date;
+                    if (!anchor) return;
+                    // Point for milestones without full date range
+                    timelineItems.push({
+                        id: 'milestone-' + milestone.id,
+                        content: milestone.title,
+                        start: anchor,
+                        type: 'point',
+                        className: 'vis-item-milestone',
+                        title: milestone.title + ' (' + formatDate(milestone.start_date) + ' – ' + formatDate(milestone.end_date) + ')',
+                    });
+                }
                 (milestone.steps || []).forEach((step) => {
                     if (!step.date) return;
                     timelineItems.push({
@@ -155,11 +169,11 @@
                       end: projectEnd,
                       zoomMin: 1000 * 60 * 60 * 24 * 7,
                       zoomMax: 1000 * 60 * 60 * 24 * 365 * 5,
-                      margin: { item: 10, axis: 10 },
+                      margin: { item: 15, axis: 10 },
                       locale: 'de',
                       showCurrentTime: true,
                       tooltip: { followMouse: true },
-                      height: '320px'
+                      height: '420px'
                     };
                     var timeline = new vis.Timeline(container, items, options);
                     timeline.on('select', function (props) {
