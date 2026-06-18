@@ -105,6 +105,7 @@
                 });
             }
             milestones.forEach((milestone) => {
+                var gid = 'g-' + milestone.id;
                 if (milestone.start_date && milestone.end_date) {
                     // Range bar for milestones with both dates
                     timelineItems.push({
@@ -113,6 +114,7 @@
                         start: milestone.start_date,
                         end: milestone.end_date,
                         type: 'range',
+                        group: gid,
                         className: 'vis-item-milestone-range',
                         title: milestone.title + ' (' + formatDate(milestone.start_date) + ' – ' + formatDate(milestone.end_date) + ')',
                     });
@@ -125,6 +127,7 @@
                         content: milestone.title,
                         start: anchor,
                         type: 'point',
+                        group: gid,
                         className: 'vis-item-milestone',
                         title: milestone.title + ' (' + formatDate(milestone.start_date) + ' – ' + formatDate(milestone.end_date) + ')',
                     });
@@ -136,12 +139,22 @@
                         content: step.title || ('Step ' + step.id),
                         start: step.date,
                         type: 'point',
+                        group: gid,
                         className: 'vis-item-step',
                         title: (step.title || 'Step ' + step.id) + ' (' + formatDate(step.date) + ')',
                         link: '#timeline-step-' + step.id,
                     });
                 });
             });
+            // Build groups so each milestone gets its own fixed row
+            var timelineGroups = milestones.map(function (m) {
+                return { id: 'g-' + m.id, content: '', className: 'vis-group-milestone' };
+            });
+            // Project bar gets group 0
+            if (timelineStart && timelineEnd) {
+                timelineItems[0].group = 'g-project';
+                timelineGroups.unshift({ id: 'g-project', content: '', className: 'vis-group-project' });
+            }
         %>
 
         <div class="card mb-6">
@@ -157,11 +170,11 @@
                     var container = document.getElementById('visTimeline');
                     if (!container || typeof vis === 'undefined') return;
                     var items = new vis.DataSet(<%- JSON.stringify(timelineItems) %>);
+                    var groups = new vis.DataSet(<%- JSON.stringify(timelineGroups) %>);
                     var projectStart = '<%= project.start_date || timelineStart.toISOString().slice(0,10) %>';
                     var projectEnd = '<%= project.end_date || timelineEnd.toISOString().slice(0,10) %>';
                     var options = {
-                      stack: true,
-                      stackSubgroups: true,
+                      stack: false,
                       orientation: { axis: 'bottom', item: 'top' },
                       min: null,
                       max: null,
@@ -173,9 +186,9 @@
                       locale: 'de',
                       showCurrentTime: true,
                       tooltip: { followMouse: true },
-                      height: '420px'
+                      height: Math.max(120, (<%= milestones.length %> + 1) * 50) + 'px'
                     };
-                    var timeline = new vis.Timeline(container, items, options);
+                    var timeline = new vis.Timeline(container, items, groups, options);
                     window._tl = timeline;
 
                     // Horizontal scroll buttons

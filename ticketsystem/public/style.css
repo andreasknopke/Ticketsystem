@@ -973,6 +973,21 @@ video {
   border-color: rgb(148 163 184 / 0.45);
 }
 
+/* Timeline groups: hide empty labels, fixed row height */
+.vis-timeline-container .vis-group {
+  border-bottom: 1px solid rgb(226 232 240 / 0.6);
+}
+.vis-timeline-container .vis-group .vis-label {
+  display: none;
+}
+.vis-timeline-container .vis-labelset .vis-label {
+  display: none;
+}
+.vis-timeline-container .vis-item.vis-item-milestone-range {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
 .milestone-board__milestone-summary {
   display: flex;
   flex-direction: column;
