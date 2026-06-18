@@ -178,16 +178,14 @@
                     <table id="keyUsersTable" class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Kontakt</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rolle</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Schulungsstatus</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Schulungsziele</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer select-none" onclick="sortByGoalCount()" title="Nach Anzahl erreichter Ziele sortieren">
-                                    # Ziele <span id="goalCountSortIndicator" class="text-gray-400">&#x2195;</span>
-                                </th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Test-Protokoll</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Notizen</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="name" data-sort-type="text" onclick="sortKeyUsersTable('name', 'text')">Name <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="email" data-sort-type="text" onclick="sortKeyUsersTable('email', 'text')">Kontakt <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="role" data-sort-type="role" onclick="sortKeyUsersTable('role', 'role')">Rolle <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="training_status" data-sort-type="text" onclick="sortKeyUsersTable('training_status', 'text')">Schulungsstatus <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="goals_text" data-sort-type="text" onclick="sortKeyUsersTable('goals_text', 'text')">Schulungsziele <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="goal_count" data-sort-type="number" onclick="sortKeyUsersTable('goal_count', 'number')"># Ziele <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="test_protocol" data-sort-type="text" onclick="sortKeyUsersTable('test_protocol', 'text')">Test-Protokoll <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="notes" data-sort-type="text" onclick="sortKeyUsersTable('notes', 'text')">Notizen <span class="sort-indicator"></span></th>
                                 <% if (canManage) { %><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktionen</th><% } %>
                             </tr>
                         </thead>
@@ -200,7 +198,7 @@
                                 const totalGoals = trainingGoals.length;
                                 const enrichedKeyUser = Object.assign({}, k, { training_goal_ids: kuGoalIds });
                             %>
-                            <tr data-goal-count="<%= kuGoalLabels.length %>">
+                            <tr data-goal-count="<%= kuGoalLabels.length %>" data-sort-name="<%= (k.name || '').toLowerCase() %>" data-sort-email="<%= (k.email || '').toLowerCase() %>" data-sort-role="<%= ({key_user:0,evaluator:1,decision_maker:2}[k.role] ?? 99) %>" data-sort-training_status="<%= (k.training_status || '').toLowerCase() %>" data-sort-goals_text="<%= (kuGoalLabels.join(' ')).toLowerCase() %>" data-sort-goal_count="<%= kuGoalLabels.length %>" data-sort-test_protocol="<%= (k.test_protocol || '').toLowerCase() %>" data-sort-notes="<%= (k.notes || '').toLowerCase() %>">
                                 <td class="px-6 py-4 text-sm font-medium text-gray-900"><%= k.name %></td>
                                 <td class="px-6 py-4 text-sm text-gray-500">
                                     <div><%= k.email || '-' %></div>
@@ -295,6 +293,8 @@
             document.getElementById('keyUserFormTitle').textContent = 'Key-User bearbeiten';
             document.getElementById('keyUserSubmitButton').textContent = 'Änderungen speichern';
             document.getElementById('keyUserCancelButton').classList.remove('hidden');
+            // Zum Bearbeiten-Container scrollen
+            document.getElementById('addKeyUserForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         async function addKeyUser(e) {
             e.preventDefault();
@@ -357,33 +357,57 @@
             alert('Fehler: ' + (err.error || resp.statusText));
         }
 
-        // --- Sort by goal count ---
-        let goalCountSortState = 0; // 0 = none, 1 = desc, 2 = asc
-        function sortByGoalCount() {
+        // --- Tabellen-Sortierung ---
+        const keyUserSortOrders = {
+            role: { key_user: 0, evaluator: 1, decision_maker: 2 }
+        };
+        let keyUserCurrentSort = { col: null, asc: true };
+
+        function sortKeyUsersTable(col, type) {
             const table = document.getElementById('keyUsersTable');
             if (!table) return;
             const tbody = table.tBodies[0];
-            const rows = Array.from(tbody.querySelectorAll('tr[data-goal-count]'));
+            const rows = Array.from(tbody.querySelectorAll('tr[data-sort-name]'));
             if (rows.length === 0) return;
-            goalCountSortState = (goalCountSortState + 1) % 3;
-            const indicator = document.getElementById('goalCountSortIndicator');
-            if (goalCountSortState === 0) {
-                rows.sort((a, b) => Number(a.dataset.originalIndex || 0) - Number(b.dataset.originalIndex || 0));
-                if (indicator) { indicator.textContent = '\u2195'; indicator.className = 'text-gray-400'; }
+
+            // Toggle direction wenn gleiche Spalte
+            if (keyUserCurrentSort.col === col) {
+                keyUserCurrentSort.asc = !keyUserCurrentSort.asc;
             } else {
-                const dir = goalCountSortState === 1 ? -1 : 1;
-                rows.sort((a, b) => dir * (Number(a.dataset.goalCount) - Number(b.dataset.goalCount)));
-                if (indicator) { indicator.textContent = goalCountSortState === 1 ? '\u2193' : '\u2191'; indicator.className = 'text-gray-700'; }
+                keyUserCurrentSort.col = col;
+                keyUserCurrentSort.asc = true;
             }
-            rows.forEach(r => tbody.appendChild(r));
+
+            rows.sort((a, b) => {
+                let va = (a.dataset['sort-' + col] || '').trim();
+                let vb = (b.dataset['sort-' + col] || '').trim();
+                let cmp = 0;
+
+                if (type === 'number') {
+                    cmp = (Number(va) || 0) - (Number(vb) || 0);
+                } else if (type === 'role') {
+                    const oa = Number(va);
+                    const ob = Number(vb);
+                    cmp = oa - ob;
+                } else {
+                    cmp = va.localeCompare(vb, 'de');
+                }
+
+                return keyUserCurrentSort.asc ? cmp : -cmp;
+            });
+
+            rows.forEach(row => tbody.appendChild(row));
+
+            // Sort-Indikatoren aktualisieren
+            document.querySelectorAll('.sort-header .sort-indicator').forEach(el => {
+                el.textContent = '';
+            });
+            const activeHeaders = document.querySelectorAll('.sort-header[data-sort="' + col + '"]');
+            activeHeaders.forEach(el => {
+                const indicator = el.querySelector('.sort-indicator');
+                if (indicator) indicator.textContent = keyUserCurrentSort.asc ? ' ▲' : ' ▼';
+            });
         }
-        // Remember original order so we can restore it
-        document.addEventListener('DOMContentLoaded', () => {
-            const table = document.getElementById('keyUsersTable');
-            if (!table) return;
-            const tbody = table.tBodies[0];
-            Array.from(tbody.querySelectorAll('tr[data-goal-count]')).forEach((r, i) => { r.dataset.originalIndex = i; });
-        });
     </script>
 </body>
 </html>

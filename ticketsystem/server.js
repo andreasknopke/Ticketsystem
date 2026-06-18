@@ -5,6 +5,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
+const fs = require('fs');
 const multer = require('multer');
 
 function hashPassword(password) {
@@ -155,6 +156,37 @@ function handleMilestoneStepUpload(req, res, next) {
         }
         if (err.code === 'LIMIT_FILE_COUNT') {
             return res.status(400).json({ error: `Maximal ${MILESTONE_STEP_MAX_FILES} Anhaenge pro Schritt erlaubt.` });
+        }
+        return res.status(400).json({ error: err.message || 'Upload fehlgeschlagen.' });
+    });
+}
+
+// Project file attachments
+const PROJECT_ATTACHMENT_MAX_SIZE = 20 * 1024 * 1024; // 20 MB
+const PROJECT_ATTACHMENT_UPLOAD_DIR = path.join(__dirname, 'uploads', 'projects');
+if (!fs.existsSync(path.join(__dirname, 'uploads'))) fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
+if (!fs.existsSync(PROJECT_ATTACHMENT_UPLOAD_DIR)) fs.mkdirSync(PROJECT_ATTACHMENT_UPLOAD_DIR, { recursive: true });
+
+const projectAttachmentUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, PROJECT_ATTACHMENT_UPLOAD_DIR),
+        filename: (req, file, cb) => {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            const ext = path.extname(file.originalname);
+            cb(null, uniqueSuffix + ext);
+        }
+    }),
+    limits: { fileSize: PROJECT_ATTACHMENT_MAX_SIZE }
+});
+
+function handleProjectAttachmentUpload(req, res, next) {
+    projectAttachmentUpload.array('attachments', 10)(req, res, (err) => {
+        if (!err) return next();
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({ error: 'Datei zu gross. Maximal 20 MB erlaubt.' });
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+            return res.status(400).json({ error: 'Maximal 10 Dateien pro Upload erlaubt.' });
         }
         return res.status(400).json({ error: err.message || 'Upload fehlgeschlagen.' });
     });
@@ -983,13 +1015,43 @@ function initDb() {
         system_id INTEGER,
         name TEXT NOT NULL,
         description TEXT,
-        status TEXT CHECK(status IN ('planning','active','maintenance','completed')) DEFAULT 'planning',
+        status TEXT CHECK(status IN ('planning','active','maintenance','completed','proposed')) DEFAULT 'proposed',
         start_date TEXT,
         end_date TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (system_id) REFERENCES systems(id) ON DELETE SET NULL
     )`);
+
+    // Migration: projects.status CHECK-Constraint um 'proposed' erweitern.
+    db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'", (sqlErr, row) => {
+        if (sqlErr || !row || !row.sql) return;
+        if (row.sql.includes("'proposed'")) return; // schon migriert / fresh DB
+        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
+        console.log('[migration] projects.status CHECK erweitern (proposed)…');
+        db.serialize(() => {
+            db.run('DROP TABLE IF EXISTS projects__new');
+            db.run('PRAGMA foreign_keys=OFF');
+            db.run('BEGIN TRANSACTION');
+            const newDdl = row.sql.replace(
+                /status TEXT CHECK\(status IN \(([^)]*)\)\) DEFAULT 'planning'/,
+                "status TEXT CHECK(status IN ('planning','active','maintenance','completed','proposed')) DEFAULT 'proposed'"
+            ).replace(/CREATE\s+TABLE\s+["']?projects["']?/i, 'CREATE TABLE projects__new');
+            db.run(newDdl, (e1) => {
+                if (e1) { console.error('[migration] CREATE projects__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                db.run(`INSERT INTO projects__new SELECT * FROM projects`, (e2) => {
+                    if (e2) { console.error('[migration] Datenkopie fehlgeschlagen:', e2.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                    db.run('DROP TABLE projects', (e3) => {
+                        if (e3) { console.error('[migration] DROP fehlgeschlagen:', e3.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                        db.run('ALTER TABLE projects__new RENAME TO projects', (e4) => {
+                            if (e4) { console.error('[migration] RENAME fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                            db.run('COMMIT', () => { db.run('PRAGMA foreign_keys=ON'); console.log('[migration] projects.status CHECK erfolgreich migriert.'); });
+                        });
+                    });
+                });
+            });
+        });
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS project_milestones (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1118,6 +1180,18 @@ function initDb() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
         UNIQUE(project_id, slug)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS project_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        filename TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        mimetype TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS github_integration (
@@ -3041,10 +3115,14 @@ app.get('/api/projects', requireAuth, (req, res) => {
         SELECT p.*, s.name as system_name,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
-            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count
+            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count,
+            (SELECT COUNT(*) FROM project_attachments WHERE project_id = p.id) as attachment_count,
+            (SELECT id FROM github_integration WHERE project_id = p.id) as github_integration_id
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
-        ORDER BY p.status, p.name
+        ORDER BY
+            CASE WHEN p.status = 'proposed' THEN 0 ELSE 1 END,
+            p.status, p.name
     `, [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
@@ -3089,6 +3167,54 @@ app.patch('/api/projects/:id', requireAuth, requireAdmin, (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ status: 'updated' });
     });
+});
+
+// --- API: Project Attachments ---
+
+app.get('/api/projects/:projectId/attachments', requireAuth, (req, res) => {
+    db.all('SELECT id, project_id, filename, original_name, mimetype, size, created_by, created_at FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC',
+        [req.params.projectId], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
+});
+
+app.post('/api/projects/:projectId/attachments', requireAuth, requireAdmin, handleProjectAttachmentUpload, (req, res) => {
+    if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'Keine Dateien ausgewaehlt.' });
+    const projectId = req.params.projectId;
+    const createdBy = req.session.user || 'unknown';
+    const inserted = [];
+    let pending = req.files.length;
+    req.files.forEach(file => {
+        db.run(`INSERT INTO project_attachments (project_id, filename, original_name, mimetype, size, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
+            [projectId, file.filename, file.originalname, file.mimetype, file.size, createdBy],
+            function(err) {
+                if (!err) inserted.push({ id: this.lastID, filename: file.filename, original_name: file.originalname });
+                pending--;
+                if (pending === 0) res.status(201).json({ attachments: inserted });
+            });
+    });
+});
+
+app.delete('/api/projects/:projectId/attachments/:attachmentId', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT * FROM project_attachments WHERE id = ? AND project_id = ?',
+        [req.params.attachmentId, req.params.projectId], (err, row) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!row) return res.status(404).json({ error: 'Anhang nicht gefunden' });
+            const filePath = path.join(PROJECT_ATTACHMENT_UPLOAD_DIR, row.filename);
+            db.run('DELETE FROM project_attachments WHERE id = ?', [req.params.attachmentId], (delErr) => {
+                if (delErr) return res.status(500).json({ error: delErr.message });
+                fs.unlink(filePath, () => {}); // Datei loeschen, ignorieren wenn nicht vorhanden
+                res.json({ deleted: true });
+            });
+        });
+});
+
+// Dateien aus Project-Attachments ausliefern
+app.get('/uploads/projects/:filename', requireAuth, (req, res) => {
+    const filePath = path.join(PROJECT_ATTACHMENT_UPLOAD_DIR, req.params.filename);
+    if (!fs.existsSync(filePath)) return res.status(404).send('Datei nicht gefunden');
+    res.sendFile(filePath);
 });
 
 // --- API: Milestones ---
@@ -5254,10 +5380,14 @@ app.get('/projects', requireAuth, (req, res) => {
         SELECT p.*, s.name as system_name,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
-            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count
+            (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count,
+            (SELECT COUNT(*) FROM project_attachments WHERE project_id = p.id) as attachment_count,
+            (SELECT id FROM github_integration WHERE project_id = p.id) as github_integration_id
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
-        ORDER BY p.status, p.name
+        ORDER BY
+            CASE WHEN p.status = 'proposed' THEN 0 ELSE 1 END,
+            p.status, p.name
     `, [], (err, projects) => {
         if (err) return res.status(500).send('DB Error');
         db.all('SELECT id, name FROM systems WHERE active = 1 ORDER BY name', [], (err2, systems) => {
@@ -5304,17 +5434,21 @@ app.get('/project/:id', requireAuth, (req, res) => {
                                         }
                                         db.all('SELECT * FROM project_documents WHERE project_id = ? ORDER BY created_at DESC LIMIT 5',
                                             [projectId], (err, docs) => {
-                                                res.render('project-dashboard', {
-                                                    project,
-                                                    milestones: milestones || [],
-                                                    keyUsers: keyUsers || [],
-                                                    tickets: tickets || [],
-                                                    docs: docs || [],
-                                                    github: github || null,
-                                                    user: req.session.user,
-                                                    role: req.session.role || 'user',
-                                                    canManage: isAdminRole(req.session.role)
-                                                });
+                                                db.all('SELECT id, project_id, filename, original_name, mimetype, size, created_by, created_at FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC',
+                                                    [projectId], (err, attachments) => {
+                                                        res.render('project-dashboard', {
+                                                            project,
+                                                            milestones: milestones || [],
+                                                            keyUsers: keyUsers || [],
+                                                            tickets: tickets || [],
+                                                            docs: docs || [],
+                                                            attachments: attachments || [],
+                                                            github: github || null,
+                                                            user: req.session.user,
+                                                            role: req.session.role || 'user',
+                                                            canManage: isAdminRole(req.session.role)
+                                                        });
+                                                    });
                                             });
                                     });
                             });
