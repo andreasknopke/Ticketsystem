@@ -163,12 +163,12 @@
                       stack: true,
                       stackSubgroups: true,
                       orientation: { axis: 'bottom', item: 'top' },
-                      min: projectStart,
-                      max: projectEnd,
+                      min: null,
+                      max: null,
                       start: projectStart,
                       end: projectEnd,
-                      zoomMin: 1000 * 60 * 60 * 24 * 7,
-                      zoomMax: 1000 * 60 * 60 * 24 * 365 * 5,
+                      zoomable: false,
+                      moveable: true,
                       margin: { item: 15, axis: 10 },
                       locale: 'de',
                       showCurrentTime: true,
@@ -176,6 +176,17 @@
                       height: '420px'
                     };
                     var timeline = new vis.Timeline(container, items, options);
+                    window._tl = timeline;
+
+                    // Horizontal scroll buttons
+                    var nav = document.createElement('div');
+                    nav.className = 'flex items-center justify-center gap-3 mt-3';
+                    nav.innerHTML = '<button class="btn-secondary text-xs px-3 py-1" id="tlScrollLeft" title="Nach links scrollen">&larr;</button>' +
+                        '<span class="text-xs text-gray-500">Zum Verschieben ziehen &middot; Mausrad-Zoom deaktiviert</span>' +
+                        '<button class="btn-secondary text-xs px-3 py-1" id="tlScrollRight" title="Nach rechts scrollen">&rarr;</button>';
+                    container.parentNode.appendChild(nav);
+                    document.getElementById('tlScrollLeft').addEventListener('click', function () { window._tl.move(-0.25); });
+                    document.getElementById('tlScrollRight').addEventListener('click', function () { window._tl.move(0.25); });
                     timeline.on('select', function (props) {
                       if (!props.items || !props.items.length) return;
                       var selected = items.get(props.items[0]);

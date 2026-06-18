@@ -3314,6 +3314,9 @@ app.get('/api/projects/:projectId/milestones', requireAuth, (req, res) => {
 
 app.post('/api/projects/:projectId/milestones', requireAuth, requireAdmin, (req, res) => {
     const { title, description, phase, start_date, end_date, status, color } = req.body;
+    if (start_date && end_date && start_date > end_date) {
+        return res.status(400).json({ error: 'Das Startdatum muss vor dem Enddatum liegen.' });
+    }
     db.run(`INSERT INTO project_milestones (project_id, title, description, phase, start_date, end_date, status, color)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [req.params.projectId, title, description || '', phase || null, start_date || null, end_date || null, status || 'pending', color || '#2563eb'],
@@ -3331,10 +3334,28 @@ app.patch('/api/milestones/:id', requireAuth, requireAdmin, (req, res) => {
         if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren' });
+    // Date validation: check both start_date and end_date (existing + new values)
+    const checkStart = updates.start_date !== undefined ? updates.start_date : null;
+    const checkEnd = updates.end_date !== undefined ? updates.end_date : null;
+    if (checkStart && checkEnd && checkStart > checkEnd) {
+        return res.status(400).json({ error: 'Das Startdatum muss vor dem Enddatum liegen.' });
+    }
     updates.updated_at = new Date().toISOString();
     const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
     const values = [...Object.values(updates), req.params.id];
     db.get('SELECT project_id FROM project_milestones WHERE id = ?', [req.params.id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Meilenstein nicht gefunden' });
+        // If only one of start/end is being updated, check against the stored value
+        if ((updates.start_date !== undefined) !== (updates.end_date !== undefined)) {
+            const storedStart = updates.start_date !== undefined ? updates.start_date : null;
+            const storedEnd = updates.end_date !== undefined ? updates.end_date : null;
+            const findStart = storedStart !== null ? storedStart : row.start_date;
+            const findEnd = storedEnd !== null ? storedEnd : row.end_date;
+            if (findStart && findEnd && findStart > findEnd) {
+                return res.status(400).json({ error: 'Das Startdatum muss vor dem Enddatum liegen.' });
+            }
+        }
         db.run(`UPDATE project_milestones SET ${setClause} WHERE id = ?`, values, function(err) {
             if (err) return res.status(500).json({ error: err.message });
             if (row) io.emit('milestone:updated', { projectId: row.project_id });
