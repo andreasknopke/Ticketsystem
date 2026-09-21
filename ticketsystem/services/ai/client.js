@@ -37,7 +37,10 @@ const CONFIG = {
     },
     openai_local: {
         baseUrl: (env.OPENAI_LOCAL_BASE_URL || 'http://localhost:8000/v1').replace(/\/$/, ''),
-        apiKey: normalizeApiKey(env.OPENAI_LOCAL_API_KEY),
+        // Optionaler Bearer-Token fuer lokale Modelle (z.B. via Coolify gesetzt).
+        // Wenn OPENAI_LOCAL_TOKEN gesetzt ist, wird der Aufruf mit
+        // "Authorization: Bearer <token>" gesendet.
+        apiKey: normalizeApiKey(env.OPENAI_LOCAL_API_KEY || env.OPENAI_LOCAL_TOKEN),
         defaultModel: env.OPENAI_LOCAL_MODEL || 'local-model'
     },
     anthropic: {
