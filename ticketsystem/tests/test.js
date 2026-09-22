@@ -169,6 +169,7 @@ async function main() {
         ['/project/1/docs/einleitung', '/project/1/docs/einleitung'],
         ['/project/1/github', '/project/1/github'],
         ['/ticket/new', '/ticket/new'],
+        ['/features', '/features'],
         ['/stats', '/stats'],
         ['/admin/systems', '/admin/systems'],
         ['/admin/staff', '/admin/staff'],
@@ -203,6 +204,49 @@ async function main() {
 
     resp = await request('DELETE', '/api/tickets/' + ticketId, null, jar);
     assert(resp.status === 200, 'DELETE /api/tickets/' + ticketId);
+
+    // --- API: Features (geplante / verworfene Features je System) ---
+    console.log('\n📌 API: Features');
+    resp = await request('GET', '/api/features', null, jar);
+    assert(resp.status === 200 && Array.isArray(resp.body), 'GET /api/features (' + (resp.body.length || 0) + ' Features)');
+
+    resp = await request('POST', '/api/tickets', {
+        type:'feature', title:'Test-Feature', description:'Feature-Beschreibung',
+        priority:'mittel', urgency:'normal', system_id:1
+    });
+    assert(resp.status === 201 && resp.body.id, 'POST /api/tickets (Feature erstellt)');
+    const featureId = resp.body.id;
+
+    resp = await request('GET', '/api/tickets/' + featureId, null, jar);
+    assert(resp.status === 200 && resp.body.feature_decision === 'pending', 'Neues Feature startet in der Inbox (pending)');
+
+    resp = await request('PATCH', '/api/tickets/' + featureId, { feature_decision:'planned' }, jar);
+    assert(resp.status === 200 && resp.body.status === 'updated', 'PATCH feature_decision=planned');
+
+    resp = await request('GET', '/api/features?system_id=1&decision=planned', null, jar);
+    assert(resp.status === 200 && resp.body.some(f => f.id === featureId), 'Geplantes Feature liegt im Ordner "planned"');
+
+    resp = await request('PATCH', '/api/tickets/' + featureId, { feature_decision:'rejected', feature_reason:'Zu aufwaendig' }, jar);
+    assert(resp.status === 200, 'PATCH feature_decision=rejected');
+
+    resp = await request('GET', '/api/features?system_id=1&decision=rejected', null, jar);
+    assert(resp.status === 200 && resp.body.some(f => f.id === featureId), 'Verworfenes Feature liegt im Ordner "rejected"');
+
+    resp = await request('GET', '/api/tickets/' + featureId, null, jar);
+    assert(resp.status === 200 && resp.body.status === 'verworfen', 'Verworfenes Feature verlaesst den aktiven Backlog (status verworfen)');
+    assert(resp.body.discard_reason === 'Zu aufwaendig', 'Verwerfungsgrund wird gespeichert');
+
+    resp = await request('PATCH', '/api/features/' + featureId + '/decision', { decision:'planned' }, jar);
+    assert(resp.status === 200 && resp.body.feature_decision === 'planned', 'Verworfenes Feature kann in den Plan verschoben werden');
+
+    resp = await request('GET', '/api/tickets/' + featureId, null, jar);
+    assert(resp.status === 200 && resp.body.status === 'offen', 'Reaktiviertes Feature ist wieder aktiv (offen)');
+
+    resp = await request('PATCH', '/api/tickets/' + featureId, { feature_decision:'nonsense' }, jar);
+    assert(resp.status === 400, 'Ungueltige feature_decision wird abgelehnt');
+
+    resp = await request('DELETE', '/api/tickets/' + featureId, null, jar);
+    assert(resp.status === 200, 'DELETE /api/tickets/' + featureId + ' (Feature aufgeraeumt)');
 
     // --- Webhook ---
     console.log('\n📌 API: Webhook');
