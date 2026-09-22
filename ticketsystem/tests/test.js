@@ -248,6 +248,117 @@ async function main() {
     resp = await request('DELETE', '/api/tickets/' + featureId, null, jar);
     assert(resp.status === 200, 'DELETE /api/tickets/' + featureId + ' (Feature aufgeraeumt)');
 
+    // --- API: Plan-Reihenfolge (Prioritaet per Drag & Drop) ---
+    console.log('\n📌 API: Feature-Prioritaet (Reihenfolge)');
+    // Eigenes System anlegen, damit die Reihenfolge unabhaengig von Seed-Daten ist.
+    resp = await request('POST', '/api/systems', { name:'Reorder-Test-System' }, jar);
+    assert(resp.status === 200 && resp.body.id, 'POST /api/systems (Test-System fuer Reihenfolge)');
+    const reorderSystemId = resp.body.id;
+
+    const makePlanned = async (title) => {
+        const created = await request('POST', '/api/tickets', {
+            type:'feature', title, description:'x', priority:'mittel', system_id:reorderSystemId
+        });
+        const decided = await request('PATCH', '/api/features/' + created.body.id + '/decision', { decision:'planned' }, jar);
+        return { id: created.body.id, decided };
+    };
+
+    const f1 = await makePlanned('Reorder A');
+    const f2 = await makePlanned('Reorder B');
+    const f3 = await makePlanned('Reorder C');
+    assert(f1.decided.status === 200 && f2.decided.status === 200 && f3.decided.status === 200, 'Drei Features eingeplant');
+
+    resp = await request('GET', '/api/features?system_id=' + reorderSystemId + '&decision=planned', null, jar);
+    assert(resp.status === 200 && resp.body.length === 3, 'GET /api/features listet 3 geplante Features');
+    assert(resp.body.map(f => f.id).join(',') === [f1.id, f2.id, f3.id].join(','), 'Reihenfolge startet in Einplan-Reihenfolge (FIFO)');
+    assert(resp.body.map(f => f.feature_rank).join(',') === '0,1,2', 'Ranks werden fortlaufend vergeben (0,1,2)');
+
+    // Umdrehen: C, B, A
+    resp = await request('POST', '/api/features/reorder', {
+        system_id: reorderSystemId, order: [f3.id, f2.id, f1.id]
+    }, jar);
+    assert(resp.status === 200 && resp.body.status === 'reordered', 'POST /api/features/reorder (umgedreht)');
+
+    resp = await request('GET', '/api/features?system_id=' + reorderSystemId + '&decision=planned', null, jar);
+    assert(resp.body.map(f => f.id).join(',') === [f3.id, f2.id, f1.id].join(','), 'Neue Reihenfolge wird persistiert');
+    assert(resp.body.map(f => f.feature_rank).join(',') === '0,1,2', 'Ranks bleiben eindeutig (0,1,2)');
+
+    resp = await request('GET', '/features?system=' + reorderSystemId, null, jar);
+    assert(resp.status === 200, 'GET /features rendert die Reihenfolge (200 OK)');
+
+    // Validierung
+    resp = await request('POST', '/api/features/reorder', { system_id: reorderSystemId, order: [] }, jar);
+    assert(resp.status === 400, 'Leere Reihenfolge wird abgelehnt');
+
+    resp = await request('POST', '/api/features/reorder', { system_id: reorderSystemId, order: [f1.id, f1.id] }, jar);
+    assert(resp.status === 400, 'Doppelte IDs werden abgelehnt');
+
+    resp = await request('POST', '/api/features/reorder', { system_id: reorderSystemId, order: [f1.id] }, jar);
+    assert(resp.status === 400, 'Unvollstaendige Reihenfolge wird abgelehnt (keine doppelten Ranks)');
+
+    resp = await request('POST', '/api/features/reorder', { system_id: reorderSystemId, order: [f1.id, f2.id, 'does-not-exist'] }, jar);
+    assert(resp.status === 404, 'Unbekannte Ticket-ID wird abgelehnt');
+
+    // Ein verworfenes und ein noch offenes Feature duerfen nicht in die Reihenfolge.
+    const rejectedProbe = await request('POST', '/api/tickets', {
+        type:'feature', title:'Reorder Rejected', description:'x', priority:'mittel', system_id:reorderSystemId
+    });
+    await request('PATCH', '/api/features/' + rejectedProbe.body.id + '/decision', { decision:'rejected' }, jar);
+    resp = await request('POST', '/api/features/reorder', {
+        system_id: reorderSystemId, order: [f1.id, f2.id, rejectedProbe.body.id]
+    }, jar);
+    assert(resp.status === 400, 'Verworfenes Feature kann nicht sortiert werden');
+
+    const pendingProbe = await request('POST', '/api/tickets', {
+        type:'feature', title:'Reorder Pending', description:'x', priority:'mittel', system_id:reorderSystemId
+    });
+    resp = await request('POST', '/api/features/reorder', {
+        system_id: reorderSystemId, order: [f1.id, f2.id, pendingProbe.body.id]
+    }, jar);
+    assert(resp.status === 400, 'Noch nicht entschiedenes Feature kann nicht sortiert werden');
+
+    const bugProbe = await request('POST', '/api/tickets', {
+        type:'bug', title:'Reorder Bug', description:'x', priority:'mittel', system_id:reorderSystemId
+    });
+    resp = await request('POST', '/api/features/reorder', {
+        system_id: reorderSystemId, order: [f1.id, f2.id, bugProbe.body.id]
+    }, jar);
+    assert(resp.status === 400, 'Bug-Ticket kann nicht sortiert werden');
+
+    await request('DELETE', '/api/tickets/' + rejectedProbe.body.id, null, jar);
+    await request('DELETE', '/api/tickets/' + pendingProbe.body.id, null, jar);
+    await request('DELETE', '/api/tickets/' + bugProbe.body.id, null, jar);
+
+    // Vollstaendigkeit: die drei geplanten Features sind weiterhin unveraendert sortiert.
+    resp = await request('GET', '/api/features?system_id=' + reorderSystemId + '&decision=planned', null, jar);
+    assert(resp.body.map(f => f.id).join(',') === [f3.id, f2.id, f1.id].join(','), 'Abgelehnte Reorders veraendern die Reihenfolge nicht');
+
+    // Rang wird beim Verlassen des Plans freigegeben und beim erneuten Planen hinten angehaengt.
+    resp = await request('PATCH', '/api/features/' + f1.id + '/decision', { decision:'pending' }, jar);
+    assert(resp.status === 200, 'Feature zurueck in die Inbox');
+
+    resp = await request('GET', '/api/tickets/' + f1.id, null, jar);
+    assert(resp.status === 200 && resp.body.feature_rank === null, 'Rang wird beim Verlassen des Plans freigegeben');
+
+    resp = await request('GET', '/api/features?system_id=' + reorderSystemId + '&decision=planned', null, jar);
+    assert(resp.body.map(f => f.id).join(',') === [f3.id, f2.id].join(','), 'Zurueckgelegtes Feature verschwindet aus dem Plan');
+
+    resp = await request('PATCH', '/api/features/' + f1.id + '/decision', { decision:'planned' }, jar);
+    assert(resp.status === 200, 'Feature erneut einplanen');
+
+    resp = await request('GET', '/api/features?system_id=' + reorderSystemId + '&decision=planned', null, jar);
+    assert(resp.body.map(f => f.id).join(',') === [f3.id, f2.id, f1.id].join(','), 'Erneut eingeplantes Feature landet am Ende');
+
+    // Aufraeumen
+    for (const f of [f1, f2, f3]) {
+        await request('DELETE', '/api/tickets/' + f.id, null, jar);
+    }
+    // Test-System wieder deaktivieren, damit es nicht im Feature-Picker auftaucht.
+    const csrfPage = await request('GET', '/ticket/new', null, jar);
+    const csrfMatch = (typeof csrfPage.body === 'string' ? csrfPage.body : '').match(/name="_csrf" value="([^"]+)"/);
+    resp = await request('POST', '/admin/systems/' + reorderSystemId + '/delete', { _csrf: csrfMatch ? csrfMatch[1] : '' }, jar);
+    assert(resp.status === 302, 'Reorder-Test-System deaktiviert');
+
     // --- Webhook ---
     console.log('\n📌 API: Webhook');
     resp = await request('POST', '/api/github/webhook', {
