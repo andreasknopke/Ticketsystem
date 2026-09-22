@@ -23,6 +23,7 @@
                     </div>
                     <div class="hidden md:ml-8 md:flex md:space-x-1">
                         <a href="/" class="nav-link">Dashboard</a>
+                        <a href="/features" class="nav-link">Features</a>
                         <% if (role === 'admin' || role === 'root') { %>
                         <a href="/stats" class="nav-link">Statistiken</a>
                         <% } %>
@@ -259,6 +260,63 @@
 
             <!-- Right Column: Sidebar -->
             <div class="space-y-4">
+                <% if (ticket.type === 'feature') { %>
+                <% const featureDecision = ticket.feature_decision || 'pending'; %>
+                <!-- Feature-Entscheidung -->
+                <div class="card border-primary-200">
+                    <div class="card-header py-3 px-5 bg-primary-50 border-primary-200">
+                        <h3 class="text-sm font-semibold text-primary-700 uppercase tracking-wide">Feature-Entscheidung</h3>
+                    </div>
+                    <div class="card-body py-3 px-5 space-y-3">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="text-xs font-medium text-gray-500">Aktueller Status</span>
+                            <% if (featureDecision === 'planned') { %>
+                            <span class="badge bg-green-100 text-green-800">Geplant</span>
+                            <% } else if (featureDecision === 'rejected') { %>
+                            <span class="badge bg-red-100 text-red-800">Verworfen</span>
+                            <% } else { %>
+                            <span class="badge bg-amber-100 text-amber-800">Zu entscheiden</span>
+                            <% } %>
+                        </div>
+                        <% if (ticket.feature_decided_by) { %>
+                        <p class="text-xs text-gray-500">Entschieden von <span class="font-medium text-gray-700"><%= ticket.feature_decided_by %></span><% if (ticket.feature_decided_at) { %> am <%= formatDateTime(ticket.feature_decided_at) %><% } %></p>
+                        <% } %>
+                        <% if (featureDecision === 'rejected' && ticket.feature_reason) { %>
+                        <p class="text-xs text-gray-600"><strong>Begründung:</strong> <%= ticket.feature_reason %></p>
+                        <% } %>
+                        <% if (canManageTickets) { %>
+                            <% if (featureDecision !== 'planned') { %>
+                            <form method="post" action="/ticket/<%= ticket.id %>/feature-decision">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <input type="hidden" name="decision" value="planned">
+                                <input type="hidden" name="redirect" value="/ticket/<%= ticket.id %>">
+                                <button type="submit" class="btn-primary w-full text-sm">In Plan aufnehmen</button>
+                            </form>
+                            <% } %>
+                            <% if (featureDecision !== 'rejected') { %>
+                            <form method="post" action="/ticket/<%= ticket.id %>/feature-decision" class="space-y-2">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <input type="hidden" name="decision" value="rejected">
+                                <input type="hidden" name="redirect" value="/ticket/<%= ticket.id %>">
+                                <input type="text" name="reason" class="form-input text-sm" placeholder="Grund (optional)">
+                                <button type="submit" class="btn-danger w-full text-sm">Verwerfen</button>
+                            </form>
+                            <% } %>
+                            <% if (featureDecision !== 'pending') { %>
+                            <form method="post" action="/ticket/<%= ticket.id %>/feature-decision">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <input type="hidden" name="decision" value="pending">
+                                <input type="hidden" name="redirect" value="/ticket/<%= ticket.id %>">
+                                <button type="submit" class="btn-secondary w-full text-sm">Zurück in die Feature-Inbox</button>
+                            </form>
+                            <% } %>
+                            <a href="/features<% if (ticket.system_id) { %>?system=<%= ticket.system_id %><% } %>" class="block text-center text-xs text-primary-600 hover:text-primary-700">Zu den Features dieses Systems</a>
+                        <% } else { %>
+                        <p class="text-xs text-gray-500">Nur Bearbeiter können Features einplanen oder verwerfen.</p>
+                        <% } %>
+                    </div>
+                </div>
+                <% } %>
                 <% if (canManageTickets) { %>
                 <!-- Actions -->
                 <div class="card">

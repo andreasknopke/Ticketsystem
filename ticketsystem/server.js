@@ -533,7 +533,11 @@ function migrateTicketIdsToText() {
                 reference_repo_owner TEXT,
                 reference_repo_name TEXT,
                 final_decision TEXT,
-                discard_reason TEXT
+                discard_reason TEXT,
+                feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected')),
+                feature_decided_at DATETIME,
+                feature_decided_by TEXT,
+                feature_reason TEXT
             )`,
             `INSERT INTO tickets__new (
                 id, type, title, description, username, console_logs, software_info, status, priority,
@@ -541,7 +545,7 @@ function migrateTicketIdsToText() {
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
                 merge_review, reference_repo_owner, reference_repo_name, final_decision,
-                discard_reason
+                discard_reason, feature_decision, feature_decided_at, feature_decided_by, feature_reason
             )
             SELECT
                 CAST(id AS TEXT), type, title, description, username, console_logs, software_info, status, priority,
@@ -549,7 +553,7 @@ function migrateTicketIdsToText() {
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
                 merge_review, reference_repo_owner, reference_repo_name, final_decision,
-                NULL AS discard_reason
+                NULL AS discard_reason, NULL, NULL, NULL, NULL
             FROM tickets`,
             'DROP TABLE tickets',
             'ALTER TABLE tickets__new RENAME TO tickets',
@@ -846,6 +850,125 @@ function migrateProjectKeyUsersToExternalContacts() {
         };
 
         db.serialize(runNext);
+    });
+}
+
+// --- Feature-Organisation -------------------------------------------------
+// Feature-Tickets (type = 'feature') bekommen einen eigenen Organisationsstatus,
+// unabhaengig vom Ticket-Status:
+//   pending  -> liegt in der Feature-Inbox und wartet auf eine Entscheidung
+//   planned  -> in den Plan aufgenommen (Umsetzung laeuft wie gewohnt)
+//   rejected -> verworfen, bleibt im Ordner "Verworfene Features" erhalten
+// Bugs und sonstige Tickets haben hier NULL.
+const FEATURE_DECISIONS = ['pending', 'planned', 'rejected'];
+const FEATURE_DECISION_LABELS = {
+    pending: 'Zu entscheiden',
+    planned: 'Geplant',
+    rejected: 'Verworfen'
+};
+
+const FEATURE_DECISION_MIGRATIONS = [
+    { col: 'feature_decision', sql: "ALTER TABLE tickets ADD COLUMN feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected'))" },
+    { col: 'feature_decided_at', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_at DATETIME' },
+    { col: 'feature_decided_by', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_by TEXT' },
+    { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' }
+];
+
+function migrateFeatureDecisions() {
+    db.all('PRAGMA table_info(tickets)', (err, rows) => {
+        if (err) {
+            console.error('[migration] feature_decision PRAGMA fehlgeschlagen:', err.message);
+            return;
+        }
+        if (!rows || rows.length === 0) return; // tickets-Tabelle noch nicht vorhanden
+        const cols = rows.map(r => r.name);
+        const missing = FEATURE_DECISION_MIGRATIONS.filter(m => !cols.includes(m.col));
+        if (!missing.length) {
+            backfillFeatureDecisions();
+            return;
+        }
+        let index = 0;
+        const next = () => {
+            if (index >= missing.length) {
+                backfillFeatureDecisions();
+                return;
+            }
+            const migration = missing[index];
+            index += 1;
+            db.run(migration.sql, (e) => {
+                if (e) console.error(`Fehler beim Hinzufuegen von tickets.${migration.col}:`, e.message);
+                next();
+            });
+        };
+        next();
+    });
+}
+
+function backfillFeatureDecisions() {
+    // Bestehende Feature-Tickets einmalig in die Inbox uebernehmen.
+    db.run(`UPDATE tickets SET feature_decision = 'pending'
+        WHERE type = 'feature' AND feature_decision IS NULL`, function(err) {
+        if (err) {
+            console.error('[migration] Feature-Backfill fehlgeschlagen:', err.message);
+            return;
+        }
+        if (this.changes > 0) {
+            console.log(`[migration] ${this.changes} Feature-Ticket(s) in die Feature-Inbox uebernommen`);
+        }
+    });
+}
+
+function normalizeFeatureDecision(value) {
+    const text = String(value === undefined || value === null ? '' : value).trim();
+    return FEATURE_DECISIONS.includes(text) ? text : null;
+}
+
+// Setzt die Feature-Entscheidung eines Tickets. Rejected zieht das Ticket aus
+// dem aktiven Backlog (Status 'verworfen'), planned holt es bei Bedarf zurueck.
+function setFeatureDecision(ticket, decision, reason, actor, callback) {
+    if (!ticket || ticket.type !== 'feature') {
+        return callback(new Error('Nur Feature-Tickets koennen eingeplant oder verworfen werden.'));
+    }
+    if (!FEATURE_DECISIONS.includes(decision)) {
+        return callback(new Error('Ungueltige Feature-Entscheidung.'));
+    }
+
+    const updates = {
+        feature_decision: decision,
+        feature_decided_at: new Date().toISOString(),
+        feature_decided_by: actor || null,
+        feature_reason: decision === 'rejected' ? (reason || null) : null
+    };
+
+    if (decision === 'rejected') {
+        updates.status = 'verworfen';
+        updates.discard_reason = reason || null;
+        updates.closed_at = new Date().toISOString();
+        updates.feedback_requested = 0;
+    } else if (ticket.status === 'verworfen') {
+        // Feature aus dem Ordner "Verworfen" zurueckholen (Plan oder Inbox).
+        updates.discard_reason = null;
+        if (decision === 'planned') {
+            updates.status = 'offen';
+            updates.closed_at = null;
+            updates.feedback_requested = 0;
+        }
+    }
+
+    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    const values = [...Object.values(updates), ticket.id];
+    db.run(`UPDATE tickets SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, values, function(err) {
+        if (err) return callback(err);
+        if (this.changes === 0) return callback(new Error('Ticket nicht gefunden.'));
+        callback(null, updates);
+    });
+}
+
+// Neue Feature-Tickets starten in der Feature-Inbox ("zu entscheiden").
+function initFeatureDecision(ticketId, type) {
+    if (type !== 'feature') return;
+    db.run(`UPDATE tickets SET feature_decision = 'pending' WHERE id = ? AND type = 'feature'`, [ticketId], (err) => {
+        if (err) console.error('Feature-Inbox Initialisierung fehlgeschlagen:', err.message);
     });
 }
 
@@ -1155,8 +1278,18 @@ function initDb() {
         label TEXT NOT NULL,
         sort_order INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`, (err) => { if (err) console.error('project_training_goals table error:', err.message); });
-    db.run(`CREATE INDEX IF NOT EXISTS idx_training_goals_project ON project_training_goals(project_id)`);
+    )`, (err) => {
+        if (err) {
+            console.error('project_training_goals table error:', err.message);
+            return;
+        }
+        // Index erst nach erfolgreicher Tabellenerstellung anlegen: node-sqlite3
+        // bereitet Statements asynchron vor, ein nachgelagertes CREATE INDEX kann
+        // sonst vor der Tabelle ausgefuehrt werden und den Prozess abbrechen.
+        db.run(`CREATE INDEX IF NOT EXISTS idx_training_goals_project ON project_training_goals(project_id)`, (indexErr) => {
+            if (indexErr) console.error('idx_training_goals_project error:', indexErr.message);
+        });
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS key_user_training_selections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1164,9 +1297,18 @@ function initDb() {
         training_goal_id INTEGER NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(key_user_id, training_goal_id)
-    )`, (err) => { if (err) console.error('key_user_training_selections table error:', err.message); });
-    db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_keyuser ON key_user_training_selections(key_user_id)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_goal ON key_user_training_selections(training_goal_id)`);
+    )`, (err) => {
+        if (err) {
+            console.error('key_user_training_selections table error:', err.message);
+            return;
+        }
+        db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_keyuser ON key_user_training_selections(key_user_id)`, (indexErr) => {
+            if (indexErr) console.error('idx_kuts_keyuser error:', indexErr.message);
+        });
+        db.run(`CREATE INDEX IF NOT EXISTS idx_kuts_goal ON key_user_training_selections(training_goal_id)`, (indexErr) => {
+            if (indexErr) console.error('idx_kuts_goal error:', indexErr.message);
+        });
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS project_documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1296,7 +1438,11 @@ function initDb() {
             { col: 'merge_review', sql: 'ALTER TABLE tickets ADD COLUMN merge_review TEXT' },
             { col: 'reference_repo_owner', sql: 'ALTER TABLE tickets ADD COLUMN reference_repo_owner TEXT' },
             { col: 'reference_repo_name', sql: 'ALTER TABLE tickets ADD COLUMN reference_repo_name TEXT' },
-            { col: 'final_decision', sql: "ALTER TABLE tickets ADD COLUMN final_decision TEXT" }
+            { col: 'final_decision', sql: "ALTER TABLE tickets ADD COLUMN final_decision TEXT" },
+            { col: 'feature_decision', sql: "ALTER TABLE tickets ADD COLUMN feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected'))" },
+            { col: 'feature_decided_at', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_at DATETIME' },
+            { col: 'feature_decided_by', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_by TEXT' },
+            { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' }
         ];
 
         migrations.forEach(m => {
@@ -1632,6 +1778,9 @@ function initDb() {
     });
 
     migrateTicketIdsToText();
+
+    // Feature-Organisation (Inbox / Geplant / Verworfen) sicherstellen.
+    migrateFeatureDecisions();
 }
 
 // Bei aelteren DBs enthalten die CHECK-Constraints von staff_roles/workflow_stages/
@@ -1798,7 +1947,11 @@ function initTicketsTable() {
             reference_repo_owner TEXT,
             reference_repo_name TEXT,
             final_decision TEXT,
-            discard_reason TEXT
+            discard_reason TEXT,
+            feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected')),
+            feature_decided_at DATETIME,
+            feature_decided_by TEXT,
+            feature_reason TEXT
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -2883,7 +3036,10 @@ app.post('/api/tickets', publicTicketApiRateLimit, requireApiAllowedIp, requireA
         
         // SLA initialisieren
         initSLA(ticketId, d.priority || 'mittel', new Date().toISOString());
-        
+
+        // Feature-Tickets landen in der Feature-Inbox
+        initFeatureDecision(ticketId, d.type);
+
         logAction(ticketId, getActor(req), 'created', `Ticket erstellt: ${d.title}${deadline ? ' | Frist bis ' + app.locals.formatDateTime(deadline) : ''}`);
         addActivity(ticketId, getActor(req), 'created', 'Ticket erstellt', { title: d.title, type: d.type });
         
@@ -2978,7 +3134,7 @@ app.get('/api/tickets/:id', requireAuth, (req, res) => {
 });
 
 app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
-    const allowed = ['title', 'description', 'status', 'priority', 'type', 'username', 'console_logs', 'software_info', 'system_id', 'assigned_to', 'location', 'contact_email', 'urgency', 'discard_reason'];
+    const allowed = ['title', 'description', 'status', 'priority', 'type', 'username', 'console_logs', 'software_info', 'system_id', 'assigned_to', 'location', 'contact_email', 'urgency', 'discard_reason', 'feature_decision', 'feature_reason'];
     const updates = {};
     for (const key of allowed) {
         if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -2993,6 +3149,35 @@ app.patch('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
     db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, oldTicket) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!oldTicket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+
+        // Feature-Entscheidung (Inbox / Geplant / Verworfen) abbilden.
+        if (updates.feature_decision !== undefined) {
+            const decision = normalizeFeatureDecision(updates.feature_decision);
+            if (!decision) return res.status(400).json({ error: 'Ungueltige feature_decision' });
+            if (oldTicket.type !== 'feature') {
+                return res.status(400).json({ error: 'Nur Feature-Tickets koennen eingeplant oder verworfen werden.' });
+            }
+            updates.feature_decision = decision;
+            updates.feature_decided_at = new Date().toISOString();
+            updates.feature_decided_by = getActor(req);
+            if (updates.feature_reason !== undefined) {
+                updates.feature_reason = normalizeOptionalText(updates.feature_reason);
+            }
+            if (decision === 'rejected') {
+                if (updates.status === undefined) updates.status = 'verworfen';
+                if (updates.feature_reason !== undefined && updates.discard_reason === undefined) {
+                    updates.discard_reason = updates.feature_reason;
+                }
+            } else {
+                updates.feature_reason = null;
+                if (decision === 'planned' && oldTicket.status === 'verworfen' && updates.status === undefined) {
+                    updates.status = 'offen';
+                }
+            }
+        } else if (updates.feature_reason !== undefined) {
+            // Begruendung nur zusammen mit einer Entscheidung speichern.
+            delete updates.feature_reason;
+        }
 
         if (updates.urgency !== undefined || updates.priority !== undefined || updates.type !== undefined) {
             updates.deadline = calculateDeadline(
@@ -3078,6 +3263,69 @@ app.delete('/api/tickets/:id', requireAuth, requireAdmin, (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         if (this.changes === 0) return res.status(404).json({ error: 'Ticket nicht gefunden' });
         res.json({ id: req.params.id, status: 'deleted' });
+    });
+});
+
+// --- API: Features (Organisation nach System) ---
+
+// Liefert Feature-Tickets (type = 'feature'), optional gefiltert nach System
+// und Feature-Entscheidung (pending / planned / rejected).
+app.get('/api/features', requireAuth, (req, res) => {
+    const visibility = ticketVisibilityClause(req, 't');
+    let query = `SELECT t.*, s.name as system_name, st.name as assigned_name
+        FROM tickets t
+        LEFT JOIN systems s ON t.system_id = s.id
+        LEFT JOIN staff st ON t.assigned_to = st.id
+        WHERE t.type = 'feature'${visibility.clause}`;
+    const params = [...visibility.params];
+
+    const systemFilter = req.query.system_id === undefined ? '' : String(req.query.system_id);
+    if (systemFilter === 'none') {
+        query += ' AND t.system_id IS NULL';
+    } else if (systemFilter !== '') {
+        const systemId = parseInt(systemFilter, 10);
+        if (!Number.isInteger(systemId)) return res.status(400).json({ error: 'system_id ist ungueltig' });
+        query += ' AND t.system_id = ?';
+        params.push(systemId);
+    }
+
+    if (req.query.decision !== undefined && req.query.decision !== '') {
+        const decision = normalizeFeatureDecision(req.query.decision);
+        if (!decision) return res.status(400).json({ error: 'Ungueltige decision' });
+        query += ' AND COALESCE(t.feature_decision, \'pending\') = ?';
+        params.push(decision);
+    }
+
+    query += ` ORDER BY CASE COALESCE(t.feature_decision, 'pending') WHEN 'pending' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, t.updated_at DESC`;
+
+    db.all(query, params, (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json((rows || []).map(row => ({
+            ...enrichTicket(row),
+            feature_decision: row.feature_decision || 'pending'
+        })));
+    });
+});
+
+app.patch('/api/features/:id/decision', requireAuth, requireAdmin, (req, res) => {
+    const decision = normalizeFeatureDecision(req.body.decision);
+    if (!decision) return res.status(400).json({ error: 'Ungueltige decision' });
+    const reason = normalizeOptionalText(req.body.reason);
+
+    db.get('SELECT * FROM tickets WHERE id = ?', [req.params.id], (err, ticket) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+        setFeatureDecision(ticket, decision, reason, getActor(req), (decisionErr, updates) => {
+            if (decisionErr) return res.status(400).json({ error: decisionErr.message });
+            const details = decision === 'rejected'
+                ? `Feature verworfen${reason ? ': ' + reason : ''}`
+                : decision === 'planned' ? 'Feature in den Plan aufgenommen' : 'Feature-Entscheidung zurueckgesetzt';
+            logAction(ticket.id, getActor(req), 'feature_decision', `${details} (${ticket.feature_decision || 'pending'} → ${decision})`);
+            addActivity(ticket.id, getActor(req), 'feature_decision', details, { decision, reason: reason || '' });
+            io.emit('feature-updated', { ticketId: ticket.id, decision, systemId: ticket.system_id || null });
+            io.to(`ticket-${ticket.id}`).emit('ticket-updated', { ticketId: ticket.id, updates: { feature_decision: decision, status: updates.status }, actor: getActor(req) });
+            res.json({ id: ticket.id, status: 'updated', feature_decision: decision, ticket_status: updates.status || ticket.status });
+        });
     });
 });
 
@@ -5008,6 +5256,157 @@ app.get('/', requireAuth, (req, res) => {
 });
 });
 
+// --- Web UI: Feature-Organisation ---
+
+// Übersichtsseite: pro System die geplanten und verworfenen Features
+// (plus Inbox der noch zu entscheidenden Vorschläge).
+app.get('/features', requireAuth, (req, res) => {
+    const visibility = ticketVisibilityClause(req, 't');
+
+    db.all('SELECT id, name FROM systems WHERE active = 1 ORDER BY name', [], (systemsErr, systems) => {
+        if (systemsErr) return res.status(500).send('DB Error');
+        const systemList = systems || [];
+
+        db.all(`SELECT t.system_id, COALESCE(t.feature_decision, 'pending') AS decision, COUNT(*) AS count
+            FROM tickets t
+            WHERE t.type = 'feature'${visibility.clause}
+            GROUP BY t.system_id, COALESCE(t.feature_decision, 'pending')`,
+        visibility.params, (countErr, countRows) => {
+            if (countErr) return res.status(500).send('DB Error');
+
+            const counts = {};
+            (countRows || []).forEach(row => {
+                const key = row.system_id === null || row.system_id === undefined ? 'none' : String(row.system_id);
+                if (!counts[key]) counts[key] = { pending: 0, planned: 0, rejected: 0, total: 0 };
+                const decision = FEATURE_DECISIONS.includes(row.decision) ? row.decision : 'pending';
+                counts[key][decision] += row.count;
+                counts[key].total += row.count;
+            });
+
+            const requested = req.query.system === undefined || req.query.system === '' ? null : String(req.query.system);
+            let selected = null;
+            if (requested === 'none') {
+                selected = 'none';
+            } else if (requested && systemList.some(s => String(s.id) === requested)) {
+                selected = requested;
+            } else {
+                // Standard: System mit den meisten offenen Entscheidungen, sonst erstes System.
+                const candidates = systemList
+                    .map(s => ({ id: String(s.id), stats: counts[String(s.id)] || { pending: 0, total: 0 } }))
+                    .filter(c => c.stats.total > 0)
+                    .sort((a, b) => b.stats.pending - a.stats.pending || b.stats.total - a.stats.total);
+                if (candidates.length) selected = candidates[0].id;
+                else if (systemList.length) selected = String(systemList[0].id);
+                else if (counts.none && counts.none.total > 0) selected = 'none';
+            }
+
+            let featureQuery = `SELECT t.*, s.name as system_name, st.name as assigned_name
+                FROM tickets t
+                LEFT JOIN systems s ON t.system_id = s.id
+                LEFT JOIN staff st ON t.assigned_to = st.id
+                WHERE t.type = 'feature'${visibility.clause}`;
+            const featureParams = [...visibility.params];
+            if (selected === 'none') {
+                featureQuery += ' AND t.system_id IS NULL';
+            } else if (selected) {
+                featureQuery += ' AND t.system_id = ?';
+                featureParams.push(parseInt(selected, 10));
+            } else {
+                featureQuery += ' AND 1 = 0';
+            }
+            featureQuery += ` ORDER BY COALESCE(t.feature_decision, 'pending') != 'pending', t.updated_at DESC`;
+
+            db.all(featureQuery, featureParams, (featuresErr, featureRows) => {
+                if (featuresErr) return res.status(500).send('DB Error');
+                const groups = { pending: [], planned: [], rejected: [] };
+                (featureRows || []).forEach(row => {
+                    const decision = FEATURE_DECISIONS.includes(row.feature_decision) ? row.feature_decision : 'pending';
+                    const enriched = enrichTicket({ ...row, feature_decision: decision });
+                    groups[decision].push(enriched);
+                });
+
+                const selectedSystem = selected === 'none'
+                    ? { id: 'none', name: 'Ohne System' }
+                    : systemList.find(s => String(s.id) === selected) || null;
+
+                res.render('features', {
+                    user: req.session.user,
+                    role: req.session.role || 'user',
+                    canManageTickets: canManageTickets(req),
+                    systems: systemList,
+                    counts,
+                    selected,
+                    selectedSystem,
+                    groups,
+                    decisionLabels: FEATURE_DECISION_LABELS,
+                    totalFeatures: (featureRows || []).length
+                });
+            });
+        });
+    });
+});
+
+// Entscheidung zu einem Feature-Vorschlag: in den Plan aufnehmen oder verwerfen.
+app.post('/ticket/:id/feature-decision', requireAuth, (req, res) => {
+    if (!canManageTickets(req)) return res.status(403).send('Keine Berechtigung.');
+
+    const ticketId = req.params.id;
+    const actor = getActor(req);
+    const decision = normalizeFeatureDecision(req.body.decision);
+    const reason = normalizeOptionalText(req.body.reason);
+
+    if (!decision) return res.status(400).send('Ungueltige Feature-Entscheidung');
+
+    const rawRedirect = typeof req.body.redirect === 'string' ? req.body.redirect : '';
+    const redirectTarget = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : null;
+
+    db.get('SELECT * FROM tickets WHERE id = ?', [ticketId], (err, ticket) => {
+        if (err || !ticket) return res.status(404).send('Ticket nicht gefunden');
+
+        const previousDecision = ticket.feature_decision || 'pending';
+        setFeatureDecision(ticket, decision, reason, actor, (decisionErr, updates) => {
+            if (decisionErr) {
+                const badRequest = /nur Feature-Tickets|Ungueltige Feature-Entscheidung/i.test(decisionErr.message);
+                return res.status(badRequest ? 400 : 500).send(decisionErr.message);
+            }
+
+            const details = decision === 'rejected'
+                ? `Feature verworfen${reason ? ': ' + reason : ''}`
+                : decision === 'planned' ? 'Feature in den Plan aufgenommen' : 'Feature-Entscheidung zurueckgesetzt';
+            logAction(ticketId, actor, 'feature_decision', `${details} (${previousDecision} → ${decision})`);
+            addActivity(ticketId, actor, 'feature_decision', details, {
+                decision,
+                previous: previousDecision,
+                reason: reason || ''
+            });
+
+            if (updates.status && updates.status !== ticket.status) {
+                addActivity(ticketId, actor, 'status_changed', `Status geändert: ${ticket.status} → ${updates.status}`, {
+                    old: ticket.status,
+                    new: updates.status
+                });
+                if (updates.status === 'verworfen') {
+                    updateSLAResolution(ticketId);
+                    db.get(`SELECT t.*, s.name as system_name FROM tickets t
+                        LEFT JOIN systems s ON t.system_id = s.id WHERE t.id = ?`, [ticketId], (mailErr, updatedTicket) => {
+                        if (!mailErr && updatedTicket) mailStatusChange(updatedTicket, ticket.status);
+                    });
+                }
+            }
+
+            io.to(`ticket-${ticketId}`).emit('ticket-updated', {
+                ticketId,
+                updates: { feature_decision: decision, status: updates.status },
+                actor
+            });
+            io.emit('feature-updated', { ticketId, decision, systemId: ticket.system_id || null });
+
+            const fallback = ticket.system_id ? `/features?system=${ticket.system_id}` : '/features';
+            res.redirect(redirectTarget || fallback);
+        });
+    });
+});
+
 app.get('/ticket/new', requireAuth, (req, res) => {
     db.all('SELECT * FROM systems WHERE active = 1', [], (err, systems) => {
         db.all('SELECT * FROM ticket_templates WHERE active = 1', [], (err, templates) => {
@@ -5064,7 +5463,8 @@ app.get('/ticket/:id', requireAuth, (req, res) => {
                                         externalDispatchPromptBranchToken: EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
                                         user,
                                         role,
-                                        canManageTickets: canManage
+                                        canManageTickets: canManage,
+                                        featureDecisionLabels: FEATURE_DECISION_LABELS
                                     });
                                 });
                             };
@@ -5353,6 +5753,9 @@ app.post('/ticket/new', requireAuth, (req, res) => {
         // SLA initialisieren
         initSLA(ticketId, d.priority || 'mittel', new Date().toISOString());
         
+        // Feature-Tickets landen in der Feature-Inbox
+        initFeatureDecision(ticketId, d.type);
+
         logAction(ticketId, getActor(req), 'created', `Ticket erstellt: ${d.title}${deadline ? ' | Frist bis ' + app.locals.formatDateTime(deadline) : ''}`);
         addActivity(ticketId, getActor(req), 'created', 'Ticket erstellt', { title: d.title, type: d.type });
         
