@@ -269,9 +269,10 @@ async function seed() {
 
             await runQuery(`
                 INSERT INTO tickets (
-                    id, type, title, description, status, priority, system_id, assigned_to
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [ticketId, type, title, description, status, priority, system.id, staff.id]
+                    id, type, title, description, status, priority, system_id, assigned_to, feature_decision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [ticketId, type, title, description, status, priority, system.id, staff.id,
+                 type === 'feature' ? 'pending' : null]
             );
         }
 
