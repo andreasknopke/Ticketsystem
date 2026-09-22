@@ -266,6 +266,8 @@
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border" id="lbl-überprüft" style="background:#e0e7ff;border-color:#a5b4fc;color:#3730a3"><input type="checkbox" class="status-filter rounded" value="überprüft" checked onchange="filterTable()"> Überprüft</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border opacity-60 hover:opacity-100" id="lbl-geschlossen" style="background:#d1fae5;border-color:#6ee7b7;color:#065f46"><input type="checkbox" class="status-filter rounded" value="geschlossen" onchange="filterTable()"> Geschlossen</label>
                     <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border opacity-60 hover:opacity-100" id="lbl-verworfen" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><input type="checkbox" class="status-filter rounded" value="verworfen" onchange="filterTable()"> Verworfen</label>
+                    <span class="text-gray-300">|</span>
+                    <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition border opacity-60 hover:opacity-100" id="lbl-planned-features" style="background:#d1fae5;border-color:#6ee7b7;color:#065f46" title="Bereits in den Plan aufgenommene Features einblenden (standardmäßig ausgeblendet)"><input type="checkbox" class="feature-filter rounded" value="planned" onchange="filterTable()"> Geplante Features</label>
                     <select id="systemFilter" class="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white" onchange="filterTable()" aria-label="Nach System filtern">
                         <option value="">Alle Systeme</option>
                     </select>
@@ -288,7 +290,7 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="ticketTableBody">
                             <% tickets.forEach(t => { %>
-                            <tr class="hover:bg-gray-50" data-status="<%= t.status %>" data-id="<%= t.id %>" data-system-id="<%= t.system_id || '' %>" data-sort-id="<%= t.id %>" data-sort-username="<%= (t.username || '').toLowerCase() %>" data-sort-type="<%= t.type || '' %>" data-sort-title="<%= (t.title || '').toLowerCase() %>" data-sort-status="<%= t.status || '' %>" data-sort-priority="<%= t.priority || '' %>" data-sort-assigned="<%= (t.assigned_name || '').toLowerCase() %>" data-sort-created="<%= t.created_at || '' %>" <%= pinnedIds.includes(t.id) ? 'style="background:#fff7ed"' : '' %>>
+                            <tr class="hover:bg-gray-50" data-status="<%= t.status %>" data-id="<%= t.id %>" data-system-id="<%= t.system_id || '' %>" data-feature-decision="<%= t.feature_decision || '' %>" data-sort-id="<%= t.id %>" data-sort-username="<%= (t.username || '').toLowerCase() %>" data-sort-type="<%= t.type || '' %>" data-sort-title="<%= (t.title || '').toLowerCase() %>" data-sort-status="<%= t.status || '' %>" data-sort-priority="<%= t.priority || '' %>" data-sort-assigned="<%= (t.assigned_name || '').toLowerCase() %>" data-sort-created="<%= t.created_at || '' %>" <%= pinnedIds.includes(t.id) ? 'style="background:#fff7ed"' : '' %>>
                                 <td class="px-2 py-4 whitespace-nowrap text-center">
                                     <button onclick="togglePin(event, <%= t.id %>)" class="text-lg leading-none <%= pinnedIds.includes(t.id) ? 'text-orange-500' : 'text-gray-300 hover:text-orange-400' %>" title="<%= pinnedIds.includes(t.id) ? 'Angepinnt' : 'Anpinnen' %>"><%= pinnedIds.includes(t.id) ? '📌' : '📍' %></button>
                                 </td>
@@ -296,7 +298,7 @@
                                     <a href="/ticket/<%= t.id %>" class="block truncate" title="#<%= t.id %>">#<%= t.id.substring(0, 8) %>&hellip;</a>
                                 </td>
                                 <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-600"><%= t.username || '-' %></td>
-                                <td class="px-6 py-4 whitespace-nowrap"><span class="badge badge-type-<%= t.type %>"><%= (t.type||'').toUpperCase() %></span></td>
+                                <td class="px-6 py-4 whitespace-nowrap"><span class="badge badge-type-<%= t.type %>"><%= (t.type||'').toUpperCase() %></span><% if (t.feature_decision === 'planned') { %> <span class="badge bg-green-100 text-green-800" title="Feature ist in den Plan aufgenommen">Geplant</span><% } %></td>
                                 <td class="px-6 py-4 text-sm text-gray-900"><a href="/ticket/<%= t.id %>" class="hover:text-primary-600"><%= t.title %></a></td>
                                 <td class="px-6 py-4 whitespace-nowrap"><span class="badge badge-status-<%= t.status %>"><%= toTitle(t.status) %></span></td>
                                 <td class="px-6 py-4 whitespace-nowrap"><span class="badge badge-priority-<%= t.priority %>"><%= toTitle(t.priority) %></span></td>
@@ -363,18 +365,22 @@
             }
         });
 
-        // Status- und System-Filter
+        // Status-, Feature- und System-Filter
         function filterTable() {
             const checked = Array.from(document.querySelectorAll('.status-filter:checked')).map(cb => cb.value);
             const systemSelect = document.getElementById('systemFilter');
             const selectedSystem = systemSelect ? systemSelect.value : '';
+            const showPlannedFeatures = !!document.querySelector('.feature-filter:checked');
             document.querySelectorAll('#ticketTableBody tr').forEach(row => {
                 const statusOk = checked.includes(row.dataset.status);
                 const systemOk = !selectedSystem || row.dataset.systemId === selectedSystem;
-                row.style.display = (statusOk && systemOk) ? '' : 'none';
+                // Features, über die bereits entschieden wurde (in den Plan aufgenommen),
+                // verschwinden aus dem Dashboard. Verworfen ist über den Status-Filter abgedeckt.
+                const plannedFeatureOk = row.dataset.featureDecision !== 'planned' || showPlannedFeatures;
+                row.style.display = (statusOk && systemOk && plannedFeatureOk) ? '' : 'none';
             });
         }
-        filterTable(); // initial aufrufen (geschlossen standardmäßig ausgeblendet)
+        filterTable(); // initial aufrufen (geschlossen und geplante Features standardmäßig ausgeblendet)
 
         // System-Dropdown befuellen
         (function loadSystemFilter() {
