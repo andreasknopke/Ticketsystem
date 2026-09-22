@@ -6,6 +6,27 @@
     <title>Features | Ticketsystem</title>
     <link rel="stylesheet" href="/style.css?v=2">
     <script src="/socket.io/socket.io.js"></script>
+    <style>
+        /* Drag & Drop der Plan-Reihenfolge. Bewusst page-lokal, damit die
+           vorgebaute style.css unverändert bleibt (Palette: primary-50/600). */
+        .feat-drag-handle {
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+            color: #9ca3af;
+            font-size: 1.15rem;
+            line-height: 1.1;
+            padding: 0.15rem 0.35rem;
+            border-radius: 0.375rem;
+            flex: 0 0 auto;
+        }
+        .feat-drag-handle:hover { color: #2563eb; background: #eff6ff; }
+        .feat-drag-handle:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+        .feat-drag-handle:active { cursor: grabbing; }
+        .feat-drag-handle--inline { cursor: inherit; font-size: 0.95rem; padding: 0 0.15rem; }
+        li.feat-dragging { opacity: 0.5; background: #eff6ff; }
+        ul.feat-sorting > li { transition: background-color 0.12s ease; }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
     <!-- Navigation -->
@@ -150,18 +171,35 @@
                     <%= section.title %>
                     <span class="text-gray-400 font-normal">(<%= section.list.length %>)</span>
                 </h3>
-                <p class="text-xs text-gray-500"><%= section.hint %></p>
+                <div class="flex items-center gap-3 flex-wrap">
+                    <% if (section.key === 'planned' && canManageTickets && section.list.length > 1) { %>
+                    <p class="text-xs text-gray-500">Reihenfolge (Priorität) per Drag &amp; Drop am Griff <span class="feat-drag-handle feat-drag-handle--inline" aria-hidden="true">⠿</span> ändern.</p>
+                    <span class="text-xs font-medium text-green-800 hidden" data-sort-status role="status" aria-live="polite"></span>
+                    <% } else { %>
+                    <p class="text-xs text-gray-500"><%= section.hint %></p>
+                    <% } %>
+                </div>
             </div>
             <div class="card-body p-0">
                 <% if (!section.list.length) { %>
                 <p class="px-6 py-6 text-sm text-gray-500"><%= section.empty %></p>
                 <% } else { %>
-                <ul class="divide-y divide-gray-200">
-                    <% section.list.forEach(t => { %>
-                    <li class="px-6 py-4">
+                <ul class="divide-y divide-gray-200"
+                    <% if (section.key === 'planned' && canManageTickets) { %>data-feature-sortable data-system-id="<%= selected %>"<% } %>>
+                    <% section.list.forEach((t, index) => { %>
+                    <% const sortable = section.key === 'planned' && canManageTickets; %>
+                    <li class="px-6 py-4" data-feature-id="<%= t.id %>">
                         <div class="flex flex-wrap items-start justify-between gap-4">
+                            <% if (sortable) { %>
+                            <span class="feat-drag-handle" draggable="true" data-drag-handle
+                                title="Ziehen, um die Priorität zu ändern" aria-label="Priorität ändern"
+                                role="button" tabindex="0">⠿</span>
+                            <% } %>
                             <div class="flex-1 min-w-0">
                                 <div class="flex items-center gap-2 flex-wrap">
+                                    <% if (section.key === 'planned') { %>
+                                    <span class="badge bg-gray-100 text-gray-700" data-rank-badge title="Priorität im Plan: <%= index + 1 %>"><%= index + 1 %></span>
+                                    <% } %>
                                     <a href="/ticket/<%= t.id %>" class="text-sm font-medium text-gray-900 hover:text-primary-600"><%= t.title %></a>
                                     <span class="badge badge-priority-<%= t.priority %>"><%= toTitle(t.priority) %></span>
                                     <span class="badge badge-status-<%= t.status %>"><%= toTitle(t.status) %></span>
@@ -222,10 +260,133 @@
     </main>
 
     <script>
-        // Live-Aktualisierung, wenn eine Feature-Entscheidung getroffen wurde
+        // Zeitpunkt der letzten eigenen Umsortierung (unterdrueckt Reload).
+        let lastFeatureReorderAt = 0;
+
+        // --- Drag & Drop: Prioritaet/Reihenfolge der geplanten Features ---
+        (function initFeatureSort() {
+            const list = document.querySelector('[data-feature-sortable]');
+            if (!list) return;
+
+            const statusEl = document.querySelector('[data-sort-status]');
+            const systemId = list.dataset.systemId || '';
+            let dragged = null;
+
+            const items = () => Array.from(list.querySelectorAll('[data-feature-id]'));
+
+            const renumber = () => {
+                items().forEach((li, index) => {
+                    const badge = li.querySelector('[data-rank-badge]');
+                    if (!badge) return;
+                    badge.textContent = String(index + 1);
+                    badge.title = 'Priorität im Plan: ' + (index + 1);
+                });
+            };
+
+            const setStatus = (text, isError) => {
+                if (!statusEl) return;
+                statusEl.textContent = text || '';
+                statusEl.className = 'text-xs font-medium ' + (isError ? 'text-red-600' : 'text-green-800') + (text ? '' : ' hidden');
+            };
+
+            const save = async () => {
+                const order = items().map(li => li.dataset.featureId);
+                list.style.pointerEvents = 'none';
+                setStatus('Speichere Reihenfolge…', false);
+                try {
+                    const resp = await fetch('/api/features/reorder', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ system_id: systemId, order })
+                    });
+                    if (!resp.ok) {
+                        let message = 'HTTP ' + resp.status;
+                        try {
+                            const data = await resp.json();
+                            if (data && data.error) message = data.error;
+                        } catch (_) {}
+                        throw new Error(message);
+                    }
+                    lastFeatureReorderAt = Date.now();
+                    setStatus('Reihenfolge gespeichert', false);
+                    setTimeout(() => setStatus('', false), 2500);
+                } catch (err) {
+                    // Serverstand wiederherstellen, damit UI und DB nicht auseinanderlaufen.
+                    setStatus('Speichern fehlgeschlagen: ' + err.message, true);
+                    setTimeout(() => location.reload(), 1500);
+                } finally {
+                    list.style.pointerEvents = '';
+                }
+            };
+
+            list.addEventListener('dragstart', (event) => {
+                const handle = event.target.closest('[data-drag-handle]');
+                if (!handle) {
+                    event.preventDefault();
+                    return;
+                }
+                dragged = handle.closest('[data-feature-id]');
+                if (!dragged) return;
+                dragged.classList.add('feat-dragging');
+                list.classList.add('feat-sorting');
+                event.dataTransfer.effectAllowed = 'move';
+                try { event.dataTransfer.setData('text/plain', dragged.dataset.featureId); } catch (_) {}
+            });
+
+            list.addEventListener('dragover', (event) => {
+                if (!dragged) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const target = event.target.closest('[data-feature-id]');
+                if (!target || target === dragged) return;
+                const rect = target.getBoundingClientRect();
+                const insertAfter = event.clientY > rect.top + rect.height / 2;
+                list.insertBefore(dragged, insertAfter ? target.nextSibling : target);
+                renumber();
+            });
+
+            list.addEventListener('drop', (event) => event.preventDefault());
+
+            list.addEventListener('dragend', () => {
+                if (!dragged) return;
+                dragged.classList.remove('feat-dragging');
+                list.classList.remove('feat-sorting');
+                dragged = null;
+                renumber();
+                save();
+            });
+
+            // Tastaturbedienung: Pfeiltasten verschieben das Feature am Griff.
+            list.addEventListener('keydown', (event) => {
+                const handle = event.target.closest('[data-drag-handle]');
+                if (!handle) return;
+                const item = handle.closest('[data-feature-id]');
+                if (!item) return;
+                if (event.key === 'ArrowUp' && item.previousElementSibling) {
+                    event.preventDefault();
+                    list.insertBefore(item, item.previousElementSibling);
+                } else if (event.key === 'ArrowDown' && item.nextElementSibling) {
+                    event.preventDefault();
+                    list.insertBefore(item.nextElementSibling, item);
+                } else {
+                    return;
+                }
+                renumber();
+                handle.focus();
+                save();
+            });
+        })();
+
+        // Live-Aktualisierung bei Entscheidungen. Eigene Umsortierungen loesen
+        // keinen Reload aus, damit mehrere Drags hintereinander möglich sind.
         if (typeof io === 'function') {
             const socket = io();
-            socket.on('feature-updated', () => location.reload());
+            socket.on('feature-updated', (data) => {
+                const isOwnReorder = data && data.reordered && (Date.now() - lastFeatureReorderAt) < 3000;
+                if (isOwnReorder) return;
+                location.reload();
+            });
             socket.on('ticket-updated', (data) => {
                 if (data && data.updates && data.updates.feature_decision) location.reload();
             });

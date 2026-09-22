@@ -537,7 +537,8 @@ function migrateTicketIdsToText() {
                 feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected')),
                 feature_decided_at DATETIME,
                 feature_decided_by TEXT,
-                feature_reason TEXT
+                feature_reason TEXT,
+                feature_rank INTEGER
             )`,
             `INSERT INTO tickets__new (
                 id, type, title, description, username, console_logs, software_info, status, priority,
@@ -545,7 +546,8 @@ function migrateTicketIdsToText() {
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
                 merge_review, reference_repo_owner, reference_repo_name, final_decision,
-                discard_reason, feature_decision, feature_decided_at, feature_decided_by, feature_reason
+                discard_reason, feature_decision, feature_decided_at, feature_decided_by, feature_reason,
+                feature_rank
             )
             SELECT
                 CAST(id AS TEXT), type, title, description, username, console_logs, software_info, status, priority,
@@ -553,7 +555,7 @@ function migrateTicketIdsToText() {
                 updated_at, first_responded_at, closed_at, feedback_requested, workflow_run_id,
                 redacted_description, coding_prompt, implementation_plan, integration_assessment,
                 merge_review, reference_repo_owner, reference_repo_name, final_decision,
-                NULL AS discard_reason, NULL, NULL, NULL, NULL
+                NULL AS discard_reason, NULL, NULL, NULL, NULL, NULL
             FROM tickets`,
             'DROP TABLE tickets',
             'ALTER TABLE tickets__new RENAME TO tickets',
@@ -871,8 +873,13 @@ const FEATURE_DECISION_MIGRATIONS = [
     { col: 'feature_decision', sql: "ALTER TABLE tickets ADD COLUMN feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected'))" },
     { col: 'feature_decided_at', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_at DATETIME' },
     { col: 'feature_decided_by', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_by TEXT' },
-    { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' }
+    { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' },
+    { col: 'feature_rank', sql: 'ALTER TABLE tickets ADD COLUMN feature_rank INTEGER' }
 ];
+
+// Sortierung der geplanten Features: explizite Plan-Reihenfolge (feature_rank),
+// nicht einsortierte Eintraege ans Ende, danach die zuletzt geaenderten.
+const FEATURE_RANK_ORDER = `CASE WHEN t.feature_rank IS NULL THEN 1 ELSE 0 END, t.feature_rank, t.updated_at DESC`;
 
 function migrateFeatureDecisions() {
     db.all('PRAGMA table_info(tickets)', (err, rows) => {
@@ -915,6 +922,78 @@ function backfillFeatureDecisions() {
         if (this.changes > 0) {
             console.log(`[migration] ${this.changes} Feature-Ticket(s) in die Feature-Inbox uebernommen`);
         }
+        backfillFeatureRanks();
+    });
+}
+
+// --- Plan-Reihenfolge der geplanten Features (Drag & Drop) ---
+// feature_rank ist die manuell gesetzte Prioritaet innerhalb eines Systems.
+// NULL = noch nicht einsortiert (wird beim Einplanen hinten angehaengt).
+
+function featureRankSystemClause(systemId, alias = 't') {
+    const isNull = systemId === null || systemId === undefined || systemId === '';
+    return isNull
+        ? { clause: `${alias}.system_id IS NULL`, params: [] }
+        : { clause: `${alias}.system_id = ?`, params: [parseInt(systemId, 10)] };
+}
+
+function nextFeatureRank(systemId, callback) {
+    const { clause, params } = featureRankSystemClause(systemId, 't');
+    db.get(`SELECT COALESCE(MAX(t.feature_rank), -1) + 1 AS next_rank FROM tickets t
+        WHERE t.type = 'feature' AND COALESCE(t.feature_decision, 'pending') = 'planned' AND ${clause}`,
+    params, (err, row) => {
+        if (err) return callback(err);
+        callback(null, row && row.next_rank !== null && row.next_rank !== undefined ? row.next_rank : 0);
+    });
+}
+
+// Schreibt die uebergebene Reihenfolge als 0..n-1 in feature_rank.
+function applyFeatureRankOrder(ids, callback) {
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (!list.length) return callback(null);
+    db.serialize(() => {
+        db.run('BEGIN IMMEDIATE', (beginErr) => {
+            if (beginErr) return callback(beginErr);
+            const stmt = db.prepare("UPDATE tickets SET feature_rank = ? WHERE id = ? AND type = 'feature'");
+            let firstErr = null;
+            list.forEach((id, index) => {
+                stmt.run([index, id], (e) => { if (e && !firstErr) firstErr = e; });
+            });
+            stmt.finalize((finalizeErr) => {
+                const err = firstErr || finalizeErr;
+                if (err) return db.run('ROLLBACK', () => callback(err));
+                db.run('COMMIT', (commitErr) => callback(commitErr || null));
+            });
+        });
+    });
+}
+
+// Traegt fehlende Raenge einmalig nach (z.B. nach dem Hinzufuegen der Spalte).
+function backfillFeatureRanks() {
+    db.all(`SELECT DISTINCT t.system_id AS system_id FROM tickets t
+        WHERE t.type = 'feature' AND COALESCE(t.feature_decision, 'pending') = 'planned'
+          AND t.feature_rank IS NULL`, [], (err, rows) => {
+        if (err) {
+            console.error('[migration] feature_rank Backfill fehlgeschlagen:', err.message);
+            return;
+        }
+        if (!rows || !rows.length) return;
+        console.log(`[migration] Plan-Reihenfolge fuer ${rows.length} System-Gruppe(n) nachtragen...`);
+        rows.forEach(row => {
+            const systemId = row.system_id === null || row.system_id === undefined ? null : row.system_id;
+            const { clause, params } = featureRankSystemClause(systemId, 't');
+            db.all(`SELECT t.id FROM tickets t
+                WHERE t.type = 'feature' AND COALESCE(t.feature_decision, 'pending') = 'planned' AND ${clause}
+                ORDER BY ${FEATURE_RANK_ORDER}`, params, (listErr, list) => {
+                if (listErr) {
+                    console.error('[migration] feature_rank Backfill (Liste) fehlgeschlagen:', listErr.message);
+                    return;
+                }
+                applyFeatureRankOrder((list || []).map(r => r.id), (applyErr) => {
+                    if (applyErr) console.error('[migration] feature_rank Backfill (Update) fehlgeschlagen:', applyErr.message);
+                });
+            });
+        });
     });
 }
 
@@ -955,13 +1034,32 @@ function setFeatureDecision(ticket, decision, reason, actor, callback) {
         }
     }
 
-    const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-    const values = [...Object.values(updates), ticket.id];
-    db.run(`UPDATE tickets SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, values, function(err) {
-        if (err) return callback(err);
-        if (this.changes === 0) return callback(new Error('Ticket nicht gefunden.'));
-        callback(null, updates);
-    });
+    // Plan-Reihenfolge: neue geplante Features hinten anhaengen, beim Verlassen
+    // des Plans den Rang freigeben (NULL = nicht einsortiert).
+    const needsRank = decision === 'planned' && (ticket.feature_rank === null || ticket.feature_rank === undefined);
+    const clearsRank = decision !== 'planned' && ticket.feature_rank !== null && ticket.feature_rank !== undefined;
+
+    const writeDecision = () => {
+        if (clearsRank) updates.feature_rank = null;
+        const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+        const values = [...Object.values(updates), ticket.id];
+        db.run(`UPDATE tickets SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, values, function(err) {
+            if (err) return callback(err);
+            if (this.changes === 0) return callback(new Error('Ticket nicht gefunden.'));
+            callback(null, updates);
+        });
+    };
+
+    if (needsRank) {
+        nextFeatureRank(ticket.system_id, (rankErr, rank) => {
+            if (rankErr) console.error('Plan-Reihenfolge ermitteln fehlgeschlagen:', rankErr.message);
+            else updates.feature_rank = rank;
+            writeDecision();
+        });
+        return;
+    }
+
+    writeDecision();
 }
 
 // Neue Feature-Tickets starten in der Feature-Inbox ("zu entscheiden").
@@ -1951,7 +2049,8 @@ function initTicketsTable() {
             feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected')),
             feature_decided_at DATETIME,
             feature_decided_by TEXT,
-            feature_reason TEXT
+            feature_reason TEXT,
+            feature_rank INTEGER
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -3296,7 +3395,7 @@ app.get('/api/features', requireAuth, (req, res) => {
         params.push(decision);
     }
 
-    query += ` ORDER BY CASE COALESCE(t.feature_decision, 'pending') WHEN 'pending' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, t.updated_at DESC`;
+    query += ` ORDER BY CASE COALESCE(t.feature_decision, 'pending') WHEN 'pending' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, ${FEATURE_RANK_ORDER}`;
 
     db.all(query, params, (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -3325,6 +3424,94 @@ app.patch('/api/features/:id/decision', requireAuth, requireAdmin, (req, res) =>
             io.emit('feature-updated', { ticketId: ticket.id, decision, systemId: ticket.system_id || null });
             io.to(`ticket-${ticket.id}`).emit('ticket-updated', { ticketId: ticket.id, updates: { feature_decision: decision, status: updates.status }, actor: getActor(req) });
             res.json({ id: ticket.id, status: 'updated', feature_decision: decision, ticket_status: updates.status || ticket.status });
+        });
+    });
+});
+
+// Plan-Reihenfolge (Prioritaet) der geplanten Features eines Systems setzen.
+// Erwartet die vollstaendige Reihenfolge ALLER geplanten Features des Systems,
+// damit die Raenge eindeutig als 0..n-1 geschrieben werden koennen.
+app.post('/api/features/reorder', requireAuth, requireAdmin, (req, res) => {
+    const rawOrder = req.body ? req.body.order : null;
+    if (!Array.isArray(rawOrder) || rawOrder.length === 0) {
+        return res.status(400).json({ error: 'order muss eine nicht-leere Liste von Ticket-IDs sein.' });
+    }
+    if (rawOrder.length > 500) {
+        return res.status(400).json({ error: 'Zu viele Eintraege (max. 500).' });
+    }
+
+    const order = [];
+    const seen = new Set();
+    for (const value of rawOrder) {
+        const id = typeof value === 'string' ? value.trim() : '';
+        if (!id || seen.has(id)) {
+            return res.status(400).json({ error: 'order enthaelt ungueltige oder doppelte IDs.' });
+        }
+        seen.add(id);
+        order.push(id);
+    }
+
+    const rawSystem = req.body.system_id;
+    const isNoSystem = rawSystem === null || rawSystem === undefined || rawSystem === '' || rawSystem === 'none';
+    const systemId = isNoSystem ? null : parseInt(rawSystem, 10);
+    if (!isNoSystem && !Number.isInteger(systemId)) {
+        return res.status(400).json({ error: 'system_id ist ungueltig.' });
+    }
+
+    const placeholders = order.map(() => '?').join(',');
+    db.all(`SELECT id, system_id, type, title, feature_rank, COALESCE(feature_decision, 'pending') AS decision
+        FROM tickets WHERE id IN (${placeholders})`, order, (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        const found = new Map((rows || []).map(row => [row.id, row]));
+        const missing = order.filter(id => !found.has(id));
+        if (missing.length) {
+            return res.status(404).json({ error: `Unbekannte Ticket-ID(s): ${missing.slice(0, 3).join(', ')}` });
+        }
+
+        const invalid = order.filter(id => {
+            const row = found.get(id);
+            const rowSystem = row.system_id === null || row.system_id === undefined ? null : Number(row.system_id);
+            return row.type !== 'feature' || row.decision !== 'planned' || rowSystem !== systemId;
+        });
+        if (invalid.length) {
+            return res.status(400).json({
+                error: 'Nur geplante Features des gewaehlten Systems koennen sortiert werden.',
+                invalid: invalid.slice(0, 5)
+            });
+        }
+
+        // Die Liste muss vollstaendig sein: fehlende Eintraege wuerden sonst
+        // doppelte Raenge bekommen und die Reihenfolge waere nicht eindeutig.
+        const { clause, params } = featureRankSystemClause(systemId, 't');
+        db.get(`SELECT COUNT(*) AS total FROM tickets t
+            WHERE t.type = 'feature' AND COALESCE(t.feature_decision, 'pending') = 'planned' AND ${clause}`,
+        params, (countErr, countRow) => {
+            if (countErr) return res.status(500).json({ error: countErr.message });
+            const total = countRow && countRow.total ? countRow.total : 0;
+            if (total !== order.length) {
+                return res.status(400).json({
+                    error: `Die Reihenfolge muss alle ${total} geplanten Features dieses Systems enthalten (erhalten: ${order.length}).`
+                });
+            }
+
+            applyFeatureRankOrder(order, (applyErr) => {
+                if (applyErr) return res.status(500).json({ error: applyErr.message });
+
+                // Nur tatsaechliche Verschiebungen ins Audit-Log schreiben.
+                const actor = getActor(req);
+                const systemLabel = systemId === null ? 'ohne System' : `System #${systemId}`;
+                order.forEach((id, newRank) => {
+                    const row = found.get(id);
+                    const oldRank = row.feature_rank === null || row.feature_rank === undefined ? null : Number(row.feature_rank);
+                    if (oldRank === newRank) return;
+                    const from = oldRank === null ? 'unsortiert' : `Platz ${oldRank + 1}`;
+                    logAction(id, actor, 'feature_priority', `Plan-Reihenfolge (${systemLabel}): ${from} → Platz ${newRank + 1}`);
+                });
+
+                io.emit('feature-updated', { systemId, reordered: true });
+                res.json({ status: 'reordered', count: order.length });
+            });
         });
     });
 });
@@ -5314,7 +5501,7 @@ app.get('/features', requireAuth, (req, res) => {
             } else {
                 featureQuery += ' AND 1 = 0';
             }
-            featureQuery += ` ORDER BY COALESCE(t.feature_decision, 'pending') != 'pending', t.updated_at DESC`;
+            featureQuery += ` ORDER BY CASE COALESCE(t.feature_decision, 'pending') WHEN 'pending' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, ${FEATURE_RANK_ORDER}`;
 
             db.all(featureQuery, featureParams, (featuresErr, featureRows) => {
                 if (featuresErr) return res.status(500).send('DB Error');
