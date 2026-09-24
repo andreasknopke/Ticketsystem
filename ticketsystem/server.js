@@ -1408,6 +1408,43 @@ function initDb() {
         });
     });
 
+    // Termine mit Key-Usern (Meeting-Tracking inkl. Follow-up-Kette).
+    // Bewusst ohne FOREIGN KEY auf project_key_users/key_user_meetings, da die
+    // Legacy-Migration von project_key_users die Tabelle per DROP/RENAME neu aufbaut.
+    db.run(`CREATE TABLE IF NOT EXISTS key_user_meetings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        key_user_id INTEGER,
+        title TEXT NOT NULL,
+        agenda TEXT,
+        notes TEXT,
+        meeting_date TEXT NOT NULL,
+        start_time TEXT,
+        duration_minutes INTEGER DEFAULT 60,
+        location TEXT,
+        status TEXT CHECK(status IN ('planned','done','cancelled')) DEFAULT 'planned',
+        follow_up_of INTEGER,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`, (err) => {
+        if (err) {
+            console.error('key_user_meetings table error:', err.message);
+            return;
+        }
+        // Indizes erst nach erfolgreicher Tabellenerstellung anlegen (siehe training_goals).
+        db.run(`CREATE INDEX IF NOT EXISTS idx_ku_meetings_project ON key_user_meetings(project_id)`, (indexErr) => {
+            if (indexErr) console.error('idx_ku_meetings_project error:', indexErr.message);
+        });
+        db.run(`CREATE INDEX IF NOT EXISTS idx_ku_meetings_keyuser ON key_user_meetings(key_user_id)`, (indexErr) => {
+            if (indexErr) console.error('idx_ku_meetings_keyuser error:', indexErr.message);
+        });
+        db.run(`CREATE INDEX IF NOT EXISTS idx_ku_meetings_date ON key_user_meetings(meeting_date)`, (indexErr) => {
+            if (indexErr) console.error('idx_ku_meetings_date error:', indexErr.message);
+        });
+    });
+
     db.run(`CREATE TABLE IF NOT EXISTS project_documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
@@ -4152,6 +4189,291 @@ app.delete('/api/keyusers/:id', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// --- API: Key-User-Termine (Meeting-Tracking) ---
+
+const MEETING_STATUSES = new Set(['planned', 'done', 'cancelled']);
+const MEETING_DEFAULT_DURATION = 60;
+
+const MEETING_SELECT = `
+    SELECT m.*,
+           k.name AS key_user_name,
+           k.email AS key_user_email,
+           k.role AS key_user_role,
+           p.title AS follow_up_of_title
+    FROM key_user_meetings m
+    LEFT JOIN project_key_users k ON k.id = m.key_user_id
+    LEFT JOIN key_user_meetings p ON p.id = m.follow_up_of
+`;
+
+function normalizeMeetingDate(value) {
+    const text = normalizeOptionalText(value);
+    if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+    const parsed = new Date(`${text}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString().slice(0, 10) === text ? text : null;
+}
+
+function normalizeMeetingTime(value) {
+    const text = normalizeOptionalText(value);
+    if (!text) return null;
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : null;
+}
+
+function normalizeMeetingDuration(value) {
+    const text = normalizeOptionalText(value);
+    if (text === null) return MEETING_DEFAULT_DURATION;
+    const num = Number(text);
+    if (!Number.isInteger(num) || num < 5 || num > 1440) return null;
+    return num;
+}
+
+function meetingDurationOf(meeting) {
+    const minutes = Number(meeting.duration_minutes);
+    return Number.isInteger(minutes) && minutes > 0 ? minutes : MEETING_DEFAULT_DURATION;
+}
+
+// Startzeitpunkt als lokale (schwebende) Zeit, damit importierte Termine in der
+// Zeitzone des Kalenders landen und nicht durch UTC verschoben werden.
+function meetingStartDate(meeting) {
+    const time = normalizeMeetingTime(meeting.start_time) || '09:00';
+    const [hours, minutes] = time.split(':').map(Number);
+    const start = new Date(`${meeting.meeting_date}T00:00:00`);
+    if (Number.isNaN(start.getTime())) return null;
+    start.setHours(hours, minutes, 0, 0);
+    return start;
+}
+
+function formatIcsLocal(date) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+        + `T${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function icsEscape(value) {
+    return String(value === undefined || value === null ? '' : value)
+        .replace(/\\/g, '\\\\')
+        .replace(/\r\n|\r|\n/g, '\\n')
+        .replace(/;/g, '\\;')
+        .replace(/,/g, '\\,');
+}
+
+// RFC 5545: Zeilen auf 75 Oktette umbrechen, Fortsetzung mit fuehrendem Leerzeichen.
+function icsFold(line) {
+    if (Buffer.byteLength(line, 'utf8') <= 75) return line;
+    const parts = [];
+    let current = '';
+    let currentBytes = 0;
+    let limit = 75;
+    for (const char of line) {
+        const charBytes = Buffer.byteLength(char, 'utf8');
+        if (currentBytes + charBytes > limit) {
+            parts.push(current);
+            current = '';
+            currentBytes = 0;
+            limit = 74;
+        }
+        current += char;
+        currentBytes += charBytes;
+    }
+    parts.push(current);
+    return parts.join('\r\n ');
+}
+
+function meetingIcsDescription(meeting, baseUrl) {
+    const parts = [];
+    if (meeting.key_user_name) {
+        parts.push(`Key-User: ${meeting.key_user_name}${meeting.key_user_email ? ` <${meeting.key_user_email}>` : ''}`);
+    }
+    if (meeting.follow_up_of_title) parts.push(`Follow-up zu: ${meeting.follow_up_of_title}`);
+    if (meeting.agenda) parts.push(`Agenda:\n${meeting.agenda}`);
+    if (meeting.notes) parts.push(`Notizen:\n${meeting.notes}`);
+    if (baseUrl) parts.push(`Im Ticketsystem: ${baseUrl}/project/${meeting.project_id}/meetings`);
+    return parts.join('\n\n');
+}
+
+function buildMeetingsIcs(meetings, project, baseUrl) {
+    const lines = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Ticketsystem//Key-User-Termine//DE',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        `X-WR-CALNAME:${icsEscape(`Key-User-Termine: ${project.name || ''}`)}`
+    ];
+
+    const stamp = formatIcsLocal(new Date()) + 'Z';
+
+    meetings.forEach((meeting) => {
+        const start = meetingStartDate(meeting);
+        if (!start) return;
+        const end = new Date(start.getTime() + meetingDurationOf(meeting) * 60000);
+
+        lines.push('BEGIN:VEVENT');
+        lines.push(`UID:ticketsystem-meeting-${meeting.id}@ticketsystem`);
+        lines.push(`DTSTAMP:${stamp}`);
+        lines.push(`DTSTART:${formatIcsLocal(start)}`);
+        lines.push(`DTEND:${formatIcsLocal(end)}`);
+        lines.push(`SUMMARY:${icsEscape(meeting.title)}`);
+        const description = meetingIcsDescription(meeting, baseUrl);
+        if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+        if (meeting.location) lines.push(`LOCATION:${icsEscape(meeting.location)}`);
+        lines.push(`STATUS:${meeting.status === 'cancelled' ? 'CANCELLED' : 'CONFIRMED'}`);
+        lines.push('TRANSP:OPAQUE');
+        lines.push('END:VEVENT');
+    });
+
+    lines.push('END:VCALENDAR');
+    return lines.map(icsFold).join('\r\n') + '\r\n';
+}
+
+function sendIcs(res, filename, content) {
+    const safeName = String(filename).replace(/[^A-Za-z0-9._-]/g, '_');
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(content);
+}
+
+app.get('/api/projects/:projectId/meetings', requireAuth, (req, res) => {
+    db.all(`${MEETING_SELECT}
+            WHERE m.project_id = ?
+            ORDER BY m.meeting_date DESC, COALESCE(m.start_time, '') DESC, m.id DESC`,
+        [req.params.projectId], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows || []);
+        });
+});
+
+app.get('/api/projects/:projectId/meetings.ics', requireAuth, (req, res) => {
+    db.get('SELECT id, name FROM projects WHERE id = ?', [req.params.projectId], (projectErr, project) => {
+        if (projectErr) return res.status(500).json({ error: projectErr.message });
+        if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+        db.all(`${MEETING_SELECT} WHERE m.project_id = ? ORDER BY m.meeting_date ASC, COALESCE(m.start_time, '') ASC, m.id ASC`,
+            [req.params.projectId], (err, meetings) => {
+                if (err) return res.status(500).json({ error: err.message });
+                const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+                sendIcs(res, `keyuser-termine-${project.id}.ics`, buildMeetingsIcs(meetings || [], project, baseUrl));
+            });
+    });
+});
+
+app.get('/api/projects/:projectId/meetings/:meetingId/ics', requireAuth, (req, res) => {
+    db.get('SELECT id, name FROM projects WHERE id = ?', [req.params.projectId], (projectErr, project) => {
+        if (projectErr) return res.status(500).json({ error: projectErr.message });
+        if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+        db.get(`${MEETING_SELECT} WHERE m.id = ? AND m.project_id = ?`,
+            [req.params.meetingId, req.params.projectId], (err, meeting) => {
+                if (err) return res.status(500).json({ error: err.message });
+                if (!meeting) return res.status(404).json({ error: 'Termin nicht gefunden.' });
+                const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+                sendIcs(res, `termin-${meeting.id}.ics`, buildMeetingsIcs([meeting], project, baseUrl));
+            });
+    });
+});
+
+app.post('/api/projects/:projectId/meetings', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const projectId = req.params.projectId;
+        const meetingId = normalizeOptionalText(req.body.id);
+        const title = normalizeOptionalText(req.body.title);
+        const agenda = normalizeOptionalText(req.body.agenda);
+        const notes = normalizeOptionalText(req.body.notes);
+        const location = normalizeOptionalText(req.body.location);
+        const meetingDate = normalizeMeetingDate(req.body.meeting_date);
+        const rawStartTime = normalizeOptionalText(req.body.start_time);
+        const startTime = rawStartTime ? normalizeMeetingTime(rawStartTime) : null;
+        const duration = normalizeMeetingDuration(req.body.duration_minutes);
+        const status = MEETING_STATUSES.has(req.body.status) ? req.body.status : 'planned';
+        const rawKeyUser = normalizeOptionalText(req.body.key_user_id);
+        const rawFollowUp = normalizeOptionalText(req.body.follow_up_of);
+
+        if (!title) return res.status(400).json({ error: 'Titel ist erforderlich.' });
+        if (!meetingDate) return res.status(400).json({ error: 'Datum ist erforderlich (Format JJJJ-MM-TT).' });
+        if (rawStartTime && !startTime) return res.status(400).json({ error: 'Uhrzeit ist ungueltig (Format HH:MM).' });
+        if (duration === null) {
+            return res.status(400).json({ error: `Dauer muss zwischen 5 und 1440 Minuten liegen.` });
+        }
+
+        let keyUserId = null;
+        if (rawKeyUser) {
+            const numeric = Number(rawKeyUser);
+            if (!Number.isInteger(numeric)) return res.status(400).json({ error: 'key_user_id ist ungueltig.' });
+            const keyUser = await dbGet('SELECT id FROM project_key_users WHERE id = ? AND project_id = ?',
+                [numeric, projectId]);
+            if (!keyUser.id) return res.status(400).json({ error: 'Key-User gehoert nicht zu diesem Projekt.' });
+            keyUserId = numeric;
+        }
+
+        let followUpOf = null;
+        if (rawFollowUp) {
+            const numeric = Number(rawFollowUp);
+            if (!Number.isInteger(numeric)) return res.status(400).json({ error: 'follow_up_of ist ungueltig.' });
+            if (meetingId && Number(meetingId) === numeric) {
+                return res.status(400).json({ error: 'Ein Termin kann nicht sein eigenes Follow-up sein.' });
+            }
+            const parent = await dbGet('SELECT id FROM key_user_meetings WHERE id = ? AND project_id = ?',
+                [numeric, projectId]);
+            if (!parent.id) return res.status(400).json({ error: 'Follow-up-Termin nicht gefunden.' });
+            followUpOf = numeric;
+        }
+
+        if (meetingId) {
+            const result = await dbRun(`UPDATE key_user_meetings
+                    SET key_user_id = ?, title = ?, agenda = ?, notes = ?, meeting_date = ?,
+                        start_time = ?, duration_minutes = ?, location = ?, status = ?,
+                        follow_up_of = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND project_id = ?`,
+                [keyUserId, title, agenda, notes, meetingDate, startTime, duration, location, status,
+                    followUpOf, meetingId, projectId]);
+            if (result.changes === 0) return res.status(404).json({ error: 'Termin nicht gefunden.' });
+            io.emit('meeting:updated', { projectId });
+            return res.json({ id: Number(meetingId), updated: true });
+        }
+
+        const result = await dbRun(`INSERT INTO key_user_meetings
+                (project_id, key_user_id, title, agenda, notes, meeting_date, start_time,
+                 duration_minutes, location, status, follow_up_of, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [projectId, keyUserId, title, agenda, notes, meetingDate, startTime, duration,
+                location, status, followUpOf, req.session.user || null]);
+        io.emit('meeting:updated', { projectId });
+        res.status(201).json({ id: result.lastID });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.patch('/api/meetings/:id/status', requireAuth, requireAdmin, (req, res) => {
+    const status = req.body ? req.body.status : null;
+    if (!MEETING_STATUSES.has(status)) {
+        return res.status(400).json({ error: 'Status muss planned, done oder cancelled sein.' });
+    }
+    db.run(`UPDATE key_user_meetings SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [status, req.params.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: 'Termin nicht gefunden.' });
+            db.get('SELECT project_id FROM key_user_meetings WHERE id = ?', [req.params.id], (rowErr, row) => {
+                if (row) io.emit('meeting:updated', { projectId: row.project_id });
+                res.json({ id: Number(req.params.id), status });
+            });
+        });
+});
+
+app.delete('/api/meetings/:id', requireAuth, requireAdmin, (req, res) => {
+    db.get('SELECT id, project_id FROM key_user_meetings WHERE id = ?', [req.params.id], (err, meeting) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!meeting) return res.status(404).json({ error: 'Termin nicht gefunden.' });
+        // Nachfolger der Follow-up-Kette bleiben erhalten, verlieren nur die Verknuepfung.
+        db.run('UPDATE key_user_meetings SET follow_up_of = NULL WHERE follow_up_of = ?', [meeting.id], () => {
+            db.run('DELETE FROM key_user_meetings WHERE id = ?', [meeting.id], function(delErr) {
+                if (delErr) return res.status(500).json({ error: delErr.message });
+                io.emit('meeting:updated', { projectId: meeting.project_id });
+                res.json({ status: 'deleted' });
+            });
+        });
+    });
+});
+
 // --- API: Documents ---
 
 app.get('/api/projects/:projectId/docs', requireAuth, (req, res) => {
@@ -6186,6 +6508,36 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                     });
                 });
             });
+        });
+});
+
+app.get('/project/:id/meetings', requireAuth, (req, res) => {
+    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+        [req.params.id], (err, project) => {
+            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
+            db.all(`${MEETING_SELECT}
+                    WHERE m.project_id = ?
+                    ORDER BY m.meeting_date ASC, COALESCE(m.start_time, '') ASC, m.id ASC`,
+                [req.params.id], (mErr, meetings) => {
+                    if (mErr) return res.status(500).send(mErr.message);
+                    db.all('SELECT id, name, email, role FROM project_key_users WHERE project_id = ? ORDER BY role, name',
+                        [req.params.id], (kErr, keyUsers) => {
+                            if (kErr) return res.status(500).send(kErr.message);
+                            const now = new Date();
+                            const pad = (value) => String(value).padStart(2, '0');
+                            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+                            res.render('project-meetings', {
+                                project,
+                                meetings: meetings || [],
+                                keyUsers: keyUsers || [],
+                                today,
+                                baseUrl: process.env.BASE_URL || `http://localhost:${PORT}`,
+                                user: req.session.user,
+                                role: req.session.role || 'user',
+                                canManage: isAdminRole(req.session.role)
+                            });
+                        });
+                });
         });
 });
 

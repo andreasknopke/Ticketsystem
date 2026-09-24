@@ -66,14 +66,7 @@
             <% if (canManage) { %><button onclick="toggleNewDoc()" class="btn-primary">+ Neue Seite</button><% } %>
         </div>
 
-        <div class="flex flex-wrap gap-2 mb-6">
-            <a href="/project/<%= project.id %>" class="btn-secondary text-sm">Dashboard</a>
-            <a href="/project/<%= project.id %>/timeline" class="btn-secondary text-sm">Zeitleiste</a>
-            <% if (canManage) { %><a href="/project/<%= project.id %>/milestones" class="btn-secondary text-sm">Meilensteine</a><% } %>
-            <% if (canManage) { %><a href="/project/<%= project.id %>/keyusers" class="btn-secondary text-sm">Key-User</a><% } %>
-            <a href="/project/<%= project.id %>/docs" class="btn-secondary text-sm font-medium bg-primary-50 text-primary-700">Wiki</a>
-            <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="btn-secondary text-sm">GitHub</a><% } %>
-        </div>
+        <%- include('partials/project-nav', { active: 'docs' }) %>
 
         <% if (canManage) { %>
         <div id="newDocForm" class="card mb-8 hidden">
