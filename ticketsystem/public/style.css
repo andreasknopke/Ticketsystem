@@ -935,6 +935,125 @@ video {
   color: rgb(29 78 216 / var(--tw-text-opacity, 1));
 }
 
+/*
+   * Responsive Tabellen: unterhalb von md werden Datenzeilen zu Karten.
+   * Vermeidet horizontales Scrollen auf dem Handy.
+   * Benoetigt data-label="Spaltentitel" an jedem <td> und
+   * <div class="cell-value"> als Werte-Container.
+   */
+
+@media (max-width: 767.98px) {
+  .table-cards,
+    .table-cards tbody,
+    .table-cards tbody tr,
+    .table-cards tbody td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-cards thead {
+    display: none;
+  }
+
+  .table-cards tbody {
+    background-color: transparent;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    padding-bottom: 0.75rem;
+    padding-top: 0.25rem;
+  }
+
+  .table-cards tbody tr {
+    margin-bottom: 0.75rem;
+    border-radius: 0.75rem;
+    border-width: 1px;
+    --tw-border-opacity: 1;
+    border-color: rgb(229 231 235 / var(--tw-border-opacity, 1));
+    --tw-bg-opacity: 1;
+    background-color: rgb(255 255 255 / var(--tw-bg-opacity, 1));
+    padding: 1rem;
+    --tw-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+  }
+
+  .table-cards tbody tr:last-child {
+    margin-bottom: 0px;
+  }
+
+  .table-cards tbody td {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    border-width: 0px;
+    padding-left: 0px;
+    padding-right: 0px;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+
+  .table-cards tbody td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    padding-top: 0.125rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    --tw-text-opacity: 1;
+    color: rgb(107 114 128 / var(--tw-text-opacity, 1));
+  }
+
+  .table-cards tbody td > .cell-value {
+    min-width: 0px;
+    flex: 1 1 0%;
+    overflow-wrap: break-word;
+  }
+
+  /* Mehrzeilige/umfangreiche Werte: Label ueber dem Wert */
+
+  .table-cards tbody td.cell-block {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+  }
+
+  .table-cards tbody td.cell-actions {
+    margin-top: 0.5rem;
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+    border-top-width: 1px;
+    --tw-border-opacity: 1;
+    border-color: rgb(243 244 246 / var(--tw-border-opacity, 1));
+    padding-top: 0.75rem;
+  }
+
+  /* Groessere Tap-Flaechen fuer Aktionen auf dem Handy */
+
+  .table-cards tbody td.cell-actions > button {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .table-cards tbody td.cell-actions::before,
+    .table-cards tbody td.cell-empty::before {
+    content: none;
+  }
+
+  .table-cards tbody td.cell-empty {
+    justify-content: center;
+    padding-top: 1.5rem;
+    padding-bottom: 1.5rem;
+    text-align: center;
+  }
+}
+
+.visible {
+  visibility: visible;
+}
+
 .fixed {
   position: fixed;
 }
@@ -1115,6 +1234,10 @@ video {
   height: 3rem;
 }
 
+.h-14 {
+  height: 3.5rem;
+}
+
 .h-16 {
   height: 4rem;
 }
@@ -1157,6 +1280,10 @@ video {
 
 .w-12 {
   width: 3rem;
+}
+
+.w-14 {
+  width: 3.5rem;
 }
 
 .w-16 {
@@ -1252,6 +1379,10 @@ video {
 }
 
 .flex-shrink-0 {
+  flex-shrink: 0;
+}
+
+.shrink-0 {
   flex-shrink: 0;
 }
 
@@ -1353,6 +1484,15 @@ video {
   gap: 2rem;
 }
 
+.gap-x-3 {
+  -moz-column-gap: 0.75rem;
+       column-gap: 0.75rem;
+}
+
+.gap-y-1 {
+  row-gap: 0.25rem;
+}
+
 .space-x-3 > :not([hidden]) ~ :not([hidden]) {
   --tw-space-x-reverse: 0;
   margin-right: calc(0.75rem * var(--tw-space-x-reverse));
@@ -1417,6 +1557,10 @@ video {
   border-color: rgb(229 231 235 / var(--tw-divide-opacity, 1));
 }
 
+.self-start {
+  align-self: flex-start;
+}
+
 .overflow-hidden {
   overflow: hidden;
 }
@@ -1437,6 +1581,10 @@ video {
 
 .whitespace-pre-wrap {
   white-space: pre-wrap;
+}
+
+.break-words {
+  overflow-wrap: break-word;
 }
 
 .rounded {
@@ -1988,6 +2136,10 @@ video {
 
 .uppercase {
   text-transform: uppercase;
+}
+
+.normal-case {
+  text-transform: none;
 }
 
 .italic {
@@ -2561,6 +2713,10 @@ video {
     flex-direction: row;
   }
 
+  .sm\:items-start {
+    align-items: flex-start;
+  }
+
   .sm\:items-center {
     align-items: center;
   }
@@ -2580,6 +2736,11 @@ video {
   .sm\:px-6 {
     padding-left: 1.5rem;
     padding-right: 1.5rem;
+  }
+
+  .sm\:text-base {
+    font-size: 1rem;
+    line-height: 1.5rem;
   }
 }
 
