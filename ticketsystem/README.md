@@ -26,6 +26,7 @@ Ein leichtgewichtiges, webbasiertes Ticketsystem mit integriertem Projektmanagem
 - **Projekte:** Verwalten von Software-Projekten mit Status (Planung/Aktiv/Wartung/Abgeschlossen), Start- und Enddatum, verknupft mit bestehenden Systemen.
 - **Meilensteine:** Strukturierte Phasenplanung mit Start-/Endterminen, Farbcodierung und Status-Tracking (Offen/In Arbeit/Erledigt/Blockiert). Perfekt fur die Abbildung von Projektphasen (Pilot, Rollout, Optimierung).
 - **Key-User-Management:** Zuweisung von Mitarbeitern zu Projekten mit Rollen (Key-User/Evaluator/Entscheider) und Evaluierungsnotizen.
+- **Termin-Tracking mit Key-Usern:** Meetings mit Datum, Uhrzeit, Dauer, Ort, Agenda und Ergebnisnotizen festhalten. Follow-up-Termine lassen sich direkt aus einem Meeting heraus anlegen (verknuepfte Kette). Export als ICS-Datei (einzeln oder alle Termine) sowie Direkt-Uebergabe an den Google Kalender. Auf dem Handy als Kartenansicht ohne horizontales Scrollen.
 - **Zeitleiste (Gantt):** Mermaid.js-basierte Gantt-Diagramme zur Visualisierung von Projektphasen und Meilensteinen.
 - **Wiki-Dokumentation:** Projektbezogene Wiki-Seiten mit voller Markdown-Unterstutzung, Mermaid-Diagrammen und einem integrierten Editor (EasyMDE).
 - **GitHub-Integration:**
