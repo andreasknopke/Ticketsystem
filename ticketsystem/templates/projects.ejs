@@ -33,13 +33,19 @@
                         <% } %>
                     </div>
                 </div>
-                <div class="flex items-center gap-4">
-                    <span class="text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
-                    <a href="/account" class="btn-secondary text-sm">Account</a>
-                    <a href="/logout" class="btn-secondary text-sm">Abmelden</a>
+                <div class="flex items-center gap-2 sm:gap-4">
+                    <span class="hidden sm:inline text-sm text-gray-600"><%= user %> <span class="badge bg-gray-100 text-gray-700"><%= role %></span></span>
+                    <a href="/account" class="hidden sm:inline-flex btn-secondary text-sm">Account</a>
+                    <a href="/logout" class="hidden sm:inline-flex btn-secondary text-sm">Abmelden</a>
+                    <button type="button" id="mobileNavToggle" class="md:hidden btn-secondary text-sm px-3 py-2" aria-label="Menü öffnen" aria-controls="mobileNav" aria-expanded="false">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
         </div>
+        <%- include('partials/mobile-nav') %>
     </nav>
 
     <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

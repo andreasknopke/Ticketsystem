@@ -1,0 +1,34 @@
+<!-- Mobile Navigation (Hamburger-Menü, nur unterhalb md sichtbar) -->
+<div id="mobileNav" class="hidden md:hidden border-t border-gray-200 bg-white shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col gap-1">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/features" class="nav-link">Features</a>
+        <% if (role === 'admin' || role === 'root') { %>
+        <a href="/stats" class="nav-link">Statistiken</a>
+        <% } %>
+        <a href="/ticket/new" class="nav-link">Neues Ticket</a>
+        <a href="/projects" class="nav-link">Projekte</a>
+        <% if (role === 'admin' || role === 'root') { %>
+        <a href="/admin/systems" class="nav-link">Systeme</a>
+        <a href="/admin/staff" class="nav-link">Mitarbeiter</a>
+        <% } %>
+        <% if (role === 'root') { %>
+        <a href="/admin/users" class="nav-link">Benutzer</a>
+        <% } %>
+        <div class="my-1 border-t border-gray-100"></div>
+        <div class="px-4 py-1 text-xs text-gray-500"><%= user %> · <%= role %></div>
+        <a href="/account" class="nav-link">Account</a>
+        <a href="/logout" class="nav-link">Abmelden</a>
+    </div>
+</div>
+<script>
+    (function () {
+        var toggle = document.getElementById('mobileNavToggle');
+        var menu = document.getElementById('mobileNav');
+        if (!toggle || !menu) return;
+        toggle.addEventListener('click', function () {
+            var isHidden = menu.classList.toggle('hidden');
+            toggle.setAttribute('aria-expanded', isHidden ? 'false' : 'true');
+        });
+    })();
+</script>
