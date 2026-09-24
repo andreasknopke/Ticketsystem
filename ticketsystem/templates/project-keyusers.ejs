@@ -48,8 +48,8 @@
     </nav>
 
     <main class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <nav class="flex mb-6" aria-label="Breadcrumb">
-            <ol class="flex items-center space-x-4">
+        <nav class="mb-6" aria-label="Breadcrumb">
+            <ol class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm sm:text-base">
                 <li><a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a></li>
                 <li class="text-gray-400">/</li>
                 <li><a href="/projects" class="text-gray-500 hover:text-gray-700">Projekte</a></li>
@@ -60,9 +60,10 @@
             </ol>
         </nav>
 
-        <div class="flex items-center justify-between mb-6">
+        <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h1 class="text-2xl font-bold text-gray-900">Key-User: <%= project.name %></h1>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="/project/<%= project.id %>/meetings" class="btn-secondary">Termine</a>
                 <% if (canManage) { %>
                 <button onclick="toggleGoalsConfig()" class="btn-secondary" title="Schulungsziele konfigurieren" aria-label="Schulungsziele konfigurieren">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -75,14 +76,7 @@
             </div>
         </div>
 
-        <div class="flex flex-wrap gap-2 mb-6">
-            <a href="/project/<%= project.id %>" class="btn-secondary text-sm">Dashboard</a>
-            <a href="/project/<%= project.id %>/timeline" class="btn-secondary text-sm">Zeitleiste</a>
-            <% if (canManage) { %><a href="/project/<%= project.id %>/milestones" class="btn-secondary text-sm">Meilensteine</a><% } %>
-            <a href="/project/<%= project.id %>/keyusers" class="btn-secondary text-sm font-medium bg-primary-50 text-primary-700">Key-User</a>
-            <a href="/project/<%= project.id %>/docs" class="btn-secondary text-sm">Wiki</a>
-            <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="btn-secondary text-sm">GitHub</a><% } %>
-        </div>
+        <%- include('partials/project-nav', { active: 'keyusers' }) %>
 
         <% if (canManage) { %>
         <div id="trainingGoalsConfig" class="card mb-8 hidden">
@@ -180,9 +174,25 @@
 
         <div class="card">
             <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Zugewiesene Key-User</h2></div>
+
+            <!-- Sortierung nur auf dem Handy: die Tabellenkopfzeile wird dort ausgeblendet -->
+            <div class="card-body p-4 md:hidden border-b border-gray-200">
+                <label for="keyUserMobileSort" class="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500">Sortieren nach <span id="keyUserSortState" class="font-normal normal-case text-gray-400"></span></label>
+                <select id="keyUserMobileSort" class="form-select text-sm" onchange="changeKeyUserSort(this.value)">
+                    <option value="">Standard</option>
+                    <option value="name">Name</option>
+                    <option value="email">Kontakt</option>
+                    <option value="role">Rolle</option>
+                    <option value="training_status">Schulungsstatus</option>
+                    <option value="goal_count">Anzahl Ziele</option>
+                    <option value="test_protocol">Test-Protokoll</option>
+                    <option value="notes">Notizen</option>
+                </select>
+            </div>
+
             <div class="card-body p-0">
                 <div class="overflow-x-auto">
-                    <table id="keyUsersTable" class="min-w-full divide-y divide-gray-200">
+                    <table id="keyUsersTable" class="table-cards min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="name" data-sort-type="text" onclick="sortKeyUsersTable('name', 'text')">Name <span class="sort-indicator"></span></th>
@@ -206,14 +216,17 @@
                                 const enrichedKeyUser = Object.assign({}, k, { training_goal_ids: kuGoalIds });
                             %>
                             <tr data-goal-count="<%= kuGoalLabels.length %>" data-sort-name="<%= (k.name || '').toLowerCase() %>" data-sort-email="<%= (k.email || '').toLowerCase() %>" data-sort-role="<%= ({key_user:0,evaluator:1,decision_maker:2}[k.role] ?? 99) %>" data-sort-training_status="<%= (k.training_status || '').toLowerCase() %>" data-sort-goals_text="<%= (kuGoalLabels.join(' ')).toLowerCase() %>" data-sort-goal_count="<%= kuGoalLabels.length %>" data-sort-test_protocol="<%= (k.test_protocol || '').toLowerCase() %>" data-sort-notes="<%= (k.notes || '').toLowerCase() %>">
-                                <td class="px-6 py-4 text-sm font-medium text-gray-900"><%= k.name %></td>
-                                <td class="px-6 py-4 text-sm text-gray-500">
-                                    <div><%= k.email || '-' %></div>
-                                    <div class="text-xs text-gray-400 mt-1"><%= k.phone || 'Kein Telefon' %></div>
+                                <td class="px-6 py-4 text-sm font-medium text-gray-900" data-label="Name"><div class="cell-value"><%= k.name %></div></td>
+                                <td class="cell-block px-6 py-4 text-sm text-gray-500" data-label="Kontakt">
+                                    <div class="cell-value">
+                                        <div><%= k.email || '-' %></div>
+                                        <div class="text-xs text-gray-400 mt-1"><%= k.phone || 'Kein Telefon' %></div>
+                                    </div>
                                 </td>
-                                <td class="px-6 py-4"><span class="badge text-xs <%= k.role === 'key_user' ? 'bg-blue-100 text-blue-800' : k.role === 'evaluator' ? 'bg-purple-100 text-purple-800' : 'bg-orange-100 text-orange-800' %>"><%= {key_user:'Key-User',evaluator:'Evaluator',decision_maker:'Entscheider'}[k.role] %></span></td>
-                                <td class="px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap"><%= k.training_status || '-' %></td>
-                                <td class="px-6 py-4 text-sm text-gray-600">
+                                <td class="px-6 py-4" data-label="Rolle"><div class="cell-value"><span class="badge text-xs <%= k.role === 'key_user' ? 'bg-blue-100 text-blue-800' : k.role === 'evaluator' ? 'bg-purple-100 text-purple-800' : 'bg-orange-100 text-orange-800' %>"><%= {key_user:'Key-User',evaluator:'Evaluator',decision_maker:'Entscheider'}[k.role] %></span></div></td>
+                                <td class="cell-block px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap" data-label="Schulungsstatus"><div class="cell-value"><%= k.training_status || '-' %></div></td>
+                                <td class="cell-block px-6 py-4 text-sm text-gray-600" data-label="Schulungsziele">
+                                    <div class="cell-value">
                                     <% if (totalGoals === 0) { %>
                                         <span class="text-gray-400">-</span>
                                     <% } else if (kuGoalLabels.length === 0) { %>
@@ -228,18 +241,21 @@
                                             <% }); %>
                                         </ul>
                                     <% } %>
+                                    </div>
                                 </td>
-                                <td class="px-6 py-4 text-sm text-gray-700">
+                                <td class="px-6 py-4 text-sm text-gray-700" data-label="Ziele">
+                                    <div class="cell-value">
                                     <% if (totalGoals === 0) { %>
                                         <span class="text-gray-400">-</span>
                                     <% } else { %>
                                         <span class="font-medium"><%= kuGoalLabels.length %></span><span class="text-gray-400"> / <%= totalGoals %></span>
                                     <% } %>
+                                    </div>
                                 </td>
-                                <td class="px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap"><%= k.test_protocol || '-' %></td>
-                                <td class="px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap"><%= k.notes || '-' %></td>
+                                <td class="cell-block px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap" data-label="Test-Protokoll"><div class="cell-value"><%= k.test_protocol || '-' %></div></td>
+                                <td class="cell-block px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap" data-label="Notizen"><div class="cell-value"><%= k.notes || '-' %></div></td>
                                 <% if (canManage) { %>
-                                <td class="px-6 py-4 text-sm">
+                                <td class="cell-actions px-6 py-4 text-sm">
                                     <button
                                         class="mr-3 text-primary-600 hover:text-primary-800"
                                         data-key-user='<%- JSON.stringify(enrichedKeyUser).replace(/'/g, "&#39;") %>'
@@ -250,7 +266,7 @@
                             </tr>
                             <% }); %>
                             <% if (keyUsers.length === 0) { %>
-                            <tr><td colspan="<%= canManage ? 9 : 8 %>" class="px-6 py-8 text-center text-gray-500">Keine Key-User zugewiesen.</td></tr>
+                            <tr><td colspan="<%= canManage ? 9 : 8 %>" class="cell-empty px-6 py-8 text-center text-gray-500">Keine Key-User zugewiesen.</td></tr>
                             <% } %>
                         </tbody>
                     </table>
@@ -414,6 +430,28 @@
                 const indicator = el.querySelector('.sort-indicator');
                 if (indicator) indicator.textContent = keyUserCurrentSort.asc ? ' ▲' : ' ▼';
             });
+
+            updateMobileSortState();
+        }
+
+        // Sortierauswahl fuer die mobile Kartenansicht (Tabellenkopf ist dort ausgeblendet)
+        const KEY_USER_SORT_TYPES = {
+            name: 'text', email: 'text', role: 'role', training_status: 'text',
+            goal_count: 'number', test_protocol: 'text', notes: 'text'
+        };
+
+        function changeKeyUserSort(col) {
+            if (!col) return;
+            const type = KEY_USER_SORT_TYPES[col];
+            if (type) sortKeyUsersTable(col, type);
+        }
+
+        function updateMobileSortState() {
+            const el = document.getElementById('keyUserSortState');
+            if (!el) return;
+            el.textContent = keyUserCurrentSort.col
+                ? (keyUserCurrentSort.asc ? '– aufsteigend' : '– absteigend')
+                : '';
         }
     </script>
 </body>

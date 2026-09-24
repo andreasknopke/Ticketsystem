@@ -1,0 +1,19 @@
+<%
+/*
+ * Projekt-Subnavigation. Erwartet `project`, `canManage` und optional `active`
+ * (Schluessel der aktiven Seite), damit der aktuelle Reiter hervorgehoben wird.
+ */
+const navActive = (typeof active === 'undefined') ? '' : active;
+const navClass = (key) => key === navActive
+    ? 'btn-secondary text-sm font-medium bg-primary-50 text-primary-700'
+    : 'btn-secondary text-sm';
+%>
+<div class="flex flex-wrap gap-2 mb-6">
+    <a href="/project/<%= project.id %>" class="<%= navClass('dashboard') %>">Dashboard</a>
+    <a href="/project/<%= project.id %>/timeline" class="<%= navClass('timeline') %>">Zeitleiste</a>
+    <% if (canManage) { %><a href="/project/<%= project.id %>/milestones" class="<%= navClass('milestones') %>">Meilensteine</a><% } %>
+    <a href="/project/<%= project.id %>/keyusers" class="<%= navClass('keyusers') %>">Key-User</a>
+    <a href="/project/<%= project.id %>/meetings" class="<%= navClass('meetings') %>">Termine</a>
+    <a href="/project/<%= project.id %>/docs" class="<%= navClass('docs') %>">Wiki</a>
+    <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="<%= navClass('github') %>">GitHub</a><% } %>
+</div>
