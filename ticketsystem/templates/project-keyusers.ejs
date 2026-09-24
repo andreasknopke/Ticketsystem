@@ -48,6 +48,20 @@
     </nav>
 
     <main class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <%
+        // Anzeigehelfer fuer die Termin-Dokumentation je Key-User
+        const fmtMeetingDate = (value) => {
+            if (!value) return '';
+            const date = new Date(`${value}T00:00:00`);
+            if (Number.isNaN(date.getTime())) return value;
+            return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        };
+        const MEETING_STATUS_META = {
+            planned: { label: 'Geplant', badge: 'bg-blue-100 text-blue-800' },
+            done: { label: 'Erledigt', badge: 'bg-green-100 text-green-800' },
+            cancelled: { label: 'Abgesagt', badge: 'bg-gray-100 text-gray-600' }
+        };
+        %>
         <nav class="mb-6" aria-label="Breadcrumb">
             <ol class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm sm:text-base">
                 <li><a href="/" class="text-gray-500 hover:text-gray-700">Dashboard</a></li>
@@ -185,6 +199,7 @@
                     <option value="role">Rolle</option>
                     <option value="training_status">Schulungsstatus</option>
                     <option value="goal_count">Anzahl Ziele</option>
+                    <option value="meetings">Anzahl Termine</option>
                     <option value="test_protocol">Test-Protokoll</option>
                     <option value="notes">Notizen</option>
                 </select>
@@ -203,6 +218,7 @@
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="goal_count" data-sort-type="number" onclick="sortKeyUsersTable('goal_count', 'number')"># Ziele <span class="sort-indicator"></span></th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="test_protocol" data-sort-type="text" onclick="sortKeyUsersTable('test_protocol', 'text')">Test-Protokoll <span class="sort-indicator"></span></th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="notes" data-sort-type="text" onclick="sortKeyUsersTable('notes', 'text')">Notizen <span class="sort-indicator"></span></th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 sort-header" data-sort="meetings" data-sort-type="number" onclick="sortKeyUsersTable('meetings', 'number')">Termine <span class="sort-indicator"></span></th>
                                 <% if (canManage) { %><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktionen</th><% } %>
                             </tr>
                         </thead>
@@ -214,8 +230,13 @@
                                 const kuGoalLabels = trainingGoals.filter(g => kuGoalIdSet.has(g.id)).map(g => g.label);
                                 const totalGoals = trainingGoals.length;
                                 const enrichedKeyUser = Object.assign({}, k, { training_goal_ids: kuGoalIds });
+                                const kuMeetings = (meetingsByKeyUser && meetingsByKeyUser[k.id]) ? meetingsByKeyUser[k.id] : [];
+                                const kuNextMeeting = kuMeetings
+                                    .filter(m => m.status === 'planned' && m.meeting_date >= today)
+                                    .sort((a, b) => a.meeting_date.localeCompare(b.meeting_date))[0] || null;
+                                const kuLastMeeting = kuMeetings.find(m => m.status !== 'planned' || m.meeting_date < today) || null;
                             %>
-                            <tr data-goal-count="<%= kuGoalLabels.length %>" data-sort-name="<%= (k.name || '').toLowerCase() %>" data-sort-email="<%= (k.email || '').toLowerCase() %>" data-sort-role="<%= ({key_user:0,evaluator:1,decision_maker:2}[k.role] ?? 99) %>" data-sort-training_status="<%= (k.training_status || '').toLowerCase() %>" data-sort-goals_text="<%= (kuGoalLabels.join(' ')).toLowerCase() %>" data-sort-goal_count="<%= kuGoalLabels.length %>" data-sort-test_protocol="<%= (k.test_protocol || '').toLowerCase() %>" data-sort-notes="<%= (k.notes || '').toLowerCase() %>">
+                            <tr data-goal-count="<%= kuGoalLabels.length %>" data-key-user-id="<%= k.id %>" data-sort-meetings="<%= kuMeetings.length %>" data-sort-name="<%= (k.name || '').toLowerCase() %>" data-sort-email="<%= (k.email || '').toLowerCase() %>" data-sort-role="<%= ({key_user:0,evaluator:1,decision_maker:2}[k.role] ?? 99) %>" data-sort-training_status="<%= (k.training_status || '').toLowerCase() %>" data-sort-goals_text="<%= (kuGoalLabels.join(' ')).toLowerCase() %>" data-sort-goal_count="<%= kuGoalLabels.length %>" data-sort-test_protocol="<%= (k.test_protocol || '').toLowerCase() %>" data-sort-notes="<%= (k.notes || '').toLowerCase() %>">
                                 <td class="px-6 py-4 text-sm font-medium text-gray-900" data-label="Name"><div class="cell-value"><%= k.name %></div></td>
                                 <td class="cell-block px-6 py-4 text-sm text-gray-500" data-label="Kontakt">
                                     <div class="cell-value">
@@ -254,6 +275,34 @@
                                 </td>
                                 <td class="cell-block px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap" data-label="Test-Protokoll"><div class="cell-value"><%= k.test_protocol || '-' %></div></td>
                                 <td class="cell-block px-6 py-4 text-sm text-gray-500 whitespace-pre-wrap" data-label="Notizen"><div class="cell-value"><%= k.notes || '-' %></div></td>
+                                <td class="px-6 py-4 text-sm" data-label="Termine">
+                                    <div class="cell-value">
+                                    <% if (kuMeetings.length === 0) { %>
+                                        <span class="text-gray-400">Keine Termine</span>
+                                        <% if (canManage) { %>
+                                        <div class="mt-1">
+                                            <a href="/project/<%= project.id %>/meetings?key_user=<%= k.id %>&amp;new=1" class="text-xs text-primary-600 hover:text-primary-800">Termin anlegen</a>
+                                        </div>
+                                        <% } %>
+                                    <% } else { %>
+                                        <button type="button" data-key-user-toggle="<%= k.id %>"
+                                            onclick="toggleKeyUserMeetings(<%= k.id %>)"
+                                            aria-expanded="false" aria-controls="keyuser-meetings-<%= k.id %>"
+                                            class="badge text-xs bg-primary-50 text-primary-700 hover:bg-primary-100">
+                                            <%= kuMeetings.length %> Termin<%= kuMeetings.length === 1 ? '' : 'e' %>
+                                            <span class="ml-1 text-primary-500" aria-hidden="true">&#9662;</span>
+                                        </button>
+                                        <div class="mt-1 space-y-0.5 text-xs">
+                                            <% if (kuNextMeeting) { %>
+                                            <div class="text-gray-600">Nächstes: <span class="font-medium text-gray-800"><%= fmtMeetingDate(kuNextMeeting.meeting_date) %></span><% if (kuNextMeeting.start_time) { %> · <%= kuNextMeeting.start_time %><% } %></div>
+                                            <% } %>
+                                            <% if (kuLastMeeting) { %>
+                                            <div class="text-gray-400">Zuletzt: <%= fmtMeetingDate(kuLastMeeting.meeting_date) %></div>
+                                            <% } %>
+                                        </div>
+                                    <% } %>
+                                    </div>
+                                </td>
                                 <% if (canManage) { %>
                                 <td class="cell-actions px-6 py-4 text-sm">
                                     <button
@@ -264,9 +313,49 @@
                                 </td>
                                 <% } %>
                             </tr>
+                            <% if (kuMeetings.length > 0) { %>
+                            <tr id="keyuser-meetings-<%= k.id %>" class="is-detail hidden bg-gray-50">
+                                <td colspan="<%= canManage ? 10 : 9 %>" class="cell-detail px-6 py-4">
+                                    <div class="flex flex-wrap items-center justify-between gap-2">
+                                        <h3 class="text-sm font-semibold text-gray-900">
+                                            Termine mit <%= k.name %>
+                                            <span class="font-normal text-gray-400">(<%= kuMeetings.length %>)</span>
+                                        </h3>
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <a href="/project/<%= project.id %>/meetings?key_user=<%= k.id %>" class="btn-secondary text-xs">Alle Termine</a>
+                                            <% if (canManage) { %>
+                                            <a href="/project/<%= project.id %>/meetings?key_user=<%= k.id %>&amp;new=1" class="btn-primary text-xs">Termin anlegen</a>
+                                            <% } %>
+                                        </div>
+                                    </div>
+                                    <ol class="mt-3 space-y-3">
+                                        <% kuMeetings.forEach(m => { const meta = MEETING_STATUS_META[m.status] || MEETING_STATUS_META.planned; %>
+                                        <li class="rounded-lg border border-gray-200 bg-white p-3">
+                                            <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                                <span class="font-medium text-gray-800"><%= fmtMeetingDate(m.meeting_date) %></span>
+                                                <% if (m.start_time) { %><span><%= m.start_time %> Uhr<% if (m.duration_minutes) { %> · <%= m.duration_minutes %> Min.<% } %></span><% } %>
+                                                <span class="badge text-xs <%= meta.badge %>"><%= meta.label %></span>
+                                                <% if (m.location) { %><span class="text-gray-400">· <%= m.location %></span><% } %>
+                                            </div>
+                                            <p class="mt-1 text-sm font-medium text-gray-900"><%= m.title %></p>
+                                            <% if (m.follow_up_of_title) { %>
+                                            <p class="mt-1 text-xs text-gray-500">Follow-up zu: <%= m.follow_up_of_title %></p>
+                                            <% } %>
+                                            <% if (m.agenda) { %>
+                                            <p class="mt-1 whitespace-pre-wrap text-xs text-gray-600"><span class="font-medium text-gray-700">Agenda:</span> <%= m.agenda %></p>
+                                            <% } %>
+                                            <% if (m.notes) { %>
+                                            <p class="mt-1 whitespace-pre-wrap text-xs text-gray-600"><span class="font-medium text-gray-700">Notizen:</span> <%= m.notes %></p>
+                                            <% } %>
+                                        </li>
+                                        <% }); %>
+                                    </ol>
+                                </td>
+                            </tr>
+                            <% } %>
                             <% }); %>
                             <% if (keyUsers.length === 0) { %>
-                            <tr><td colspan="<%= canManage ? 9 : 8 %>" class="cell-empty px-6 py-8 text-center text-gray-500">Keine Key-User zugewiesen.</td></tr>
+                            <tr><td colspan="<%= canManage ? 10 : 9 %>" class="cell-empty px-6 py-8 text-center text-gray-500">Keine Key-User zugewiesen.</td></tr>
                             <% } %>
                         </tbody>
                     </table>
@@ -283,6 +372,13 @@
         function toggleGoalsConfig() {
             const el = document.getElementById('trainingGoalsConfig');
             if (el) el.classList.toggle('hidden');
+        }
+        function toggleKeyUserMeetings(keyUserId) {
+            const row = document.getElementById('keyuser-meetings-' + keyUserId);
+            if (!row) return;
+            const isHidden = row.classList.toggle('hidden');
+            const btn = document.querySelector('[data-key-user-toggle="' + keyUserId + '"]');
+            if (btn) btn.setAttribute('aria-expanded', isHidden ? 'false' : 'true');
         }
         function getGoalCheckboxes() {
             return document.querySelectorAll('#keyUserGoalsCheckboxes input[name="training_goal_ids"]');
@@ -419,7 +515,12 @@
                 return keyUserCurrentSort.asc ? cmp : -cmp;
             });
 
-            rows.forEach(row => tbody.appendChild(row));
+            // Detailzeilen jeweils direkt hinter ihrer Key-User-Zeile mitfuehren
+            rows.forEach(row => {
+                tbody.appendChild(row);
+                const detail = document.getElementById('keyuser-meetings-' + row.dataset.keyUserId);
+                if (detail) tbody.appendChild(detail);
+            });
 
             // Sort-Indikatoren aktualisieren
             document.querySelectorAll('.sort-header .sort-indicator').forEach(el => {
@@ -437,7 +538,7 @@
         // Sortierauswahl fuer die mobile Kartenansicht (Tabellenkopf ist dort ausgeblendet)
         const KEY_USER_SORT_TYPES = {
             name: 'text', email: 'text', role: 'role', training_status: 'text',
-            goal_count: 'number', test_protocol: 'text', notes: 'text'
+            goal_count: 'number', meetings: 'number', test_protocol: 'text', notes: 'text'
         };
 
         function changeKeyUserSort(col) {

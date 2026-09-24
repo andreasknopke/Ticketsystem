@@ -371,13 +371,11 @@
                 </article>
                 <% }); %>
 
-                <% if (section.list.length === 0) { %>
-                <div class="card">
-                    <div class="card-body text-center text-sm text-gray-500" data-section-empty>
-                        <%= (meetings.length > 0) ? 'Keine Termine für diese Auswahl.' : section.empty %>
+                <div class="card <%= section.list.length > 0 ? 'hidden' : '' %>">
+                    <div class="card-body text-center text-sm text-gray-500" data-section-empty data-empty-default="<%= section.empty %>">
+                        <%= section.empty %>
                     </div>
                 </div>
-                <% } %>
             </div>
         </section>
         <% }); %>
@@ -553,8 +551,11 @@
         }
 
         function applyMeetingFilters() {
-            const keyUserFilter = document.getElementById('filterKeyUser').value;
-            const statusFilter = document.getElementById('filterStatus').value;
+            const keyUserEl = document.getElementById('filterKeyUser');
+            const statusEl = document.getElementById('filterStatus');
+            const keyUserFilter = keyUserEl ? keyUserEl.value : '';
+            const statusFilter = statusEl ? statusEl.value : '';
+            const anyFilter = !!(keyUserFilter || statusFilter);
 
             document.querySelectorAll('.meeting-card').forEach((card) => {
                 const cardKeyUser = card.dataset.keyUserId || '';
@@ -569,9 +570,41 @@
             document.querySelectorAll('[data-meeting-section]').forEach((section) => {
                 const visible = section.querySelectorAll('.meeting-card:not(.hidden)').length;
                 const emptyNote = section.querySelector('[data-section-empty]');
-                if (emptyNote) emptyNote.closest('.card').classList.toggle('hidden', visible > 0);
+                if (!emptyNote) return;
+                emptyNote.textContent = anyFilter
+                    ? 'Keine Termine für diese Auswahl.'
+                    : (emptyNote.dataset.emptyDefault || emptyNote.textContent);
+                emptyNote.closest('.card').classList.toggle('hidden', visible > 0);
             });
         }
+
+        // Deep-Link aus der Key-User-Seite: ?key_user=<id> filtert, &new=1 oeffnet das Formular.
+        (function initMeetingViewFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const keyUserId = params.get('key_user');
+
+            const filter = document.getElementById('filterKeyUser');
+            if (keyUserId && filter) {
+                filter.value = keyUserId;
+                applyMeetingFilters();
+            }
+
+            const formCard = document.getElementById('meetingFormCard');
+            if (!CAN_MANAGE || !formCard) return;
+
+            if (keyUserId) {
+                const select = document.getElementById('meetingForm').elements.key_user_id;
+                if (select) select.value = keyUserId;
+            }
+            if (params.get('new') === '1') {
+                openMeetingForm();
+                const dateInput = document.getElementById('meetingForm').elements.meeting_date;
+                if (dateInput && !dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+                if (typeof formCard.scrollIntoView === 'function') {
+                    formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+        })();
     </script>
 </body>
 </html>
