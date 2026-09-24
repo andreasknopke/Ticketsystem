@@ -182,6 +182,19 @@
     .table-cards tbody td.cell-empty {
       @apply justify-center py-6 text-center;
     }
+
+    /* Aufgeklappte Detailzeile: volle Breite, kein Spaltenlabel */
+    .table-cards tbody tr.is-detail {
+      @apply bg-gray-50;
+    }
+
+    .table-cards tbody td.cell-detail {
+      @apply block;
+    }
+
+    .table-cards tbody td.cell-detail::before {
+      content: none;
+    }
   }
   
   .timeline-item {

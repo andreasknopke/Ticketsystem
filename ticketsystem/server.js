@@ -6496,15 +6496,33 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                             if (!goalIdsByKeyUser[s.key_user_id]) goalIdsByKeyUser[s.key_user_id] = [];
                             goalIdsByKeyUser[s.key_user_id].push(s.training_goal_id);
                         });
-                        res.render('project-keyusers', {
-                            project,
-                            keyUsers: keyUsers || [],
-                            trainingGoals: goals || [],
-                            goalIdsByKeyUser,
-                            user: req.session.user,
-                            role: req.session.role || 'user',
-                            canManage: isAdminRole(req.session.role)
-                        });
+                        // Termine je Key-User mitliefern, damit die Meetings hier dokumentiert sind.
+                        // Neueste zuerst; "naechster" und "letzter" Termin leitet das Template daraus ab.
+                        db.all(`${MEETING_SELECT}
+                                WHERE m.project_id = ?
+                                ORDER BY m.meeting_date DESC, COALESCE(m.start_time, '') DESC, m.id DESC`,
+                            [req.params.id], (mErr, meetings) => {
+                                if (mErr) return res.status(500).send(mErr.message);
+                                const meetingsByKeyUser = {};
+                                (meetings || []).forEach(m => {
+                                    if (m.key_user_id === null || m.key_user_id === undefined) return;
+                                    if (!meetingsByKeyUser[m.key_user_id]) meetingsByKeyUser[m.key_user_id] = [];
+                                    meetingsByKeyUser[m.key_user_id].push(m);
+                                });
+                                const now = new Date();
+                                const pad = (value) => String(value).padStart(2, '0');
+                                res.render('project-keyusers', {
+                                    project,
+                                    keyUsers: keyUsers || [],
+                                    trainingGoals: goals || [],
+                                    goalIdsByKeyUser,
+                                    meetingsByKeyUser,
+                                    today: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+                                    user: req.session.user,
+                                    role: req.session.role || 'user',
+                                    canManage: isAdminRole(req.session.role)
+                                });
+                            });
                     });
                 });
             });
