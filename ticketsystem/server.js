@@ -6851,9 +6851,16 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 ORDER BY created_at DESC`, [projectId]);
 
             const entries = {};
-            for (const [kind, table] of [['workflows', 'workflows'], ['problems', 'problems'], ['adoptionRisks', 'adoption_risks']]) {
-                entries[kind] = await dbAll(`SELECT x.*, m.title AS meeting_title, m.meeting_date
-                    FROM ${table} x
+            // workflows traegt den Text in `description`, die uebrigen in `title`.
+            // Ein einheitliches `text` erspart dem Template die Fallunterscheidung.
+            for (const entry of [
+                { kind: 'workflows', table: 'workflows', textExpr: 'x.description' },
+                { kind: 'problems', table: 'problems', textExpr: 'x.title' },
+                { kind: 'adoptionRisks', table: 'adoption_risks', textExpr: 'x.title' }
+            ]) {
+                entries[entry.kind] = await dbAll(`SELECT x.*, ${entry.textExpr} AS text,
+                        m.title AS meeting_title, m.meeting_date
+                    FROM ${entry.table} x
                     LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
                     WHERE x.project_id = ?
                     ORDER BY x.created_at DESC, x.id DESC`, [projectId]);

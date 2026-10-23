@@ -166,17 +166,22 @@
                         <ul class="space-y-2">
                             <% list.forEach(item => { %>
                             <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                                <p class="whitespace-pre-wrap text-sm text-gray-800"><%= item.title %></p>
+                                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
+                                <% if (canManage) { %>
                                 <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
                                     <% if (item.meeting_title) { %>
                                     <span>aus: <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800"><%= item.meeting_title %></a></span>
                                     <% } else { %>
                                     <span class="badge bg-gray-200 text-gray-700">direkt erfasst</span>
                                     <% } %>
-                                    <% if (canManage) { %>
+                                    <button type="button" class="text-primary-600 hover:text-primary-800"
+                                        data-entry='<%- JSON.stringify({ kind: group.kind, id: item.id, text: item.text || '', description: item.description || '', meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
+                                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
                                     <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('<%= group.kind %>', <%= item.id %>)">entfernen</button>
-                                    <% } %>
                                 </p>
+                                <% } else if (item.meeting_title) { %>
+                                <p class="mt-1 text-xs text-gray-500">aus: <%= item.meeting_title %></p>
+                                <% } %>
                             </li>
                             <% }); %>
                         </ul>
@@ -229,6 +234,34 @@
         </section>
     </main>
 
+    <% if (canManage) { %>
+    <div id="entryModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40 p-4">
+        <div class="w-full max-w-2xl rounded-lg bg-white shadow-xl">
+            <div class="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+                <h3 id="entryModalTitle" class="text-base font-semibold text-gray-900">Eintrag bearbeiten</h3>
+                <button type="button" class="text-gray-400 hover:text-gray-600" onclick="closeEntry()" aria-label="Schliessen">&times;</button>
+            </div>
+            <form id="entryForm" class="space-y-3 px-4 py-4">
+                <input type="hidden" name="kind" value="">
+                <input type="hidden" name="id" value="">
+                <div>
+                    <label id="entryTextLabel" class="mb-1 block text-sm font-medium text-gray-700">Text</label>
+                    <textarea name="text" rows="8" required class="form-input"></textarea>
+                </div>
+                <div id="entryDescriptionRow">
+                    <label class="mb-1 block text-sm font-medium text-gray-700">Beschreibung</label>
+                    <textarea name="description" rows="4" class="form-input" placeholder="Zusaetzliche Details, optional"></textarea>
+                </div>
+                <p id="entryOrigin" class="text-xs text-gray-500"></p>
+                <div class="flex items-center gap-3 border-t border-gray-100 pt-3">
+                    <button type="submit" id="entrySaveButton" class="btn-primary text-sm">Speichern</button>
+                    <button type="button" class="btn-secondary text-sm" onclick="closeEntry()">Abbrechen</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <% } %>
+
     <script>
         const CSRF_TOKEN = '<%= csrfToken %>';
         const PROJECT_ID = <%= project.id %>;
@@ -273,6 +306,86 @@
             const err = await resp.json().catch(() => ({}));
             alert('Fehler: ' + (err.error || resp.statusText));
         }
+
+        // --- Eintrag oeffnen und bearbeiten ---
+
+        const ENTRY_TEXT_FIELDS = { workflows: 'description', problems: 'title', adoptionRisks: 'title' };
+        const ENTRY_LABELS = {
+            workflows: 'Beschreibung',
+            problems: 'Titel',
+            adoptionRisks: 'Titel'
+        };
+
+        function openEntry(rawEntry) {
+            const entry = JSON.parse(rawEntry);
+            const modal = document.getElementById('entryModal');
+            if (!modal) return;
+
+            const form = document.getElementById('entryForm');
+            form.elements.kind.value = entry.kind;
+            form.elements.id.value = entry.id;
+            form.elements.text.value = entry.text || '';
+            form.elements.description.value = entry.description || '';
+
+            document.getElementById('entryModalTitle').textContent =
+                entry.kind === 'workflows' ? 'Workflow bearbeiten' : 'Eintrag bearbeiten';
+            document.getElementById('entryTextLabel').textContent = ENTRY_LABELS[entry.kind] || 'Text';
+
+            // workflows hat nur ein Textfeld; die Beschreibung IST der Text.
+            const descriptionRow = document.getElementById('entryDescriptionRow');
+            descriptionRow.classList.toggle('hidden', entry.kind === 'workflows');
+
+            document.getElementById('entryOrigin').textContent = entry.meeting
+                ? `Herkunft: Termin "${entry.meeting}"`
+                : 'Herkunft: direkt im Projekt erfasst';
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            form.elements.text.focus();
+        }
+
+        function closeEntry() {
+            const modal = document.getElementById('entryModal');
+            if (!modal) return;
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        document.getElementById('entryForm')?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const form = event.target;
+            const kind = form.elements.kind.value;
+            const id = form.elements.id.value;
+            const endpoint = ENTRY_ENDPOINTS[kind];
+            if (!endpoint || !id) return;
+
+            const payload = {};
+            payload[ENTRY_TEXT_FIELDS[kind]] = form.elements.text.value;
+            if (kind !== 'workflows') payload.description = form.elements.description.value;
+
+            const button = document.getElementById('entrySaveButton');
+            button.disabled = true;
+            try {
+                const resp = await fetch('/api/' + endpoint + '/' + id, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                    body: JSON.stringify(payload)
+                });
+                if (resp.ok) { location.reload(); return; }
+                const err = await resp.json().catch(() => ({}));
+                alert('Fehler: ' + (err.error || resp.statusText));
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        document.getElementById('entryModal')?.addEventListener('click', (event) => {
+            if (event.target.id === 'entryModal') closeEntry();
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeEntry();
+        });
 
         document.getElementById('fileUploadForm')?.addEventListener('submit', async (event) => {
             event.preventDefault();

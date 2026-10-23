@@ -271,30 +271,6 @@ module.exports = function registerAtlasRoutes(app, deps) {
         app.get(`/api/projects/:projectId/${kind}`, requireAuth, listExtraction(kind));
     }
 
-    app.patch('/api/problems/:id', requireAuth, requireAdmin, (req, res) => {
-        const workflowId = req.body.workflow_id === null ? null : toId(req.body.workflow_id);
-        db.get('SELECT id, project_id FROM problems WHERE id = ?', [req.params.id], (err, problem) => {
-            if (err) return res.status(500).json({ error: err.message });
-            if (!problem) return res.status(404).json({ error: 'Problem nicht gefunden.' });
-
-            const update = () => {
-                db.run('UPDATE problems SET workflow_id = ? WHERE id = ?', [workflowId, problem.id], (updateErr) => {
-                    if (updateErr) return res.status(500).json({ error: updateErr.message });
-                    res.json({ id: problem.id, workflow_id: workflowId });
-                });
-            };
-
-            if (!workflowId) return update();
-
-            db.get('SELECT id FROM workflows WHERE id = ? AND project_id = ?',
-                [workflowId, problem.project_id], (wfErr, workflow) => {
-                    if (wfErr) return res.status(500).json({ error: wfErr.message });
-                    if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu diesem Projekt.' });
-                    update();
-                });
-        });
-    });
-
     const deleteExtraction = (kind) => (req, res) => {
         const config = EXTRACTION_KINDS[kind];
         db.run(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id], function (err) {
@@ -304,7 +280,73 @@ module.exports = function registerAtlasRoutes(app, deps) {
         });
     };
 
+    // Bearbeiten: Text (und Beschreibung) eines Eintrags korrigieren, ohne ihn
+    // zu loeschen und neu anzulegen. Die Herkunft (Termin/Projekt) bleibt.
+    // Bei problems laesst sich zusaetzlich der Workflow zuordnen; dann darf der
+    // Titel entfallen (Teil-Update).
+    const updateExtraction = (kind) => (req, res) => {
+        const config = EXTRACTION_KINDS[kind];
+        const hasTextField = req.body[config.textField] !== undefined;
+        const text = normalizeText(req.body[config.textField]);
+        const hasWorkflowField = kind === 'problems' && req.body.workflow_id !== undefined;
+        const workflowId = hasWorkflowField
+            ? (req.body.workflow_id === null ? null : toId(req.body.workflow_id))
+            : undefined;
+
+        if (hasTextField && !text) {
+            return res.status(400).json({ error: `${config.label} ist erforderlich.` });
+        }
+        if (!hasTextField && !hasWorkflowField) {
+            return res.status(400).json({ error: `${config.label} ist erforderlich.` });
+        }
+
+        const hasDescription = config.columns.includes('description');
+        const description = normalizeText(req.body.description) || '';
+
+        db.get(`SELECT id, project_id FROM ${config.table} WHERE id = ?`, [req.params.id], (err, row) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!row) return res.status(404).json({ error: 'Eintrag nicht gefunden.' });
+
+            const apply = () => {
+                const assignments = [];
+                const params = [];
+                if (hasTextField) {
+                    assignments.push(`${config.textField} = ?`);
+                    params.push(text);
+                }
+                // Bei workflows IST description das Textfeld - nicht doppelt setzen.
+                if (hasDescription && config.textField !== 'description' && req.body.description !== undefined) {
+                    assignments.push('description = ?');
+                    params.push(description);
+                }
+                if (hasWorkflowField) {
+                    assignments.push('workflow_id = ?');
+                    params.push(workflowId);
+                }
+                params.push(row.id);
+
+                db.run(`UPDATE ${config.table} SET ${assignments.join(', ')} WHERE id = ?`, params, (updateErr) => {
+                    if (updateErr) return res.status(500).json({ error: updateErr.message });
+                    const payload = { id: row.id };
+                    if (hasTextField) payload[config.textField] = text;
+                    if (hasWorkflowField) payload.workflow_id = workflowId;
+                    res.json(payload);
+                });
+            };
+
+            if (!hasWorkflowField || !workflowId) return apply();
+
+            db.get('SELECT id FROM workflows WHERE id = ? AND project_id = ?',
+                [workflowId, row.project_id], (wfErr, workflow) => {
+                    if (wfErr) return res.status(500).json({ error: wfErr.message });
+                    if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu diesem Projekt.' });
+                    apply();
+                });
+        });
+    };
+
     for (const kind of Object.keys(EXTRACTION_KINDS)) {
         app.delete(`/api/${kind}/:id`, requireAuth, requireAdmin, deleteExtraction(kind));
+        app.patch(`/api/${kind}/:id`, requireAuth, requireAdmin, updateExtraction(kind));
     }
 };

@@ -122,6 +122,23 @@ function runScript(script, timeoutMs = 60000) {
     });
 }
 
+// seed_db.js loggt Fehler pro Insert und endet trotzdem mit 0. Ohne diese
+// Pruefung laufen 30 Assertions gegen eine leere DB und das eigentliche
+// Problem (z.B. eine gesperrte Datei) bleibt unsichtbar.
+function countRows(table) {
+    return new Promise((resolve, reject) => {
+        const sqlite3 = require('sqlite3').verbose();
+        const db = new sqlite3.Database(TEST_DB, sqlite3.OPEN_READONLY, (err) => {
+            if (err) reject(err);
+        });
+        db.get(`SELECT COUNT(*) AS c FROM ${table}`, (err, row) => {
+            db.close();
+            if (err) reject(err);
+            else resolve(row ? row.c : 0);
+        });
+    });
+}
+
 async function startServer() {
     for (const suffix of ['', '-journal', '-wal', '-shm']) {
         try { fs.unlinkSync(TEST_DB + suffix); } catch (_) {}
@@ -154,6 +171,12 @@ async function startServer() {
     if (seed.code !== 0) {
         console.error('Seed fehlgeschlagen:\n' + seed.output);
         throw new Error('Seed fehlgeschlagen');
+    }
+
+    const seeded = await countRows('hospitals');
+    if (seeded === 0) {
+        console.error('Seed hat keine Daten geschrieben:\n' + seed.output);
+        throw new Error('Seed ohne Ergebnis (DB gesperrt oder Schema unerwartet)');
     }
     return true;
 }
@@ -366,6 +389,38 @@ async function main() {
 
     resp = await request('GET', '/api/projects/' + testProjId + '/problems', null, jar);
     assert(resp.body.some(p => p.id === directProblemId), 'Projektliste enthaelt direktes Problem');
+
+    // Bearbeiten (PATCH) je Wissensart
+    resp = await request('PATCH', '/api/workflows/' + directWorkflowId, {
+        description:'Dienstplan als Excel-Liste, Stand 2026'
+    }, jar);
+    assert(resp.status === 200 && resp.body.description.includes('Stand 2026'), 'Workflow bearbeiten');
+
+    resp = await request('PATCH', '/api/problems/' + directProblemId, {
+        title:'Excel bricht bei vielen Zeilen', description:'ab ca. 50 Personen'
+    }, jar);
+    assert(resp.status === 200 && resp.body.title === 'Excel bricht bei vielen Zeilen', 'Problem bearbeiten');
+    assert(resp.body.description === undefined || resp.body.description === 'ab ca. 50 Personen', 'Problem-Beschreibung gespeichert');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/problems', null, jar);
+    const editedProblem = (resp.body || []).find(p => p.id === directProblemId);
+    assert(editedProblem && editedProblem.description === 'ab ca. 50 Personen', 'Bearbeitete Beschreibung wird gelesen');
+
+    resp = await request('PATCH', '/api/adoption-risks/999999', { title:'X' }, jar);
+    assert(resp.status === 404, 'Bearbeiten unbekannter Eintrag -> 404');
+
+    resp = await request('PATCH', '/api/problems/' + directProblemId, { title:'   ' }, jar);
+    assert(resp.status === 400, 'Bearbeiten ohne Titel -> 400');
+
+    // Workflow-Zuordnung per PATCH (Teil-Update ohne Titel).
+    resp = await request('PATCH', '/api/problems/' + directProblemId, { workflow_id: directWorkflowId }, jar);
+    assert(resp.status === 200 && resp.body.workflow_id === directWorkflowId, 'Workflow-Zuordnung per PATCH');
+
+    resp = await request('POST', '/api/projects/1/workflows', { description:'Fremder Workflow' }, jar);
+    const foreignProjectWorkflowId = resp.body.id;
+    resp = await request('PATCH', '/api/problems/' + directProblemId, { workflow_id: foreignProjectWorkflowId }, jar);
+    assert(resp.status === 400, 'PATCH mit fremdem Workflow -> 400');
+    await request('DELETE', '/api/workflows/' + foreignProjectWorkflowId, null, jar);
 
     resp = await request('DELETE', '/api/problems/' + directProblemId, null, jar);
     assert(resp.status === 200, 'Direktes Problem loeschen');
