@@ -186,6 +186,50 @@
         </div>
         <% } %>
 
+        <% if (canManage) { %>
+        <div id="moveKeyUserCard" class="card mb-8 hidden">
+            <div class="card-header flex items-center justify-between gap-3">
+                <h2 class="text-lg font-semibold text-gray-900">Key-User verschieben</h2>
+                <button type="button" onclick="closeMoveKeyUser()" class="text-gray-400 hover:text-gray-600" aria-label="Schliessen">&times;</button>
+            </div>
+            <div class="card-body">
+                <p class="mb-4 text-sm text-gray-600">
+                    <span id="moveKeyUserName" class="font-medium text-gray-900"></span>
+                    wird aus diesem Projekt in ein anderes verschoben.
+                </p>
+                <form id="moveKeyUserForm" onsubmit="moveKeyUser(event)" class="space-y-4">
+                    <input type="hidden" name="id" value="">
+                    <div>
+                        <label class="mb-1 block text-sm font-medium text-gray-700">Zielprojekt *</label>
+                        <select name="project_id" required class="form-input">
+                            <option value="">Bitte wählen</option>
+                            <% otherProjects.forEach(p => { %>
+                            <option value="<%= p.id %>"><%= p.name %><% if (p.department_name) { %> · <%= p.department_name %><% } %><% if (p.system_name) { %> (<%= p.system_name %>)<% } %></option>
+                            <% }); %>
+                        </select>
+                        <% if (otherProjects.length === 0) { %>
+                        <p class="mt-1 text-xs text-amber-700">Es gibt kein anderes Projekt. Lege zuerst eines an.</p>
+                        <% } %>
+                    </div>
+                    <div class="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                        <label class="flex items-start gap-2 text-sm text-gray-700">
+                            <input type="checkbox" name="move_meetings" checked class="mt-1 rounded border-gray-300">
+                            <span>
+                                Termine mitnehmen (<span id="moveKeyUserMeetingCount">0</span>)
+                                <span class="block text-xs text-gray-500">Sonst bleiben die Termine im bisherigen Projekt und verlieren die Zuordnung zu dieser Person.</span>
+                            </span>
+                        </label>
+                        <p class="text-xs text-gray-500">Schulungsziele sind projektgebunden und werden beim Verschieben zurückgesetzt.</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <button type="submit" id="moveKeyUserSubmit" class="btn-primary">Verschieben</button>
+                        <button type="button" class="btn-secondary" onclick="closeMoveKeyUser()">Abbrechen</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <% } %>
+
         <div class="card">
             <div class="card-header"><h2 class="text-lg font-semibold text-gray-900">Zugewiesene Key-User</h2></div>
 
@@ -229,8 +273,8 @@
                                 const kuGoalIdSet = new Set(kuGoalIds);
                                 const kuGoalLabels = trainingGoals.filter(g => kuGoalIdSet.has(g.id)).map(g => g.label);
                                 const totalGoals = trainingGoals.length;
-                                const enrichedKeyUser = Object.assign({}, k, { training_goal_ids: kuGoalIds });
                                 const kuMeetings = (meetingsByKeyUser && meetingsByKeyUser[k.id]) ? meetingsByKeyUser[k.id] : [];
+                                const enrichedKeyUser = Object.assign({}, k, { training_goal_ids: kuGoalIds, meeting_count: kuMeetings.length });
                                 const kuNextMeeting = kuMeetings
                                     .filter(m => m.status === 'planned' && m.meeting_date >= today)
                                     .sort((a, b) => a.meeting_date.localeCompare(b.meeting_date))[0] || null;
@@ -309,6 +353,10 @@
                                         class="mr-3 text-primary-600 hover:text-primary-800"
                                         data-key-user='<%- JSON.stringify(enrichedKeyUser).replace(/'/g, "&#39;") %>'
                                         onclick='editKeyUser(this.dataset.keyUser)'>Bearbeiten</button>
+                                    <button
+                                        class="mr-3 text-gray-600 hover:text-gray-900"
+                                        data-key-user='<%- JSON.stringify(enrichedKeyUser).replace(/'/g, "&#39;") %>'
+                                        onclick='openMoveKeyUser(this.dataset.keyUser)'>Projekt ändern</button>
                                     <button onclick="deleteKeyUser(<%= k.id %>)" class="text-red-600 hover:text-red-900">Entfernen</button>
                                 </td>
                                 <% } %>
@@ -440,6 +488,53 @@
             const resp = await fetch('/api/keyusers/' + id, { method:'DELETE', headers:{'X-CSRF-Token':CSRF_TOKEN} });
             if (resp.ok) location.reload();
             else alert('Fehler beim Löschen');
+        }
+
+        // --- Key-User in ein anderes Projekt verschieben (manuelle Migration) ---
+
+        function openMoveKeyUser(rawKeyUser) {
+            const keyUser = JSON.parse(rawKeyUser);
+            const card = document.getElementById('moveKeyUserCard');
+            const form = document.getElementById('moveKeyUserForm');
+            form.elements.id.value = keyUser.id || '';
+            form.elements.project_id.value = '';
+            form.elements.move_meetings.checked = true;
+            document.getElementById('moveKeyUserName').textContent = keyUser.name || 'Key-User';
+            document.getElementById('moveKeyUserMeetingCount').textContent = String(keyUser.meeting_count || 0);
+            card.classList.remove('hidden');
+            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function closeMoveKeyUser() {
+            document.getElementById('moveKeyUserCard').classList.add('hidden');
+        }
+
+        async function moveKeyUser(e) {
+            e.preventDefault();
+            const form = e.target;
+            const id = form.elements.id.value;
+            const projectId = form.elements.project_id.value;
+            if (!id || !projectId) { alert('Bitte ein Zielprojekt wählen.'); return; }
+
+            const moveMeetings = form.elements.move_meetings.checked;
+            if (!confirm(moveMeetings
+                ? 'Key-User verschieben? Die Termine wandern mit in das Zielprojekt.'
+                : 'Key-User verschieben? Die Termine bleiben im bisherigen Projekt.')) return;
+
+            const btn = document.getElementById('moveKeyUserSubmit');
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/keyusers/' + id + '/project', {
+                    method:'PATCH',
+                    headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF_TOKEN},
+                    body: JSON.stringify({ project_id: Number(projectId), move_meetings: moveMeetings })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+                location.reload();
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         // --- Training goals admin ---

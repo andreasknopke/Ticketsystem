@@ -4229,6 +4229,83 @@ app.delete('/api/keyusers/:id', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// Key-User in ein anderes Projekt verschieben (manuelle Migration nach der
+// Aufteilung in Abteilungen). Schulungsziele sind projektgebunden und werden
+// freigegeben; Termine wandern optional mit.
+app.patch('/api/keyusers/:id/project', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const keyUserId = Number(req.params.id);
+        const targetProjectId = Number(req.body.project_id);
+        const moveMeetings = req.body.move_meetings === true || req.body.move_meetings === 'true';
+
+        if (!Number.isInteger(keyUserId) || !Number.isInteger(targetProjectId)) {
+            return res.status(400).json({ error: 'Ungueltige IDs.' });
+        }
+
+        const keyUser = await dbGet('SELECT id, project_id, name FROM project_key_users WHERE id = ?', [keyUserId]);
+        if (!keyUser.id) return res.status(404).json({ error: 'Key-User nicht gefunden.' });
+
+        const target = await dbGet(`SELECT p.id, p.name, s.name AS system_name, d.name AS department_name
+                FROM projects p
+                LEFT JOIN systems s ON s.id = p.system_id
+                LEFT JOIN departments d ON d.id = p.department_id
+                WHERE p.id = ?`, [targetProjectId]);
+        if (!target.id) return res.status(400).json({ error: 'Projekt nicht gefunden.' });
+
+        if (Number(keyUser.project_id) === targetProjectId) {
+            return res.status(400).json({ error: 'Key-User ist bereits in diesem Projekt.' });
+        }
+
+        await dbRun('UPDATE project_key_users SET project_id = ? WHERE id = ?', [targetProjectId, keyUserId]);
+
+        // Schulungsziele gelten je Projekt: Zuordnungen aus dem alten Projekt
+        // wuerden auf fremde Ziele zeigen.
+        const clearedGoals = await dbRun('DELETE FROM key_user_training_selections WHERE key_user_id = ?', [keyUserId]);
+
+        let movedMeetings = 0;
+        let detachedMeetings = 0;
+
+        if (moveMeetings) {
+            const owned = await dbRun(
+                'UPDATE key_user_meetings SET project_id = ? WHERE key_user_id = ?',
+                [targetProjectId, keyUserId]);
+            movedMeetings = owned.changes;
+
+            // Teilnehmer der mitgewanderten Termine, die nicht zum Zielprojekt
+            // gehoeren, wuerden projektfremde Verweise erzeugen.
+            await dbRun(`DELETE FROM meeting_participants
+                    WHERE meeting_id IN (SELECT id FROM key_user_meetings WHERE key_user_id = ?)
+                      AND key_user_id NOT IN (SELECT id FROM project_key_users WHERE project_id = ?)`,
+                [keyUserId, targetProjectId]);
+        } else {
+            const detached = await dbRun(
+                'UPDATE key_user_meetings SET key_user_id = NULL WHERE key_user_id = ?',
+                [keyUserId]);
+            detachedMeetings = detached.changes;
+        }
+
+        // Teilnahmen dieses Key-Users an Terminen ausserhalb des Zielprojekts
+        // entfernen (sonst projektfremde Zuordnung).
+        await dbRun(`DELETE FROM meeting_participants
+                WHERE key_user_id = ?
+                  AND meeting_id IN (SELECT id FROM key_user_meetings WHERE project_id != ?)`,
+            [keyUserId, targetProjectId]);
+
+        io.emit('keyuser:updated', { projectId: keyUser.project_id });
+        io.emit('keyuser:updated', { projectId: targetProjectId });
+
+        res.json({
+            id: keyUserId,
+            project_id: targetProjectId,
+            cleared_training_goals: clearedGoals.changes,
+            moved_meetings: movedMeetings,
+            detached_meetings: detachedMeetings
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- API: Key-User-Termine (Meeting-Tracking) ---
 
 const MEETING_STATUSES = new Set(['planned', 'done', 'cancelled']);
@@ -6595,16 +6672,25 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                                 });
                                 const now = new Date();
                                 const pad = (value) => String(value).padStart(2, '0');
-                                res.render('project-keyusers', {
-                                    project,
-                                    keyUsers: keyUsers || [],
-                                    trainingGoals: goals || [],
-                                    goalIdsByKeyUser,
-                                    meetingsByKeyUser,
-                                    today: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
-                                    user: req.session.user,
-                                    role: req.session.role || 'user',
-                                    canManage: isAdminRole(req.session.role)
+                                db.all(`SELECT p.id, p.name, s.name AS system_name, d.name AS department_name
+                                        FROM projects p
+                                        LEFT JOIN systems s ON s.id = p.system_id
+                                        LEFT JOIN departments d ON d.id = p.department_id
+                                        WHERE p.id != ?
+                                        ORDER BY p.name`, [req.params.id], (pErr, otherProjects) => {
+                                    if (pErr) return res.status(500).send(pErr.message);
+                                    res.render('project-keyusers', {
+                                        project,
+                                        keyUsers: keyUsers || [],
+                                        trainingGoals: goals || [],
+                                        goalIdsByKeyUser,
+                                        meetingsByKeyUser,
+                                        otherProjects: otherProjects || [],
+                                        today: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+                                        user: req.session.user,
+                                        role: req.session.role || 'user',
+                                        canManage: isAdminRole(req.session.role)
+                                    });
                                 });
                             });
                     });

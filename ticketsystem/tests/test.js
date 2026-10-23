@@ -324,6 +324,82 @@ async function main() {
     resp = await request('DELETE', '/api/problems/' + problemId, null, jar);
     assert(resp.status === 200, 'DELETE Problem');
 
+    // --- API: Key-User verschieben (manuelle Migration) ---
+    console.log('\n📌 API: Key-User verschieben');
+
+    resp = await request('POST', '/api/projects/1/training-goals', { label:'Migrationsziel' }, jar);
+    assert(resp.status === 201 && resp.body.id, 'Schulungsziel im Quellprojekt');
+    const goalId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/1/keyusers', {
+        name:'Migrations-Key-User', role:'key_user', training_goal_ids:[goalId]
+    }, jar);
+    assert(resp.status === 201 && resp.body.id, 'Key-User im Quellprojekt');
+    const moveKuId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/1/meetings', {
+        title:'Termin vor Migration', meeting_date:'2026-04-01'
+    }, jar);
+    const moveMeetingId = resp.body.id;
+    resp = await request('POST', '/api/projects/1/meetings', {
+        title:'Termin mit Key-User', meeting_date:'2026-04-02', key_user_id: moveKuId
+    }, jar);
+    const ownedMeetingId = resp.body.id;
+
+    resp = await request('GET', '/api/projects/1/keyusers', null, jar);
+    const beforeMove = (resp.body || []).find(k => k.id === moveKuId);
+    assert(beforeMove && beforeMove.training_goal_ids.length === 1, 'Schulungsziel ist vorher zugeordnet');
+
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', { project_id: 1 }, jar);
+    assert(resp.status === 400, 'Verschieben in dasselbe Projekt -> 400');
+
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', { project_id: 999999 }, jar);
+    assert(resp.status === 400, 'Verschieben in unbekanntes Projekt -> 400');
+
+    resp = await request('PATCH', '/api/keyusers/999999/project', { project_id: testProjId }, jar);
+    assert(resp.status === 404, 'Unbekannter Key-User -> 404');
+
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', {
+        project_id: testProjId, move_meetings: false
+    }, jar);
+    assert(resp.status === 200 && resp.body.project_id === testProjId, 'Key-User verschoben');
+    assert(resp.body.cleared_training_goals === 1, 'Schulungsziele beim Verschieben freigegeben');
+    assert(resp.body.detached_meetings === 1, 'Termine ohne Mitnahme abgehaengt');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/keyusers', null, jar);
+    assert((resp.body || []).some(k => k.id === moveKuId), 'Key-User liegt im Zielprojekt');
+    const afterMove = (resp.body || []).find(k => k.id === moveKuId);
+    assert(afterMove.training_goal_ids.length === 0, 'Keine projektfremden Schulungsziele im Zielprojekt');
+
+    resp = await request('GET', '/api/projects/1/keyusers', null, jar);
+    assert(!(resp.body || []).some(k => k.id === moveKuId), 'Key-User ist aus dem Quellprojekt entfernt');
+
+    resp = await request('GET', '/api/projects/1/meetings', null, jar);
+    const detached = (resp.body || []).find(m => m.id === ownedMeetingId);
+    assert(detached && detached.key_user_id === null, 'Abgehaengter Termin bleibt im Quellprojekt');
+
+    // Mitgenommene Termine: zurueck in Projekt 1, dann erneut mit Mitnahme verschieben.
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', {
+        project_id: 1, move_meetings: true
+    }, jar);
+    assert(resp.status === 200 && resp.body.moved_meetings === 0, 'Rueckverschieben ohne eigene Termine');
+
+    resp = await request('POST', '/api/projects/1/meetings', {
+        title:'Termin fuer Mitnahme', meeting_date:'2026-04-03', key_user_id: moveKuId
+    }, jar);
+    const beforeMoveMeetingId = resp.body.id;
+
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', {
+        project_id: testProjId, move_meetings: true
+    }, jar);
+    assert(resp.status === 200 && resp.body.moved_meetings === 1, 'Termin wandert mit');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/meetings', null, jar);
+    assert((resp.body || []).some(m => m.id === beforeMoveMeetingId), 'Mitgewanderter Termin liegt im Zielprojekt');
+
+    resp = await request('DELETE', '/api/projects/1/training-goals/' + goalId, null, jar);
+    assert(resp.status === 200, 'Schulungsziel aufgeraeumt');
+
     // --- API: Documents ---
     console.log('\n📌 API: Wiki-Dokumente');
     resp = await request('GET', '/api/projects/1/docs', null, jar);
