@@ -254,16 +254,34 @@ zusaetzlich `project_id`; `department_id` wird daraus abgeleitet.
 | Abschnitt | Inhalt | Stand |
 |---|---|---|
 | Input | Transkripte aus Terminen, hochgeladene Dokumente, Workflows/Probleme/Risiken (mit Herkunft), direkte Erfassung | umgesetzt |
-| Input-Visualisierung | LLM zeichnet den bestehenden Workflow und markiert die Probleme | Platzhalter |
-| Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
+| Input-Visualisierung | LLM zeichnet den bestehenden Workflow und markiert die Probleme | Platzhalter || Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
 
 Dateien im Flow-Reiter sind `project_attachments` mit `phase = 'input'`
 (Spalte vorbereitet fuer `'output'`). Wissenseintraege koennen aus einem Termin
 (`POST /api/meetings/:id/<kind>`) oder direkt im Projekt
 (`POST /api/projects/:id/<kind>`) entstehen.
 
-**Teststand:** `npm test` — 18 Migrationspruefungen + 146 Assertions, gruen,
-wiederholbar.
+## KI-Zusammenfassung
+
+`POST /api/projects/:id/flow-summary` fasst die Bestandsaufnahme zusammen:
+
+| Aspekt | Umsetzung |
+|---|---|
+| Eingabe | Projektkopf, Transkripte, Textdokumente, Workflows/Probleme/Risiken (mit Herkunft) |
+| Grenzen | 120k Zeichen gesamt, 30k pro Transkript, 20k pro Datei (per ENV anpassbar) |
+| Redaction | `services/ai/redact.js` vor dem Aufruf; Treffer werden zurueckgemeldet |
+| Modell | KI-Mitarbeiter (`staff.kind='ai'`), Default = einer mit Rolle `planning` |
+| Ausgabe | reiner Text mit 5 Abschnitten (Ausgangslage, Ablauf, Probleme, Risiken, offene Punkte) |
+| Speicherung | `project_flow_summaries`, versioniert; Anzeige = neueste Version |
+| Kosten | Token-Verbrauch landet wie bei den Ticket-Stages in `ai_token_usage` |
+| `dry_run: true` | liefert die redigierte Eingabe + Statistik, ohne Modellaufruf |
+
+Nicht maschinell lesbare Dateien (PDF, Word, Excel) gehen **nur mit Dateinamen**
+in die Eingabe ein; das steht dann auch so im Prompt, damit das Modell die
+Luecke nicht mit Erfundenem fuellt.
+
+**Teststand:** `npm test` — 18 Migrationspruefungen, 17 Eingabe-Checks und 165
+Assertions, gruen, wiederholbar.
 
 ## Reihenfolge
 

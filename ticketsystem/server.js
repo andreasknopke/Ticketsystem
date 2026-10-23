@@ -45,6 +45,7 @@ const workflowEngine = require('./services/workflow/engine');
 const dossierExport = require('./services/workflow/dossierExport');
 const atlasSchema = require('./services/atlas/schema');
 const registerAtlasRoutes = require('./services/atlas/routes');
+const flowSummary = require('./services/atlas/flowSummary');
 const {
     EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
     EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
@@ -6871,6 +6872,13 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 transcripts,
                 attachments,
                 entries,
+                summaries: await dbAll(`SELECT id, content, provider, model, created_by,
+                        created_at, input_chars, prompt_tokens, completion_tokens
+                    FROM project_flow_summaries
+                    WHERE project_id = ?
+                    ORDER BY id DESC`, [projectId]),
+                aiStaff: await dbAll(`SELECT id, name, ai_model FROM staff
+                    WHERE kind = 'ai' AND active = 1 ORDER BY name`, []),
                 user: req.session.user,
                 role: req.session.role || 'user',
                 canManage: isAdminRole(req.session.role)
@@ -6942,7 +6950,7 @@ app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
 
 workflowEngine.init({ db, io });
 dossierExport.init({ db });
-registerAtlasRoutes(app, { db, requireAuth, requireAdmin, io });
+registerAtlasRoutes(app, { db, requireAuth, requireAdmin, io, aiClient, redactor, flowSummary });
 
 server.listen(PORT, () => {
     console.log('====================================================');

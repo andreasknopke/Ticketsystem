@@ -49,7 +49,7 @@ const EXTRACTION_KINDS = {
 };
 
 module.exports = function registerAtlasRoutes(app, deps) {
-    const { db, requireAuth, requireAdmin } = deps;
+    const { db, requireAuth, requireAdmin, aiClient, redactor, flowSummary } = deps;
 
     const loadMeeting = (meetingId, callback) => {
         db.get(`SELECT m.id, m.project_id, p.department_id
@@ -349,4 +349,161 @@ module.exports = function registerAtlasRoutes(app, deps) {
         app.delete(`/api/${kind}/:id`, requireAuth, requireAdmin, deleteExtraction(kind));
         app.patch(`/api/${kind}/:id`, requireAuth, requireAdmin, updateExtraction(kind));
     }
+
+    // --- KI-Zusammenfassung der Bestandsaufnahme ---
+
+    const allAsync = (sql, params = []) => new Promise((resolve, reject) => {
+        db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+    });
+    const getAsync = (sql, params = []) => new Promise((resolve, reject) => {
+        db.get(sql, params, (err, row) => err ? reject(err) : resolve(row || null));
+    });
+    const runAsync = (sql, params = []) => new Promise((resolve, reject) => {
+        db.run(sql, params, function (err) {
+            if (err) reject(err);
+            else resolve({ lastID: this.lastID, changes: this.changes });
+        });
+    });
+
+    async function collectSummaryInput(projectId) {
+        const project = await getAsync(`SELECT p.id, p.name, p.description, p.status,
+                p.start_date, p.end_date,
+                s.name AS system_name, d.name AS department_name, h.name AS hospital_name
+            FROM projects p
+            LEFT JOIN systems s ON s.id = p.system_id
+            LEFT JOIN departments d ON d.id = p.department_id
+            LEFT JOIN hospitals h ON h.id = d.hospital_id
+            WHERE p.id = ?`, [projectId]);
+        if (!project) return null;
+
+        const transcripts = await allAsync(`SELECT id, title, meeting_date, start_time, transcript
+            FROM key_user_meetings
+            WHERE project_id = ? AND LENGTH(COALESCE(transcript, '')) > 0
+            ORDER BY meeting_date ASC, id ASC`, [projectId]);
+
+        // Nur den Input-Abschnitt: Output-Dateien beschreiben den Zielzustand.
+        const attachments = await allAsync(`SELECT filename, original_name, mimetype,
+                COALESCE(phase, 'input') AS phase
+            FROM project_attachments
+            WHERE project_id = ? AND COALESCE(phase, 'input') != 'output'
+            ORDER BY created_at ASC`, [projectId]);
+
+        const entries = {
+            workflows: await allAsync(`SELECT x.*, m.title AS meeting_title
+                FROM workflows x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId]),
+            problems: await allAsync(`SELECT x.*, m.title AS meeting_title
+                FROM problems x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId]),
+            adoptionRisks: await allAsync(`SELECT x.*, m.title AS meeting_title
+                FROM adoption_risks x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId])
+        };
+
+        return { project, transcripts, attachments, entries };
+    }
+
+    async function pickSummaryStaff(staffId) {
+        if (staffId) {
+            const staff = await getAsync(
+                "SELECT * FROM staff WHERE id = ? AND kind = 'ai' AND active = 1", [staffId]);
+            if (!staff) return { error: 'KI-Mitarbeiter nicht gefunden oder inaktiv.' };
+            return { staff };
+        }
+        // Bevorzugt der Planer: er bekommt die Aufgabe, aus Ist-Zustand einen
+        // Zielzustand abzuleiten.
+        const staff = await getAsync(`SELECT s.* FROM staff s
+            WHERE s.kind = 'ai' AND s.active = 1
+            ORDER BY (SELECT COUNT(*) FROM staff_roles r
+                      WHERE r.staff_id = s.id AND r.role = 'planning' AND r.active = 1) DESC,
+                     s.id ASC
+            LIMIT 1`);
+        if (!staff) return { error: 'Kein KI-Mitarbeiter konfiguriert. Lege unter Mitarbeiter einen Bot an.' };
+        return { staff };
+    }
+
+    app.get('/api/projects/:projectId/flow-summary', requireAuth, async (req, res) => {
+        try {
+            const rows = await allAsync(`SELECT id, content, provider, model, prompt_tokens,
+                    completion_tokens, duration_ms, input_chars, created_by, created_at
+                FROM project_flow_summaries
+                WHERE project_id = ?
+                ORDER BY id DESC`, [req.params.projectId]);
+            res.json({ latest: rows[0] || null, history: rows.slice(1) });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/projects/:projectId/flow-summary', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const collected = await collectSummaryInput(req.params.projectId);
+            if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+
+            const built = flowSummary.buildInput(collected);
+            if (!built.text.trim()) return res.status(400).json({ error: 'Keine Eingaben vorhanden.' });
+
+            // Vor dem Aufruf redigieren: Transkripte enthalten Kontaktdaten.
+            const redacted = redactor.redact(built.text);
+            const dryRun = req.body.dry_run === true || req.body.dry_run === 'true';
+
+            if (dryRun) {
+                return res.json({
+                    dry_run: true,
+                    stats: built.stats,
+                    truncated: built.truncated,
+                    redaction_hits: redacted.hits,
+                    input: redacted.redacted
+                });
+            }
+
+            const picked = await pickSummaryStaff(toId(req.body.staff_id));
+            if (picked.error) return res.status(409).json({ error: picked.error });
+            const staff = picked.staff;
+
+            const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
+            let result;
+            try {
+                result = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    // Zusammenfassung ist kurz; das Provider-Maximum waere hier
+                    // nur teuer und langsam.
+                    maxTokens: Math.min(staff.ai_max_tokens || 2000, 4000),
+                    system: flowSummary.SYSTEM_PROMPT,
+                    user: flowSummary.buildUserPrompt(redacted.redacted),
+                    json: false
+                });
+            } catch (err) {
+                return res.status(502).json({ error: 'KI-Aufruf fehlgeschlagen: ' + err.message });
+            }
+
+            const content = String(result.text || '').trim();
+            if (!content) return res.status(502).json({ error: 'KI hat keine Zusammenfassung geliefert.' });
+
+            const inserted = await runAsync(`INSERT INTO project_flow_summaries
+                    (project_id, content, provider, model, prompt_tokens, completion_tokens,
+                     duration_ms, input_chars, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.params.projectId, content, result.provider || provider, result.model || staff.ai_model || null,
+                result.prompt_tokens || null, result.completion_tokens || null,
+                result.duration_ms || null, built.text.length, req.session.user || null]);
+
+            res.status(201).json({
+                id: inserted.lastID,
+                content,
+                provider: result.provider || provider,
+                model: result.model || staff.ai_model || null,
+                staff_name: staff.name,
+                stats: built.stats,
+                truncated: built.truncated,
+                redaction_hits: redacted.hits.length,
+                prompt_tokens: result.prompt_tokens || null,
+                completion_tokens: result.completion_tokens || null
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
 };

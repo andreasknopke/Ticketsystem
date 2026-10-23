@@ -164,6 +164,23 @@ async function migrate(db) {
         FOREIGN KEY (key_user_id) REFERENCES project_key_users(id) ON DELETE CASCADE
     )`);
 
+    // KI-Zusammenfassungen der Bestandsaufnahme: Versionen bleiben erhalten,
+    // damit eine Neugenerierung nichts ueberschreibt.
+    await run(db, `CREATE TABLE IF NOT EXISTS project_flow_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        duration_ms INTEGER,
+        input_chars INTEGER,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`);
+
     // 3. Wissenstabellen (Reihenfolge: Kinder vor Elterntabelle)
     await makeMeetingOptional(db, 'problems', PROBLEMS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
@@ -185,6 +202,7 @@ async function migrate(db) {
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_project ON adoption_risks(project_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_meeting ON adoption_risks(meeting_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_meeting_participants_meeting ON meeting_participants(meeting_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_flow_summaries_project ON project_flow_summaries(project_id)');
 
     // 4. Default-Datensatz
     await run(db, `INSERT INTO hospitals (name)

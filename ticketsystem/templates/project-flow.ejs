@@ -144,6 +144,79 @@
                 </div>
             </div>
 
+            <!-- KI-Zusammenfassung der Bestandsaufnahme -->
+            <div class="card mb-4">
+                <div class="card-header flex flex-wrap items-center justify-between gap-2">
+                    <h3 class="text-base font-semibold text-gray-900">Zusammenfassung (KI)</h3>
+                    <% if (summaries.length > 0) { %>
+                    <span class="text-xs text-gray-500">
+                        <%= summaries[0].model || summaries[0].provider || 'unbekannt' %> ·
+                        <%= formatDateTime(summaries[0].created_at) %>
+                    </span>
+                    <% } %>
+                </div>
+                <div class="card-body">
+                    <% const latestSummary = summaries[0] || null; %>
+                    <% if (latestSummary) { %>
+                    <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+                        <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSummary.content %></p>
+                    </div>
+                    <p class="mt-2 text-xs text-gray-500">
+                        Eingabe: <%= latestSummary.input_chars || 0 %> Zeichen
+                        <% if (latestSummary.prompt_tokens) { %>· <%= latestSummary.prompt_tokens %> Prompt-Token<% } %>
+                        <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
+                        <% if (latestSummary.created_by) { %>· von <%= latestSummary.created_by %><% } %>
+                    </p>
+                    <% } else { %>
+                    <p class="text-sm text-gray-500">Noch keine Zusammenfassung erstellt.</p>
+                    <% } %>
+
+                    <% if (canManage) { %>
+                    <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
+                        <div class="flex-1">
+                            <label for="summaryStaff" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
+                            <select id="summaryStaff" class="form-select text-sm">
+                                <% aiStaff.forEach(bot => { %>
+                                <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
+                                <% }); %>
+                            </select>
+                            <% if (aiStaff.length === 0) { %>
+                            <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
+                            <% } %>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button type="button" class="btn-secondary text-sm" onclick="previewSummary()">Vorschau</button>
+                            <button type="button" id="summaryButton" class="btn-primary text-sm"
+                                <%= aiStaff.length === 0 ? 'disabled' : '' %>
+                                onclick="createSummary()">Zusammenfassung erstellen</button>
+                        </div>
+                    </div>
+                    <% if (latestSummary) { %>
+                    <p class="mt-2 text-xs text-gray-400">
+                        Eine neue Zusammenfassung ersetzt die bisherige Anzeige; ältere Versionen bleiben gespeichert.
+                    </p>
+                    <% } %>
+                    <% } %>
+
+                    <% if (summaries.length > 1) { %>
+                    <details class="mt-3">
+                        <summary class="cursor-pointer text-sm text-primary-700">Ältere Versionen (<%= summaries.length - 1 %>)</summary>
+                        <ul class="mt-2 divide-y divide-gray-100">
+                            <% summaries.slice(1).forEach(s => { %>
+                            <li class="py-2">
+                                <p class="text-xs text-gray-500">
+                                    <%= formatDateTime(s.created_at) %> · <%= s.model || s.provider || 'unbekannt' %>
+                                    · <%= s.input_chars || 0 %> Zeichen Eingabe
+                                </p>
+                                <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700"><%= s.content %></p>
+                            </li>
+                            <% }); %>
+                        </ul>
+                    </details>
+                    <% } %>
+                </div>
+            </div>
+
             <!-- Erkenntnisse -->
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
                 <%
@@ -420,6 +493,60 @@
             if (resp.ok) { location.reload(); return; }
             const err = await resp.json().catch(() => ({}));
             alert('Fehler: ' + (err.error || resp.statusText));
+        }
+
+        // --- KI-Zusammenfassung ---
+
+        function summaryStaffId() {
+            const select = document.getElementById('summaryStaff');
+            return select && select.value ? Number(select.value) : undefined;
+        }
+
+        // Zeigt, was an das Modell gehen wuerde - ohne Aufruf und ohne Kosten.
+        async function previewSummary() {
+            const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                body: JSON.stringify({ dry_run: true })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+
+            const s = data.stats || {};
+            const lines = [
+                `Transkripte: ${s.transcripts || 0}`,
+                `Dokumente: ${s.files || 0} (lesbar: ${s.readableFiles || 0})`,
+                `Workflows: ${s.workflows || 0}`,
+                `Probleme: ${s.problems || 0}`,
+                `Adoptionsrisiken: ${s.adoptionRisks || 0}`,
+                `Eingabe: ${s.inputChars || 0} Zeichen${data.truncated ? ' (gekuerzt)' : ''}`,
+                `Redigiert: ${(data.redaction_hits || []).length} Treffer`
+            ];
+            alert('Vorschau der Eingabe\n\n' + lines.join('\n') + '\n\nDer vollstaendige Text steht in der Browser-Konsole.');
+            console.log('[flow-summary] Eingabe:\n' + data.input);
+            if ((data.redaction_hits || []).length) {
+                console.log('[flow-summary] Redaction:', data.redaction_hits);
+            }
+        }
+
+        async function createSummary() {
+            const button = document.getElementById('summaryButton');
+            if (!confirm('Zusammenfassung durch das Modell erstellen? Das kann einige Sekunden dauern.')) return;
+            button.disabled = true;
+            button.textContent = 'Erstelle…';
+            try {
+                const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                    body: JSON.stringify({ staff_id: summaryStaffId() })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+                location.reload();
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Zusammenfassung erstellen';
+            }
         }
     </script>
 </body>

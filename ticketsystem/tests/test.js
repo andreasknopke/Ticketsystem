@@ -425,6 +425,45 @@ async function main() {
     resp = await request('DELETE', '/api/problems/' + directProblemId, null, jar);
     assert(resp.status === 200, 'Direktes Problem loeschen');
 
+    // --- API: KI-Zusammenfassung (Vorschau, ohne Modellaufruf) ---
+    console.log('\n📌 API: Flow-Zusammenfassung');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/flow-summary', null, jar);
+    assert(resp.status === 200 && resp.body.latest === null, 'GET flow-summary ohne Zusammenfassung');
+
+    // Ein Problem anlegen, damit die Vorschau alle Wissensarten zaehlt.
+    resp = await request('POST', '/api/projects/' + testProjId + '/problems', {
+        title:'Fuer die Zusammenfassung'
+    }, jar);
+    const summaryProblemId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary', {
+        dry_run: true
+    }, jar);
+    assert(resp.status === 200 && resp.body.dry_run === true, 'POST flow-summary dry_run');
+    assert(typeof resp.body.input === 'string' && resp.body.input.includes('Test-Projekt'),
+        'Vorschau enthaelt den Projektnamen');
+    assert(resp.body.stats.transcripts >= 1, 'Vorschau zaehlt Transkripte');
+    assert(resp.body.stats.workflows >= 1, 'Vorschau zaehlt Workflows');
+    assert(resp.body.stats.problems >= 1, 'Vorschau zaehlt Probleme');
+
+    // Kontaktdaten aus dem Transkript muessen vor dem Aufruf redigiert sein.
+    await request('PUT', '/api/meetings/' + meetingId + '/transcript', {
+        transcript:'Kontakt: mara.koenig@projekt.example, Telefon +49 30 555 0101. Ablauf per Excel.'
+    }, jar);
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary', {
+        dry_run: true
+    }, jar);
+    assert(resp.status === 200, 'Vorschau mit Transkript');
+    assert(!resp.body.input.includes('mara.koenig@projekt.example'), 'E-Mail wird redigiert');
+    assert(resp.body.input.includes('[REDACTED_EMAIL]'), 'Redaction-Platzhalter sichtbar');
+    assert(resp.body.redaction_hits.length >= 1, 'Redaction-Treffer werden gemeldet');
+
+    resp = await request('POST', '/api/projects/999999/flow-summary', { dry_run: true }, jar);
+    assert(resp.status === 404, 'Zusammenfassung fuer unbekanntes Projekt -> 404');
+
+    await request('DELETE', '/api/problems/' + summaryProblemId, null, jar);
+
     // --- API: Key-User verschieben (manuelle Migration) ---
     console.log('\n📌 API: Key-User verschieben');
 
