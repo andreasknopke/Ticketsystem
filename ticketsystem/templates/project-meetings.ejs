@@ -124,7 +124,8 @@
             duration_minutes: durationOf(meeting),
             location: meeting.location || '',
             status: meeting.status || 'planned',
-            follow_up_of: meeting.follow_up_of || ''
+            follow_up_of: meeting.follow_up_of || '',
+            participant_ids: (participantsByMeeting[meeting.id] || []).map(p => p.id)
         }).replace(/'/g, '&#39;');
 
         const STATUS_META = {
@@ -231,6 +232,21 @@
                                 <option value="done">Erledigt</option>
                                 <option value="cancelled">Abgesagt</option>
                             </select>
+                        </div>
+                        <div class="md:col-span-2">
+                            <label class="mb-1 block text-sm font-medium text-gray-700">Teilnehmer</label>
+                            <div id="meetingParticipants" class="grid max-h-40 grid-cols-1 gap-2 overflow-auto rounded-lg border border-gray-200 p-3 sm:grid-cols-2">
+                                <% if (keyUsers.length === 0) { %>
+                                <p class="text-sm text-gray-400">Noch keine Key-User im Projekt.</p>
+                                <% } %>
+                                <% keyUsers.forEach(k => { %>
+                                <label class="flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="participant_ids" value="<%= k.id %>" class="rounded border-gray-300">
+                                    <span><%= k.name %> <span class="text-xs text-gray-400"><%= ROLE_LABELS[k.role] || k.role %></span></span>
+                                </label>
+                                <% }); %>
+                            </div>
+                            <p class="mt-1 text-xs text-gray-400">Wer war bei diesem Termin dabei?</p>
                         </div>
                         <div class="md:col-span-2">
                             <label class="mb-1 block text-sm font-medium text-gray-700">Agenda</label>
@@ -536,6 +552,11 @@
             form.elements.notes.value = meeting.notes || '';
             form.elements.follow_up_of.value = meeting.follow_up_of || '';
 
+            const chosen = new Set((meeting.participant_ids || []).map(Number));
+            form.querySelectorAll('input[name="participant_ids"]').forEach((box) => {
+                box.checked = chosen.has(Number(box.value));
+            });
+
             document.getElementById('meetingFormTitle').textContent = 'Termin bearbeiten';
             document.getElementById('meetingSubmitButton').textContent = 'Änderungen speichern';
             document.getElementById('meetingCancelButton').classList.remove('hidden');
@@ -591,12 +612,30 @@
                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                 body: JSON.stringify(body)
             });
-            if (resp.ok) {
-                location.reload();
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                alert('Fehler: ' + (err.error || resp.statusText));
                 return;
             }
-            const err = await resp.json().catch(() => ({}));
-            alert('Fehler: ' + (err.error || resp.statusText));
+
+            // Teilnehmer gehoeren zum Termin, nicht zum Termin-Body: separat speichern.
+            const saved = await resp.json().catch(() => ({}));
+            const meetingId = saved.id || form.elements.id.value;
+            if (meetingId) {
+                const participantIds = Array.from(
+                    form.querySelectorAll('input[name="participant_ids"]:checked')
+                ).map((box) => Number(box.value));
+                const pResp = await fetch('/api/meetings/' + meetingId + '/participants', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                    body: JSON.stringify({ key_user_ids: participantIds })
+                });
+                if (!pResp.ok) {
+                    const err = await pResp.json().catch(() => ({}));
+                    alert('Termin gespeichert, Teilnehmer aber nicht: ' + (err.error || pResp.statusText));
+                }
+            }
+            location.reload();
         }
 
         async function setMeetingStatus(id, status) {

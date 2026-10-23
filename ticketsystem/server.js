@@ -6418,7 +6418,13 @@ app.get('/projects', requireAuth, (req, res) => {
 
 app.get('/project/:id', requireAuth, (req, res) => {
     const projectId = req.params.id;
-    db.get(`SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?`,
+    db.get(`SELECT p.*, s.name as system_name,
+                   d.name as department_name, h.name as hospital_name
+            FROM projects p
+            LEFT JOIN systems s ON p.system_id = s.id
+            LEFT JOIN departments d ON p.department_id = d.id
+            LEFT JOIN hospitals h ON d.hospital_id = h.id
+            WHERE p.id = ?`,
         [projectId], (err, project) => {
             if (err) return res.status(500).send('DB Error');
             if (!project) return res.status(404).send('Projekt nicht gefunden');
