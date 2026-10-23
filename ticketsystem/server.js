@@ -43,6 +43,8 @@ const aiClient = require('./services/ai/client');
 const redactor = require('./services/ai/redact');
 const workflowEngine = require('./services/workflow/engine');
 const dossierExport = require('./services/workflow/dossierExport');
+const atlasSchema = require('./services/atlas/schema');
+const registerAtlasRoutes = require('./services/atlas/routes');
 const {
     EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
     EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
@@ -1239,16 +1241,21 @@ function initDb() {
         status TEXT CHECK(status IN ('planning','active','maintenance','completed','proposed')) DEFAULT 'proposed',
         start_date TEXT,
         end_date TEXT,
+        department_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (system_id) REFERENCES systems(id) ON DELETE SET NULL
+        FOREIGN KEY (system_id) REFERENCES systems(id) ON DELETE SET NULL,
+        FOREIGN KEY (department_id) REFERENCES departments(id)
     )`);
 
     // Migration: projects.status CHECK-Constraint um 'proposed' erweitern.
+    // Die Atlas-Migration (departments/projects.department_id) startet erst
+    // danach, damit sie nicht mit dem Tabellen-Rebuild kollidiert.
+    const startAtlasMigration = () => atlasSchema.init(db);
     db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'", (sqlErr, row) => {
-        if (sqlErr || !row || !row.sql) return;
-        if (row.sql.includes("'proposed'")) return; // schon migriert / fresh DB
-        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return;
+        if (sqlErr || !row || !row.sql) return startAtlasMigration();
+        if (row.sql.includes("'proposed'")) return startAtlasMigration(); // schon migriert / fresh DB
+        if (!/status TEXT CHECK\(status IN/.test(row.sql)) return startAtlasMigration();
         console.log('[migration] projects.status CHECK erweitern (proposed)…');
         db.serialize(() => {
             db.run('DROP TABLE IF EXISTS projects__new');
@@ -1259,14 +1266,23 @@ function initDb() {
                 "status TEXT CHECK(status IN ('planning','active','maintenance','completed','proposed')) DEFAULT 'proposed'"
             ).replace(/CREATE\s+TABLE\s+["']?projects["']?/i, 'CREATE TABLE projects__new');
             db.run(newDdl, (e1) => {
-                if (e1) { console.error('[migration] CREATE projects__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
-                db.run(`INSERT INTO projects__new SELECT * FROM projects`, (e2) => {
-                    if (e2) { console.error('[migration] Datenkopie fehlgeschlagen:', e2.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                if (e1) { console.error('[migration] CREATE projects__new fehlgeschlagen:', e1.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return startAtlasMigration(); }
+                // Bewusst explizite Spalten statt SELECT *: die Quelle kann bereits
+                // department_id enthalten, das Ziel (aus altem DDL) nicht.
+                db.run(`INSERT INTO projects__new
+                        (id, system_id, name, description, status, start_date, end_date, created_at, updated_at)
+                        SELECT id, system_id, name, description, status, start_date, end_date, created_at, updated_at
+                        FROM projects`, (e2) => {
+                    if (e2) { console.error('[migration] Datenkopie fehlgeschlagen:', e2.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return startAtlasMigration(); }
                     db.run('DROP TABLE projects', (e3) => {
-                        if (e3) { console.error('[migration] DROP fehlgeschlagen:', e3.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
+                        if (e3) { console.error('[migration] DROP fehlgeschlagen:', e3.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return startAtlasMigration(); }
                         db.run('ALTER TABLE projects__new RENAME TO projects', (e4) => {
-                            if (e4) { console.error('[migration] RENAME fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return; }
-                            db.run('COMMIT', () => { db.run('PRAGMA foreign_keys=ON'); console.log('[migration] projects.status CHECK erfolgreich migriert.'); });
+                            if (e4) { console.error('[migration] RENAME fehlgeschlagen:', e4.message); db.run('ROLLBACK'); db.run('PRAGMA foreign_keys=ON'); return startAtlasMigration(); }
+                            db.run('COMMIT', () => {
+                                db.run('PRAGMA foreign_keys=ON');
+                                console.log('[migration] projects.status CHECK erfolgreich migriert.');
+                                startAtlasMigration();
+                            });
                         });
                     });
                 });
@@ -3585,6 +3601,8 @@ app.get('/api/pins', requireAuth, (req, res) => {
 app.get('/api/projects', requireAuth, (req, res) => {
     db.all(`
         SELECT p.*, s.name as system_name,
+            d.name as department_name,
+            h.name as hospital_name,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
             (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count,
@@ -3592,6 +3610,8 @@ app.get('/api/projects', requireAuth, (req, res) => {
             (SELECT id FROM github_integration WHERE project_id = p.id) as github_integration_id
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
+        LEFT JOIN departments d ON p.department_id = d.id
+        LEFT JOIN hospitals h ON d.hospital_id = h.id
         ORDER BY
             CASE WHEN p.status = 'proposed' THEN 1 ELSE 0 END,
             p.status, p.name
@@ -3603,9 +3623,13 @@ app.get('/api/projects', requireAuth, (req, res) => {
 
 app.get('/api/projects/:id', requireAuth, (req, res) => {
     db.get(`
-        SELECT p.*, s.name as system_name
+        SELECT p.*, s.name as system_name,
+            d.name as department_name,
+            h.name as hospital_name
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
+        LEFT JOIN departments d ON p.department_id = d.id
+        LEFT JOIN hospitals h ON d.hospital_id = h.id
         WHERE p.id = ?
     `, [req.params.id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -3616,20 +3640,36 @@ app.get('/api/projects/:id', requireAuth, (req, res) => {
 
 app.post('/api/projects', requireAuth, requireAdmin, (req, res) => {
     const { system_id, name, description, status, start_date, end_date } = req.body;
-    db.run(`INSERT INTO projects (system_id, name, description, status, start_date, end_date)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-        [system_id || null, name, description || '', status || 'planning', start_date || null, end_date || null],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.status(201).json({ id: this.lastID });
-        });
+    const departmentId = Number(req.body.department_id);
+    if (!Number.isInteger(departmentId) || departmentId <= 0) {
+        return res.status(400).json({ error: 'Abteilung ist erforderlich.' });
+    }
+    db.get('SELECT id FROM departments WHERE id = ?', [departmentId], (depErr, department) => {
+        if (depErr) return res.status(500).json({ error: depErr.message });
+        if (!department) return res.status(400).json({ error: 'Abteilung nicht gefunden.' });
+        db.run(`INSERT INTO projects (system_id, name, description, status, start_date, end_date, department_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [system_id || null, name, description || '', status || 'planning',
+            start_date || null, end_date || null, departmentId],
+            function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+                res.status(201).json({ id: this.lastID, department_id: departmentId });
+            });
+    });
 });
 
 app.patch('/api/projects/:id', requireAuth, requireAdmin, (req, res) => {
-    const allowed = ['system_id', 'name', 'description', 'status', 'start_date', 'end_date'];
+    const allowed = ['system_id', 'name', 'description', 'status', 'start_date', 'end_date', 'department_id'];
     const updates = {};
     for (const key of allowed) {
         if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (updates.department_id !== undefined) {
+        const departmentId = Number(updates.department_id);
+        if (!Number.isInteger(departmentId) || departmentId <= 0) {
+            return res.status(400).json({ error: 'Abteilung ist ungueltig.' });
+        }
+        updates.department_id = departmentId;
     }
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren' });
     updates.updated_at = new Date().toISOString();
@@ -4195,7 +4235,10 @@ const MEETING_STATUSES = new Set(['planned', 'done', 'cancelled']);
 const MEETING_DEFAULT_DURATION = 60;
 
 const MEETING_SELECT = `
-    SELECT m.*,
+    SELECT m.id, m.project_id, m.key_user_id, m.title, m.agenda, m.notes,
+           m.meeting_date, m.start_time, m.duration_minutes, m.location,
+           m.status, m.follow_up_of, m.created_by, m.created_at, m.updated_at,
+           CASE WHEN COALESCE(m.transcript, '') = '' THEN 0 ELSE 1 END AS has_transcript,
            k.name AS key_user_name,
            k.email AS key_user_email,
            k.role AS key_user_role,
@@ -4340,7 +4383,32 @@ app.get('/api/projects/:projectId/meetings', requireAuth, (req, res) => {
             ORDER BY m.meeting_date DESC, COALESCE(m.start_time, '') DESC, m.id DESC`,
         [req.params.projectId], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json(rows || []);
+            const meetings = rows || [];
+            if (meetings.length === 0) return res.json([]);
+
+            db.all(`SELECT mp.meeting_id, k.id, k.name, k.role
+                    FROM meeting_participants mp
+                    JOIN project_key_users k ON k.id = mp.key_user_id
+                    JOIN key_user_meetings m ON m.id = mp.meeting_id
+                    WHERE m.project_id = ?
+                    ORDER BY k.name`, [req.params.projectId], (partErr, participants) => {
+                if (partErr) return res.status(500).json({ error: partErr.message });
+
+                const byMeeting = new Map();
+                (participants || []).forEach((participant) => {
+                    if (!byMeeting.has(participant.meeting_id)) byMeeting.set(participant.meeting_id, []);
+                    byMeeting.get(participant.meeting_id).push({
+                        id: participant.id,
+                        name: participant.name,
+                        role: participant.role
+                    });
+                });
+
+                res.json(meetings.map((meeting) => ({
+                    ...meeting,
+                    participants: byMeeting.get(meeting.id) || []
+                })));
+            });
         });
 });
 
@@ -6311,6 +6379,8 @@ app.post('/ticket/:id/deadline', requireAuth, requireAdmin, (req, res) => {
 app.get('/projects', requireAuth, (req, res) => {
     db.all(`
         SELECT p.*, s.name as system_name,
+            d.name as department_name,
+            h.name as hospital_name,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as milestone_count,
             (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
             (SELECT COUNT(*) FROM project_key_users WHERE project_id = p.id) as key_user_count,
@@ -6318,6 +6388,8 @@ app.get('/projects', requireAuth, (req, res) => {
             (SELECT id FROM github_integration WHERE project_id = p.id) as github_integration_id
         FROM projects p
         LEFT JOIN systems s ON p.system_id = s.id
+        LEFT JOIN departments d ON p.department_id = d.id
+        LEFT JOIN hospitals h ON d.hospital_id = h.id
         ORDER BY
             CASE WHEN p.status = 'proposed' THEN 1 ELSE 0 END,
             p.status, p.name
@@ -6325,13 +6397,19 @@ app.get('/projects', requireAuth, (req, res) => {
         if (err) return res.status(500).send('DB Error');
         db.all('SELECT id, name FROM systems WHERE active = 1 ORDER BY name', [], (err2, systems) => {
             db.all('SELECT id, name FROM staff WHERE active = 1 ORDER BY name', [], (err3, staffList) => {
-                res.render('projects', {
-                    projects: projects || [],
-                    systems: systems || [],
-                    staffList: staffList || [],
-                    user: req.session.user,
-                    role: req.session.role || 'user',
-                    canManage: isAdminRole(req.session.role)
+                db.all(`SELECT d.id, d.name, h.name AS hospital_name
+                        FROM departments d
+                        JOIN hospitals h ON h.id = d.hospital_id
+                        ORDER BY h.name, d.name`, [], (err4, departments) => {
+                    res.render('projects', {
+                        projects: projects || [],
+                        systems: systems || [],
+                        staffList: staffList || [],
+                        departments: departments || [],
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManage: isAdminRole(req.session.role)
+                    });
                 });
             });
         });
@@ -6530,33 +6608,74 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
 });
 
 app.get('/project/:id/meetings', requireAuth, (req, res) => {
-    db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
-        [req.params.id], (err, project) => {
-            if (err || !project) return res.status(404).send('Projekt nicht gefunden');
-            db.all(`${MEETING_SELECT}
+    (async () => {
+        const projectId = req.params.id;
+        try {
+            const project = await dbGet(
+                'SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
+                [projectId]);
+            if (!project) return res.status(404).send('Projekt nicht gefunden');
+
+            const meetings = await dbAll(`${MEETING_SELECT}
                     WHERE m.project_id = ?
-                    ORDER BY m.meeting_date ASC, COALESCE(m.start_time, '') ASC, m.id ASC`,
-                [req.params.id], (mErr, meetings) => {
-                    if (mErr) return res.status(500).send(mErr.message);
-                    db.all('SELECT id, name, email, role FROM project_key_users WHERE project_id = ? ORDER BY role, name',
-                        [req.params.id], (kErr, keyUsers) => {
-                            if (kErr) return res.status(500).send(kErr.message);
-                            const now = new Date();
-                            const pad = (value) => String(value).padStart(2, '0');
-                            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-                            res.render('project-meetings', {
-                                project,
-                                meetings: meetings || [],
-                                keyUsers: keyUsers || [],
-                                today,
-                                baseUrl: process.env.BASE_URL || `http://localhost:${PORT}`,
-                                user: req.session.user,
-                                role: req.session.role || 'user',
-                                canManage: isAdminRole(req.session.role)
-                            });
-                        });
-                });
-        });
+                    ORDER BY m.meeting_date ASC, COALESCE(m.start_time, '') ASC, m.id ASC`, [projectId]);
+            const keyUsers = await dbAll(
+                'SELECT id, name, email, role FROM project_key_users WHERE project_id = ? ORDER BY role, name',
+                [projectId]);
+
+            // Termin-Wissen (Atlas): Teilnehmer, Transkripte, extrahierte Eintraege.
+            const participants = await dbAll(`SELECT mp.meeting_id, k.id, k.name, k.role
+                    FROM meeting_participants mp
+                    JOIN project_key_users k ON k.id = mp.key_user_id
+                    JOIN key_user_meetings m ON m.id = mp.meeting_id
+                    WHERE m.project_id = ?
+                    ORDER BY k.name`, [projectId]);
+            const transcripts = await dbAll(
+                'SELECT id, transcript FROM key_user_meetings WHERE project_id = ?', [projectId]);
+            const extraction = await dbAll(`SELECT x.meeting_id, x.kind, x.id, x.title, x.department_id
+                    FROM (
+                        SELECT 'workflow' AS kind, id, meeting_id, description AS title, department_id FROM workflows
+                        UNION ALL
+                        SELECT 'problem' AS kind, id, meeting_id, title, department_id FROM problems
+                        UNION ALL
+                        SELECT 'risk' AS kind, id, meeting_id, title, department_id FROM adoption_risks
+                    ) x
+                    JOIN key_user_meetings m ON m.id = x.meeting_id
+                    WHERE m.project_id = ?
+                    ORDER BY x.id`, [projectId]);
+
+            const participantsByMeeting = {};
+            participants.forEach((participant) => {
+                (participantsByMeeting[participant.meeting_id] ||= []).push(participant);
+            });
+            const transcriptsById = {};
+            transcripts.forEach((row) => { transcriptsById[row.id] = row.transcript || ''; });
+            const extractionByMeeting = {};
+            extraction.forEach((row) => {
+                (extractionByMeeting[row.meeting_id] ||= []).push(row);
+            });
+
+            const now = new Date();
+            const pad = (value) => String(value).padStart(2, '0');
+            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+            res.render('project-meetings', {
+                project,
+                meetings,
+                keyUsers,
+                participantsByMeeting,
+                transcriptsById,
+                extractionByMeeting,
+                today,
+                baseUrl: process.env.BASE_URL || `http://localhost:${PORT}`,
+                user: req.session.user,
+                role: req.session.role || 'user',
+                canManage: isAdminRole(req.session.role)
+            });
+        } catch (err) {
+            res.status(500).send(err.message);
+        }
+    })();
 });
 
 app.get('/project/:id/docs', requireAuth, (req, res) => {
@@ -6620,6 +6739,7 @@ app.get('/project/:id/github', requireAuth, requireAdmin, (req, res) => {
 
 workflowEngine.init({ db, io });
 dossierExport.init({ db });
+registerAtlasRoutes(app, { db, requireAuth, requireAdmin, io });
 
 server.listen(PORT, () => {
     console.log('====================================================');

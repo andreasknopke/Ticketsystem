@@ -3,10 +3,29 @@
 // Startet den Server, führt Tests aus, stoppt den Server
 
 const http = require('http');
+const net = require('net');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
-const BASE = 'http://localhost:8010';
+// Port wird zur Laufzeit gesucht, damit ein belegter Port den Lauf nicht blockiert.
+let PORT = 0;
+let BASE = '';
+// Eigene Datenbank pro Testlauf: kein Test darf die Entwicklungs-DB anfassen.
+const TEST_DB = path.join(__dirname, 'test.db');
+let SERVER_ENV = {};
+
+function findFreePort() {
+    return new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', () => {
+            const { port } = probe.address();
+            probe.close(() => resolve(port));
+        });
+    });
+}
+
 let serverProcess = null;
 let failures = 0;
 let passed = 0;
@@ -26,11 +45,11 @@ function assert(condition, msg) {
 function request(method, path, data, cookie) {
     return new Promise((resolve, reject) => {
         const opts = {
-            hostname: 'localhost', port: 8010, path, method,
+            hostname: 'localhost', port: PORT, path, method,
             headers: {}
         };
         if (cookie) opts.headers['Cookie'] = cookie;
-        if (data && (method === 'POST' || method === 'PATCH')) {
+        if (data && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
             if (typeof data === 'object' && path.startsWith('/api/')) {
                 const body = JSON.stringify(data);
                 opts.headers['Content-Type'] = 'application/json';
@@ -62,6 +81,100 @@ function parseCookie(sc) {
     return sc.map(c => c.split(';')[0]).join('; ');
 }
 
+function isServerUp() {
+    return new Promise((resolve) => {
+        const req = http.get(`${BASE}/login`, (res) => {
+            res.resume();
+            resolve(true);
+        });
+        req.on('error', () => resolve(false));
+        req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+    });
+}
+
+function waitForServer(timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve, reject) => {
+        const tick = async () => {
+            if (await isServerUp()) return resolve();
+            if (Date.now() > deadline) return reject(new Error('Server nicht erreichbar.'));
+            setTimeout(tick, 250);
+        };
+        tick();
+    });
+}
+
+function runScript(script, timeoutMs = 60000) {
+    return new Promise((resolve) => {
+        const child = spawn(process.execPath, [script], {
+            cwd: path.join(__dirname, '..'),
+            env: SERVER_ENV,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        let output = '';
+        child.stdout.on('data', (d) => { output += d; });
+        child.stderr.on('data', (d) => { output += d; });
+        const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+        child.on('exit', (code) => {
+            clearTimeout(timer);
+            resolve({ code, output });
+        });
+    });
+}
+
+async function startServer() {
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+        try { fs.unlinkSync(TEST_DB + suffix); } catch (_) {}
+    }
+
+    PORT = await findFreePort();
+    BASE = `http://localhost:${PORT}`;
+    SERVER_ENV = {
+        ...process.env,
+        PORT: String(PORT),
+        DB_FILE: TEST_DB,
+        APP_SECRET: 'test-secret',
+        ADMIN_USER: 'admin',
+        ADMIN_PASS: 'ticketmaster',
+        NODE_ENV: 'test'
+    };
+
+    serverProcess = spawn(process.execPath, ['server.js'], {
+        cwd: path.join(__dirname, '..'),
+        env: SERVER_ENV,
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    serverProcess.stdout.on('data', () => {});
+    serverProcess.stderr.on('data', (d) => process.stderr.write(d));
+
+    await waitForServer();
+
+    // Tabellen existieren jetzt; Seed deterministisch einspielen.
+    const seed = await runScript(path.join('scripts', 'seed_db.js'));
+    if (seed.code !== 0) {
+        console.error('Seed fehlgeschlagen:\n' + seed.output);
+        throw new Error('Seed fehlgeschlagen');
+    }
+    return true;
+}
+
+async function stopServer(ownsServer) {
+    if (!ownsServer || !serverProcess) return;
+    const child = serverProcess;
+    serverProcess = null;
+    await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 5000);
+        child.once('exit', () => { clearTimeout(timer); resolve(); });
+        child.kill('SIGTERM');
+    });
+    // Warten, bis der Port wirklich frei ist – sonst startet der naechste Lauf
+    // gegen einen Server, der gerade herunterfaehrt.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && await isServerUp()) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+}
+
 async function login() {
     const page = await request('GET', '/login');
     const match = (typeof page.body === 'string' ? page.body : '').match(/name="_csrf" value="([^"]+)"/);
@@ -75,22 +188,51 @@ async function main() {
     console.log('\n🧪  Ticketsystem Test Suite');
     console.log('═══════════════════════════\n');
 
+    const ownsServer = await startServer();
+
     // --- Auth Tests ---
     console.log('📌 Auth');
     const jar = await login();
     assert(jar.length > 0, 'Login erfolgreich');
 
+    // --- API: Krankenhaeuser und Abteilungen ---
+    console.log('\n📌 API: Krankenhäuser & Abteilungen');
+    let resp = await request('GET', '/api/hospitals', null, jar);
+    assert(resp.status === 200 && Array.isArray(resp.body) && resp.body.length >= 1, 'GET /api/hospitals (' + (resp.body.length || 0) + ')');
+
+    resp = await request('GET', '/api/departments', null, jar);
+    assert(resp.status === 200 && Array.isArray(resp.body) && resp.body.length >= 1, 'GET /api/departments (' + (resp.body.length || 0) + ')');
+
+    resp = await request('POST', '/api/departments', { name:'  ' }, jar);
+    assert(resp.status === 400, 'POST /api/departments ohne Namen -> 400');
+
+    resp = await request('POST', '/api/departments', { name:'Test-Abteilung' }, jar);
+    assert(resp.status === 201 && resp.body.id, 'POST /api/departments (erstellt)');
+    const testDepartmentId = resp.body.id;
+
+    resp = await request('POST', '/api/departments', { name:'Test-Abteilung' }, jar);
+    assert(resp.status === 409, 'POST /api/departments Duplikat -> 409');
+
     // --- API: Projects ---
     console.log('\n📌 API: Projekte');
-    let resp = await request('GET', '/api/projects', null, jar);
+    resp = await request('GET', '/api/projects', null, jar);
     assert(resp.status === 200 && Array.isArray(resp.body) && resp.body.length >= 2, 'GET /api/projects (' + (resp.body.length || 0) + ' Projekte)');
 
     resp = await request('GET', '/api/projects/1', null, jar);
     assert(resp.status === 200 && resp.body.name === 'CuraFlow', 'GET /api/projects/1 (CuraFlow)');
 
-    resp = await request('POST', '/api/projects', { name:'Test-Projekt', description:'Test', system_id:1, status:'planning' }, jar);
+    resp = await request('GET', '/api/projects/1', null, jar);
+    assert(resp.body.department_id && resp.body.department_name, 'Bestandsprojekt hat Abteilung (Backfill)');
+
+    resp = await request('POST', '/api/projects', { name:'Projekt ohne Abteilung', status:'planning' }, jar);
+    assert(resp.status === 400, 'POST /api/projects ohne department_id -> 400');
+
+    resp = await request('POST', '/api/projects', { name:'Test-Projekt', description:'Test', system_id:1, status:'planning', department_id: testDepartmentId }, jar);
     assert(resp.status === 201 && resp.body.id, 'POST /api/projects (erstellt)');
     const testProjId = resp.body.id;
+
+    resp = await request('GET', '/api/projects/' + testProjId, null, jar);
+    assert(resp.status === 200 && resp.body.department_id === testDepartmentId, 'Projekt verweist auf die gewaehlte Abteilung');
 
     resp = await request('PATCH', '/api/projects/' + testProjId, { status:'active' }, jar);
     assert(resp.status === 200 && resp.body.status === 'updated', 'PATCH /api/projects/' + testProjId);
@@ -115,12 +257,72 @@ async function main() {
     resp = await request('GET', '/api/projects/1/keyusers', null, jar);
     assert(resp.status === 200 && Array.isArray(resp.body) && resp.body.length >= 2, 'GET /api/projects/1/keyusers (' + (resp.body.length || 0) + ' Key-User)');
 
-    resp = await request('POST', '/api/projects/1/keyusers', { staff_id:3, role:'evaluator' }, jar);
+    resp = await request('POST', '/api/projects/1/keyusers', { name:'Test-Key-User', staff_id:3, role:'evaluator' }, jar);
     assert(resp.status === 201 && resp.body.id, 'POST /api/projects/1/keyusers (erstellt)');
     const kuId = resp.body.id;
 
     resp = await request('DELETE', '/api/keyusers/' + kuId, null, jar);
     assert(resp.status === 200, 'DELETE /api/keyusers/' + kuId);
+
+    // --- API: Termine und extrahiertes Wissen ---
+    console.log('\n📌 API: Termine & Wissen');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/keyusers', { name:'Dr. Test', role:'key_user' }, jar);
+    assert(resp.status === 201 && resp.body.id, 'POST Key-User im Test-Projekt');
+    const testKuId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/meetings', {
+        title:'Onboarding Test', meeting_date:'2026-03-01'
+    }, jar);
+    assert(resp.status === 201 && resp.body.id, 'POST Termin im Test-Projekt');
+    const meetingId = resp.body.id;
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/participants', { key_user_ids:[testKuId] }, jar);
+    assert(resp.status === 200 && resp.body.key_user_ids.length === 1, 'POST Teilnehmer am Termin');
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/participants', { key_user_ids:[999999] }, jar);
+    assert(resp.status === 404, 'Teilnehmer aus fremdem Projekt -> 404');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/meetings', null, jar);
+    const listedMeeting = (resp.body || []).find(m => m.id === meetingId);
+    assert(listedMeeting && listedMeeting.participants.length === 1, 'Terminliste enthaelt Teilnehmer');
+    assert(listedMeeting && listedMeeting.has_transcript === 0, 'Terminliste meldet has_transcript=0');
+    assert(listedMeeting && listedMeeting.transcript === undefined, 'Terminliste enthaelt kein Transkript');
+
+    resp = await request('PUT', '/api/meetings/' + meetingId + '/transcript', { transcript:'Gespräch über Abläufe – Umlaute äöü' }, jar);
+    assert(resp.status === 200, 'PUT Transkript');
+
+    resp = await request('GET', '/api/meetings/' + meetingId + '/transcript', null, jar);
+    assert(resp.status === 200 && resp.body.transcript.includes('Umlaute äöü'), 'GET Transkript (Roundtrip)');
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/workflows', { description:'Dienstplan per Excel' }, jar);
+    assert(resp.status === 201 && resp.body.department_id === testDepartmentId, 'POST Workflow (Abteilung abgeleitet)');
+    const workflowId = resp.body.id;
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/problems', { title:'Excel bricht bei >50 Personen', workflow_id: workflowId }, jar);
+    assert(resp.status === 201 && resp.body.department_id === testDepartmentId, 'POST Problem (Abteilung abgeleitet)');
+    const problemId = resp.body.id;
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/problems', { title:'Ohne Titel-Konflikt', workflow_id: 999999 }, jar);
+    assert(resp.status === 400, 'Problem mit fremdem Workflow -> 400');
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/problems', { title:'   ' }, jar);
+    assert(resp.status === 400, 'Problem ohne Titel -> 400');
+
+    resp = await request('POST', '/api/meetings/' + meetingId + '/adoption-risks', { title:'Keine Zeit zum Lernen' }, jar);
+    assert(resp.status === 201, 'POST Adoptionsrisiko');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/problems', null, jar);
+    assert(resp.status === 200 && resp.body.some(p => p.id === problemId), 'GET Projekt-Probleme enthaelt Eintrag');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/workflows', null, jar);
+    assert(resp.status === 200 && resp.body.some(w => w.id === workflowId), 'GET Projekt-Workflows enthaelt Eintrag');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/adoption-risks', null, jar);
+    assert(resp.status === 200 && resp.body.length === 1, 'GET Projekt-Adoptionsrisiken enthaelt Eintrag');
+
+    resp = await request('DELETE', '/api/problems/' + problemId, null, jar);
+    assert(resp.status === 200, 'DELETE Problem');
 
     // --- API: Documents ---
     console.log('\n📌 API: Wiki-Dokumente');
@@ -165,6 +367,7 @@ async function main() {
         ['/project/1/timeline', '/project/1/timeline'],
         ['/project/1/milestones', '/project/1/milestones'],
         ['/project/1/keyusers', '/project/1/keyusers'],
+        ['/project/1/meetings', '/project/1/meetings'],
         ['/project/1/docs', '/project/1/docs'],
         ['/project/1/docs/einleitung', '/project/1/docs/einleitung'],
         ['/project/1/github', '/project/1/github'],
@@ -373,10 +576,11 @@ async function main() {
     if (failures > 0) console.log(`  ❌ ${failures} fehlgeschlagen`);
     console.log('═══════════════════════════\n');
 
-    process.exit(failures > 0 ? 1 : 0);
+    stopServer(ownsServer).then(() => process.exit(failures > 0 ? 1 : 0));
 }
 
-main().catch(e => {
+main().catch(async (e) => {
     console.error('Test-Fehler:', e.message);
+    await stopServer(true);
     process.exit(1);
 });

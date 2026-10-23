@@ -1,7 +1,9 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto');
-const dbPath = path.join(__dirname, '..', 'tickets.db');
+const dbPath = process.env.DB_FILE
+    ? path.resolve(process.env.DB_FILE)
+    : path.join(__dirname, '..', 'tickets.db');
 const db = new sqlite3.Database(dbPath);
 
 const staffNames = ['Michael', 'Andreas', 'Christian'];
@@ -126,6 +128,35 @@ async function seed() {
         }
 
         const projectRows = await getQuery('SELECT id, name FROM projects');
+
+        // Krankenhaus/Abteilung sicherstellen und Bestandsprojekte zuordnen.
+        try {
+            await runQuery(`CREATE TABLE IF NOT EXISTS hospitals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
+            await runQuery(`CREATE TABLE IF NOT EXISTS departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hospital_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(hospital_id, name),
+                FOREIGN KEY (hospital_id) REFERENCES hospitals(id) ON DELETE CASCADE
+            )`);
+            await runQuery(`INSERT INTO hospitals (name)
+                SELECT 'Klinikum Südstadt' WHERE NOT EXISTS (SELECT 1 FROM hospitals)`);
+            await runQuery(`INSERT INTO departments (hospital_id, name)
+                SELECT h.id, 'Allgemein' FROM hospitals h
+                WHERE NOT EXISTS (SELECT 1 FROM departments)
+                ORDER BY h.id LIMIT 1`);
+            await runQuery(`UPDATE projects
+                SET department_id = (SELECT id FROM departments ORDER BY id LIMIT 1)
+                WHERE department_id IS NULL`);
+        } catch (e) {
+            console.log('Abteilungs-Zuordnung uebersprungen:', e.message);
+        }
 
         // Meilensteine für CuraFlow
         const curaProj = projectRows.find(p => p.name === 'CuraFlow');

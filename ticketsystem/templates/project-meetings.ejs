@@ -340,6 +340,83 @@
                         </div>
                         <% } %>
 
+                        <%
+                        const kParticipants = participantsByMeeting[m.id] || [];
+                        const kEntries = extractionByMeeting[m.id] || [];
+                        const kTranscript = transcriptsById[m.id] || '';
+                        const kGroups = [
+                            { kind: 'workflow', label: 'Workflow (Ist-Zustand)', items: kEntries.filter(e => e.kind === 'workflow') },
+                            { kind: 'problem', label: 'Probleme im alten Workflow', items: kEntries.filter(e => e.kind === 'problem') },
+                            { kind: 'risk', label: 'Adoptionsrisiken', items: kEntries.filter(e => e.kind === 'risk') }
+                        ];
+                        %>
+                        <section class="mt-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+                            <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-500">Wissen zum Termin</h4>
+
+                            <p class="mt-2 text-sm text-gray-600">
+                                <% if (kParticipants.length) { %>
+                                <% kParticipants.forEach((p, idx) => { %><%= idx > 0 ? ', ' : '' %><span class="font-medium text-gray-800"><%= p.name %></span><% }); %>
+                                <% } else { %>
+                                <span class="text-gray-400">Keine Teilnehmer erfasst.</span>
+                                <% } %>
+                            </p>
+
+                            <% if (kTranscript) { %>
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-sm text-primary-700">Transkript anzeigen (<%= kTranscript.length %> Zeichen)</summary>
+                                <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-xs text-gray-700"><%= kTranscript %></pre>
+                            </details>
+                            <% } %>
+
+                            <% kGroups.forEach(group => { if (!group.items.length) return; %>
+                            <div class="mt-2">
+                                <p class="text-xs font-medium text-gray-500"><%= group.label %></p>
+                                <ul class="mt-1 space-y-1">
+                                    <% group.items.forEach(item => { %>
+                                    <li class="flex items-start justify-between gap-2 text-sm text-gray-700">
+                                        <span class="whitespace-pre-wrap"><%= item.title %></span>
+                                        <% if (canManage) { %>
+                                        <button type="button" class="text-xs text-red-600 hover:text-red-900"
+                                            onclick="deleteKnowledge('<%= group.kind %>', <%= item.id %>)">entfernen</button>
+                                        <% } %>
+                                    </li>
+                                    <% }); %>
+                                </ul>
+                            </div>
+                            <% }); %>
+
+                            <% if (canManage) { %>
+                            <div class="mt-3 space-y-2 border-t border-gray-200 pt-3">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-500 mb-1">Transkript</label>
+                                    <textarea id="transcript-<%= m.id %>" rows="3" class="form-input text-sm" placeholder="Mitschrift des Termins..."><%= kTranscript %></textarea>
+                                    <button type="button" class="btn-secondary mt-1 text-xs" onclick="saveTranscript(<%= m.id %>)">Transkript speichern</button>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-500 mb-1">Workflow (Ist-Zustand)</label>
+                                    <div class="flex flex-col gap-2 sm:flex-row">
+                                        <input id="workflow-<%= m.id %>" class="form-input text-sm" placeholder="Wie läuft der Prozess heute ab?">
+                                        <button type="button" class="btn-secondary text-xs whitespace-nowrap" onclick="addKnowledge('workflow', <%= m.id %>, 'workflow-<%= m.id %>')">Hinzufügen</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-500 mb-1">Problem im alten Workflow</label>
+                                    <div class="flex flex-col gap-2 sm:flex-row">
+                                        <input id="problem-<%= m.id %>" class="form-input text-sm" placeholder="Was funktioniert heute nicht?">
+                                        <button type="button" class="btn-secondary text-xs whitespace-nowrap" onclick="addKnowledge('problem', <%= m.id %>, 'problem-<%= m.id %>')">Hinzufügen</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-500 mb-1">Adoptionsrisiko</label>
+                                    <div class="flex flex-col gap-2 sm:flex-row">
+                                        <input id="risk-<%= m.id %>" class="form-input text-sm" placeholder="Warum könnte die Abteilung nicht wechseln wollen?">
+                                        <button type="button" class="btn-secondary text-xs whitespace-nowrap" onclick="addKnowledge('risk', <%= m.id %>, 'risk-<%= m.id %>')">Hinzufügen</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <% } %>
+                        </section>
+
                         <div class="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-4">
                             <% if (canManage) { %>
                             <button type="button" class="btn-primary text-sm"
@@ -527,6 +604,67 @@
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                 body: JSON.stringify({ status })
+            });
+            if (resp.ok) {
+                location.reload();
+                return;
+            }
+            const err = await resp.json().catch(() => ({}));
+            alert('Fehler: ' + (err.error || resp.statusText));
+        }
+
+        // --- Termin-Wissen (Atlas): Transkript und Extraktion ---
+
+        async function saveTranscript(meetingId) {
+            const field = document.getElementById('transcript-' + meetingId);
+            if (!field) return;
+            const resp = await fetch('/api/meetings/' + meetingId + '/transcript', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                body: JSON.stringify({ transcript: field.value })
+            });
+            if (resp.ok) {
+                location.reload();
+                return;
+            }
+            const err = await resp.json().catch(() => ({}));
+            alert('Fehler: ' + (err.error || resp.statusText));
+        }
+
+        async function addKnowledge(kind, meetingId, fieldId) {
+            const field = document.getElementById(fieldId);
+            const value = (field?.value || '').trim();
+            if (!value) { field?.focus(); return; }
+
+            const endpoints = {
+                workflow: { path: 'workflows', body: { description: value } },
+                problem: { path: 'problems', body: { title: value } },
+                risk: { path: 'adoption-risks', body: { title: value } }
+            };
+            const endpoint = endpoints[kind];
+            if (!endpoint) return;
+
+            const resp = await fetch('/api/meetings/' + meetingId + '/' + endpoint.path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                body: JSON.stringify(endpoint.body)
+            });
+            if (resp.ok) {
+                location.reload();
+                return;
+            }
+            const err = await resp.json().catch(() => ({}));
+            alert('Fehler: ' + (err.error || resp.statusText));
+        }
+
+        async function deleteKnowledge(kind, id) {
+            const paths = { workflow: 'workflows', problem: 'problems', risk: 'adoption-risks' };
+            const path = paths[kind];
+            if (!path) return;
+            if (!confirm('Eintrag wirklich entfernen?')) return;
+            const resp = await fetch('/api/' + path + '/' + id, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': CSRF_TOKEN }
             });
             if (resp.ok) {
                 location.reload();

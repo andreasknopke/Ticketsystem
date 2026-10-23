@@ -23,10 +23,12 @@ Ein leichtgewichtiges, webbasiertes Ticketsystem mit integriertem Projektmanagem
 - **Admin-Bereich:** Geschutzter Bereich fur Administratoren zur Verwaltung von Systemen und Mitarbeitern.
 
 ### Projektmanagement (NEU)
-- **Projekte:** Verwalten von Software-Projekten mit Status (Planung/Aktiv/Wartung/Abgeschlossen), Start- und Enddatum, verknupft mit bestehenden Systemen.
+- **Krankenhäuser & Abteilungen:** Stammdaten fuer Krankenhaeuser und ihre Abteilungen. Jedes Projekt ist die Einfuehrung genau eines Systems in genau einer Abteilung; Bestandsprojekte werden der Abteilung `Allgemein` zugeordnet.
+- **Projekte:** Verwalten von Software-Projekten mit Status (Planung/Aktiv/Wartung/Abgeschlossen), Start- und Enddatum, verknuepft mit bestehendem System und Abteilung.
 - **Meilensteine:** Strukturierte Phasenplanung mit Start-/Endterminen, Farbcodierung und Status-Tracking (Offen/In Arbeit/Erledigt/Blockiert). Perfekt fur die Abbildung von Projektphasen (Pilot, Rollout, Optimierung).
 - **Key-User-Management:** Zuweisung von Mitarbeitern zu Projekten mit Rollen (Key-User/Evaluator/Entscheider) und Evaluierungsnotizen.
 - **Termin-Tracking mit Key-Usern:** Meetings mit Datum, Uhrzeit, Dauer, Ort, Agenda und Ergebnisnotizen festhalten. Follow-up-Termine lassen sich direkt aus einem Meeting heraus anlegen (verknuepfte Kette). Export als ICS-Datei (einzeln oder alle Termine) sowie Direkt-Uebergabe an den Google Kalender. Auf dem Handy als Kartenansicht ohne horizontales Scrollen.
+- **Wissen zum Termin:** Je Termin optional ein Transkript sowie manuell erfasste Eintraege: Workflow (Ist-Zustand), Problem im alten Workflow und Adoptionsrisiko. Die Abteilung wird dabei immer aus dem Projekt abgeleitet.
 - **Zeitleiste (Gantt):** Mermaid.js-basierte Gantt-Diagramme zur Visualisierung von Projektphasen und Meilensteinen.
 - **Wiki-Dokumentation:** Projektbezogene Wiki-Seiten mit voller Markdown-Unterstutzung, Mermaid-Diagrammen und einem integrierten Editor (EasyMDE).
 - **GitHub-Integration:**
