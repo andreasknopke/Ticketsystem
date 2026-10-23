@@ -398,6 +398,20 @@ BASE_URL=https://deine-domain.tld
 TRUST_PROXY=true
 ```
 
+**KI / LLM (Flow-Zusammenfassung & Ticket-Workflow):**
+
+```env
+AI_WORKFLOW_ENABLED=true
+AI_DEFAULT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+`AI_DEFAULT_PROVIDER` unterstützt: `deepseek`, `ollama`, `openai`, `openai_local`, `anthropic`, `copilot`, `mistral`, `openrouter`, `clarifai`. Die zugehörigen Anbieter-Variablen sind im [ticketsystem/README.md](ticketsystem/README.md) dokumentiert.
+
+> **Hinweis:** Für die Flow-Zusammenfassung wird ein aktiver KI-Mitarbeiter benötigt (`staff.kind = 'ai'`, `active = 1`); ohne diesen fällt der Aufruf auf `AI_DEFAULT_PROVIDER` zurück und schlägt fehl, wenn gar kein Bot existiert. KI-Bots werden über die Mitarbeiter-Verwaltung oder `npm run seed` angelegt.
+
 > **Achtung:** Ohne Volume auf `/app/data` geht die SQLite-Datenbank bei jedem Redeployment verloren.
 
 ---

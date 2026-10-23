@@ -119,7 +119,7 @@ EMAIL_NOTIFY_COMMENT=true
 
 # --- KI-Workflow ---
 AI_WORKFLOW_ENABLED=true
-AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral | openrouter
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral | openrouter | clarifai
 AI_WORKFLOW_MAX_RETRIES=2
 AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
 AI_WORKFLOW_MAX_TOKENS=2048
@@ -179,6 +179,12 @@ MISTRAL_MODEL=mistral-large-latest      # alternativ: magistral-medium-latest, m
 OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=lin-2.6
+
+# Clarifai (OpenAI-kompatibler Endpoint)
+# Auth: "Key <PAT>" (nicht "Bearer"). CLARIFAI_MODEL muss gesetzt werden.
+CLARIFAI_PAT=
+CLARIFAI_BASE_URL=https://api.clarifai.com/v2/ext/openai/v1
+CLARIFAI_MODEL=
 
 # Optionaler Fallback-GitHub-Token fuer Planning-Stage
 # (Vorrang: github_integration.access_token des Projekts)
@@ -360,6 +366,26 @@ Optional (API/SMTP):
 - `EMAIL_NOTIFY_NEW`, `EMAIL_NOTIFY_STATUS`, `EMAIL_NOTIFY_ASSIGN`, `EMAIL_NOTIFY_COMMENT`
 
 Wenn `BREVO_API_KEY` gesetzt ist, versendet das System E-Mails über die Brevo API. SMTP wird dann nicht verwendet. Ohne `BREVO_API_KEY` bleibt der bisherige SMTP-Versand aktiv.
+
+KI / LLM (für die Flow-Zusammenfassung und den Ticket-Workflow):
+
+```env
+AI_WORKFLOW_ENABLED=true
+AI_DEFAULT_PROVIDER=deepseek            # deepseek | ollama | openai | openai_local | anthropic | copilot | mistral | openrouter | clarifai
+AI_WORKFLOW_MAX_RETRIES=2
+AI_WORKFLOW_REQUEST_TIMEOUT_MS=120000
+AI_WORKFLOW_MAX_TOKENS=2048
+AI_REDACTION_PATTERNS_FILE=             # optional, Pfad zu JSON-Datei
+
+# DeepSeek
+DEEPSEEK_API_KEY=sk-...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+Weitere Provider (`OLLAMA_*`, `OPENAI_*`, `ANTHROPIC_*`, `MISTRAL_*`, `OPENROUTER_*`, `COPILOT_*`, `CLARIFAI_*`) sind im Abschnitt „Konfiguration (`.env`)“ oben dokumentiert und können identisch in Coolify gesetzt werden.
+
+> **Hinweis zur Flow-Zusammenfassung:** Der Endpoint `POST /api/projects/:projectId/flow-summary` wählt den Provider über einen aktiven KI-Mitarbeiter (`staff.kind = 'ai'`, `active = 1`) bzw. fällt auf `AI_DEFAULT_PROVIDER` zurück. Ohne aktiven KI-Bot antwortet der Endpoint mit „Kein KI-Mitarbeiter konfiguriert“. KI-Bots werden über die Mitarbeiter-Verwaltung angelegt oder via `npm run seed` erzeugt.
 
 Hinweis: Ohne Volume auf `/app/data` wird die SQLite-Datenbank bei Redeployments verloren.
 
