@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flow Analysis - <%= project.name %> | Ticketsystem</title>
     <link rel="stylesheet" href="/style.css?v=2">
+    <link rel="stylesheet" href="/bpmn-js/assets/diagram-js.css">
+    <link rel="stylesheet" href="/bpmn-js/assets/bpmn-js.css">
+    <link rel="stylesheet" href="/bpmn-js/assets/bpmn-font/css/bpmn.css">
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -167,6 +170,16 @@
                         <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
                         <% if (latestSummary.created_by) { %>· von <%= latestSummary.created_by %><% } %>
                     </p>
+                    <% if (latestSummary.bpmn_xml) { %>
+                    <div class="mt-4">
+                        <div class="mb-2 flex items-center justify-between gap-2">
+                            <h4 class="text-sm font-semibold text-gray-700">Flow-Diagramm (Ist-Zustand)</h4>
+                            <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                        </div>
+                        <div id="bpmnCanvas" class="h-96 w-full overflow-hidden rounded-lg border border-gray-200 bg-white"></div>
+                        <p class="mt-2 text-xs text-gray-500">Automatisch aus der Bestandsaufnahme generiert.</p>
+                    </div>
+                    <% } %>
                     <% } else { %>
                     <p class="text-sm text-gray-500">Noch keine Zusammenfassung erstellt.</p>
                     <% } %>
@@ -335,6 +348,9 @@
     </div>
     <% } %>
 
+    <% if (summaries[0] && summaries[0].bpmn_xml) { %>
+    <script src="/bpmn-js/bpmn-navigated-viewer.production.min.js"></script>
+    <% } %>
     <script>
         const CSRF_TOKEN = '<%= csrfToken %>';
         const PROJECT_ID = <%= project.id %>;
@@ -548,6 +564,45 @@
                 button.textContent = 'Zusammenfassung erstellen';
             }
         }
+
+        // --- BPMN-Diagramm (Ist-Zustand) ---
+
+        const BPMN_XML = <%- JSON.stringify((summaries[0] && summaries[0].bpmn_xml) || '').replace(/<\//g, '<\\/') %>;
+
+        (function initBpmnDiagram() {
+            const canvas = document.getElementById('bpmnCanvas');
+            if (!canvas || !BPMN_XML) return;
+
+            const downloadLink = document.getElementById('bpmnDownload');
+            if (downloadLink) {
+                downloadLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const blob = new Blob([BPMN_XML], { type: 'application/xml' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'flow-ist-zustand.bpmn';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                });
+            }
+
+            const Viewer = window.BpmnJS || window.BpmnNavigatedViewer || window.BpmnViewer;
+            if (!Viewer) {
+                console.warn('[bpmn] bpmn-js nicht geladen');
+                canvas.textContent = 'Diagramm-Renderer konnte nicht geladen werden.';
+                return;
+            }
+            const viewer = new Viewer({ container: canvas });
+            viewer.importXML(BPMN_XML)
+                .then(() => { viewer.get('canvas').zoom('fit-viewport'); })
+                .catch((err) => {
+                    console.warn('[bpmn] Import fehlgeschlagen:', err);
+                    canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
+                });
+        })();
     </script>
 </body>
 </html>

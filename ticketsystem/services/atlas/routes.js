@@ -1,5 +1,7 @@
 'use strict';
 
+const bpmn = require('./bpmn');
+
 /**
  * API-Routen fuer die Atlas-Uebernahme.
  *
@@ -424,7 +426,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     app.get('/api/projects/:projectId/flow-summary', requireAuth, async (req, res) => {
         try {
-            const rows = await allAsync(`SELECT id, content, provider, model, prompt_tokens,
+            const rows = await allAsync(`SELECT id, content, bpmn_xml, provider, model, prompt_tokens,
                     completion_tokens, duration_ms, input_chars, created_by, created_at
                 FROM project_flow_summaries
                 WHERE project_id = ?
@@ -482,17 +484,40 @@ module.exports = function registerAtlasRoutes(app, deps) {
             const content = String(result.text || '').trim();
             if (!content) return res.status(502).json({ error: 'KI hat keine Zusammenfassung geliefert.' });
 
+            // BPMN-Diagramm (Ist-Zustand) als zweiter, best-effort Aufruf. Ein
+            // Fehler hier darf die Text-Zusammenfassung nicht ungueltig machen.
+            let bpmnXml = null;
+            let bpmnError = null;
+            try {
+                const bpmnResult = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    // XML ist ausfuehrlicher als Prosa; etwas mehr Platz einraeumen.
+                    maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
+                    system: flowSummary.BPMN_SYSTEM_PROMPT,
+                    user: flowSummary.buildBpmnUserPrompt(redacted.redacted),
+                    json: false
+                });
+                const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
+                bpmnXml = extracted ? await bpmn.normalizeBpmnXml(extracted) : null;
+            } catch (err) {
+                bpmnError = err.message;
+            }
+
             const inserted = await runAsync(`INSERT INTO project_flow_summaries
-                    (project_id, content, provider, model, prompt_tokens, completion_tokens,
+                    (project_id, content, bpmn_xml, provider, model, prompt_tokens, completion_tokens,
                      duration_ms, input_chars, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [req.params.projectId, content, result.provider || provider, result.model || staff.ai_model || null,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.params.projectId, content, bpmnXml, result.provider || provider, result.model || staff.ai_model || null,
                 result.prompt_tokens || null, result.completion_tokens || null,
                 result.duration_ms || null, built.text.length, req.session.user || null]);
 
             res.status(201).json({
                 id: inserted.lastID,
                 content,
+                bpmn_xml: bpmnXml,
+                bpmn_error: bpmnError,
                 provider: result.provider || provider,
                 model: result.model || staff.ai_model || null,
                 staff_name: staff.name,

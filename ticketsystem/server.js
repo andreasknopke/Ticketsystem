@@ -313,6 +313,8 @@ app.use('/api', (req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+// bpmn-js (Flow-Diagramme) aus node_modules ausliefern
+app.use('/bpmn-js', express.static(path.join(__dirname, 'node_modules', 'bpmn-js', 'dist')));
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'templates'));
 
@@ -6872,7 +6874,7 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 transcripts,
                 attachments,
                 entries,
-                summaries: await dbAll(`SELECT id, content, provider, model, created_by,
+                summaries: await dbAll(`SELECT id, content, bpmn_xml, provider, model, created_by,
                         created_at, input_chars, prompt_tokens, completion_tokens
                     FROM project_flow_summaries
                     WHERE project_id = ?

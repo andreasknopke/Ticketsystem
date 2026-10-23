@@ -170,6 +170,7 @@ async function migrate(db) {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
         content TEXT NOT NULL,
+        bpmn_xml TEXT,
         provider TEXT,
         model TEXT,
         prompt_tokens INTEGER,
@@ -224,6 +225,9 @@ async function migrate(db) {
     // Dateien im Flow-Reiter: 'input' (Bestandsaufnahme) oder 'output' (Integration).
     await addColumnIfMissing(db, 'project_attachments', 'phase',
         "ALTER TABLE project_attachments ADD COLUMN phase TEXT DEFAULT 'input'");
+    // BPMN-Diagramm zur KI-Zusammenfassung (wird erst ab der Flow-Diagramm-Funktion befuellt).
+    await addColumnIfMissing(db, 'project_flow_summaries', 'bpmn_xml',
+        'ALTER TABLE project_flow_summaries ADD COLUMN bpmn_xml TEXT');
 
     // 6. Bestandsdaten (CuraFlow, Schreibdienst, ...) der Default-Abteilung zuordnen.
     await run(db, `UPDATE projects

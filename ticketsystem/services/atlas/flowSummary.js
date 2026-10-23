@@ -52,6 +52,27 @@ Was einen Wechsel behindern koennte.
 ## Offene Punkte
 Was in der Bestandsaufnahme fehlt oder unklar bleibt.`;
 
+// BPMN-Diagramm des heutigen Ablaufs. Wird als zweiter, getrennter Aufruf
+// hinter der Text-Zusammenfassung ausgefuehrt. Das Modell liefert nur das
+// semantische Modell; Diagramm-Koordinaten (DI) ergaenzt der Server per
+// bpmn-auto-layout, damit bpmn-js die Elemente nicht uebereinander zeichnet.
+const BPMN_SYSTEM_PROMPT = `Du erstellst ein BPMN-2.0-Prozessdiagramm des heutigen (Ist-)Zustands eines Software-Einfuehrungsprojekts in einer Krankenhausabteilung.
+
+Deine Aufgabe: Bilde den heutigen Ablauf als gueltiges BPMN-2.0-Prozessmodell ab.
+
+Regeln:
+- Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
+- Verwende als Root <bpmn:definitions> mit id, targetNamespace und xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL".
+- Lege genau einen <bpmn:process> an und genau ein Start-Ereignis (<bpmn:startEvent>).
+- Modelliere Taetigkeiten als <bpmn:userTask> mit eindeutiger id und kurzem, sprechendem name-Attribut (Deutsch).
+- Verwende <bpmn:exclusiveGateway> fuer Verzweigungen und <bpmn:endEvent> fuer das Ende.
+- Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
+- Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
+- Keine Pools/Lanes, keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
+- Halte das Modell klein und uebersichtlich: hoechstens 12 Aktivitaeten/Gateways.
+- Modelliere nur, was aus der Bestandsaufnahme belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
+- Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
+
 function truncate(text, limit) {
     if (!text) return '';
     const value = String(text);
@@ -202,10 +223,35 @@ function buildUserPrompt(inputText) {
     return `Hier ist die Bestandsaufnahme. Fasse sie wie beschrieben zusammen.\n\n${inputText}`;
 }
 
+function buildBpmnUserPrompt(inputText) {
+    return `Hier ist die Bestandsaufnahme. Erstelle daraus das BPMN-2.0-Diagramm des heutigen Ablaufs.\n\n${inputText}`;
+}
+
+/**
+ * Holt aus der LLM-Antwort das BPMN-XML heraus: entfernt Markdown-Codebloecke
+ * und schneidet auf das <...definitions>-Wurzelelement zu. Gibt null zurueck,
+ * wenn kein XML gefunden wurde.
+ */
+function extractBpmnXml(text) {
+    if (!text) return null;
+    let value = String(text).trim();
+    value = value.replace(/^```[a-zA-Z0-9_-]*\s*/i, '').replace(/```\s*$/m, '').trim();
+    const start = value.search(/<(?:[\w.-]+:)?definitions\b/i);
+    if (start === -1) return null;
+    const rest = value.slice(start);
+    const close = rest.match(/<\/(?:[\w.-]+:)?definitions\s*>/i);
+    if (!close) return null;
+    const xml = rest.slice(0, close.index + close[0].length).trim();
+    return xml || null;
+}
+
 module.exports = {
     SYSTEM_PROMPT,
+    BPMN_SYSTEM_PROMPT,
     buildInput,
     buildUserPrompt,
+    buildBpmnUserPrompt,
+    extractBpmnXml,
     isTextFile,
     MAX_TOTAL_CHARS,
     MAX_TRANSCRIPT_CHARS,

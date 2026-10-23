@@ -77,5 +77,24 @@ check(built.text.includes('[... gekuerzt'), 'Kuerzungsmarker im Text');
 built = flowSummary.buildInput({ project, transcripts: [], attachments: [], entries: {} });
 check(built.text.trim().length > 0, 'Projektkopf allein ist nicht leer');
 
+// --- BPMN-Ausgabe ---
+check(typeof flowSummary.BPMN_SYSTEM_PROMPT === 'string' && flowSummary.BPMN_SYSTEM_PROMPT.length > 0,
+    'BPMN-System-Prompt vorhanden');
+check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
+    'BPMN-User-Prompt enthaelt die Eingabe');
+
+const fencedXml = '```xml\n<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d"><bpmn:process id="p"/></bpmn:definitions>\n```';
+const extractedFenced = flowSummary.extractBpmnXml(fencedXml);
+check(extractedFenced && extractedFenced.startsWith('<bpmn:definitions'),
+    'extractBpmnXml entfernt Codeblock');
+
+const unprefixedXml = 'Vorlauf\n<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"><process/></definitions>\nNachlauf';
+const extractedUnprefixed = flowSummary.extractBpmnXml(unprefixedXml);
+check(extractedUnprefixed && extractedUnprefixed.startsWith('<definitions'),
+    'extractBpmnXml erkennt Definitions-Wurzel ohne Prefix');
+
+check(flowSummary.extractBpmnXml('kein Diagramm') === null,
+    'extractBpmnXml liefert null ohne XML');
+
 console.log(`\n  ${passed} bestanden${failures ? `, ${failures} fehlgeschlagen` : ''}\n`);
 process.exit(failures > 0 ? 1 : 0);
