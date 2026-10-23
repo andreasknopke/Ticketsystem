@@ -40,6 +40,25 @@ async function waitFor(db, table, timeoutMs = 15000) {
     return false;
 }
 
+// Der Rebuild (meeting_id optional) ist nicht der letzte Migrationsschritt:
+// project_id wird erst am Ende aus meeting_id nachgetragen. waitFor() wartet
+// nur auf das Schema, deshalb muss zusaetzlich auf die Backfill-UPDATEs
+// gewartet werden, sonst liest der Test project_id zu frueh (Race).
+async function waitForBackfill(db, tables, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        let done = true;
+        for (const table of tables) {
+            const rows = await all(db,
+                `SELECT COUNT(*) AS c FROM ${table} WHERE meeting_id IS NOT NULL AND project_id IS NULL`);
+            if (rows[0].c > 0) { done = false; break; }
+        }
+        if (done) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+}
+
 async function createLegacyDatabase(db) {
     await run(db, `CREATE TABLE hospitals (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
     await run(db, `CREATE TABLE departments (id INTEGER PRIMARY KEY AUTOINCREMENT, hospital_id INTEGER NOT NULL, name TEXT NOT NULL, active INTEGER DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(hospital_id, name))`);
@@ -76,6 +95,7 @@ async function main() {
 
         const ready = await waitFor(db, 'problems');
         check(ready, 'Migration abgeschlossen');
+        await waitForBackfill(db, ['workflows', 'problems', 'adoption_risks']);
 
         for (const table of ['workflows', 'problems', 'adoption_risks']) {
             const cols = await all(db, `PRAGMA table_info(${table})`);

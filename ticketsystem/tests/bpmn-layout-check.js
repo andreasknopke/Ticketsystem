@@ -63,11 +63,30 @@ async function main() {
     check(task1 && task2 && task1.x < task2.x, 'Ablauf verlaeuft von links nach rechts');
 
     // Bestehendes DI wird ersetzt, nicht dupliziert
-    const withDi = SAMPLE.replace('</bpmn:definitions>',
-        '<bpmndi:BPMNDiagram><bpmndi:BPMNPlane id="old" bpmnElement="Process_1" /></bpmndi:BPMNDiagram></bpmn:definitions>');
+    const withDi = SAMPLE
+        .replace('xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"',
+            'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"')
+        .replace('</bpmn:definitions>',
+            '<bpmndi:BPMNDiagram><bpmndi:BPMNPlane id="old" bpmnElement="Process_1" /></bpmndi:BPMNDiagram></bpmn:definitions>');
     const out2 = await bpmn.layoutBpmnXml(withDi);
     check((out2.match(/<bpmndi:BPMNDiagram/g) || []).length === 1, 'vorhandenes DI wird ersetzt statt dupliziert');
     check(!out2.includes('id="old"'), 'altes DI wird entfernt');
+
+    // Orthogonale Kanten: eine Verzweigung am Gateway bekommt einen Knick
+    // (>= 3 Waypoints), statt als gerade Diagonale zu enden.
+    const gateway = SAMPLE.replace(
+        '<bpmn:lane id="Lane_Pflege" name="Pflege">\n        <bpmn:flowNodeRef>Task_2</bpmn:flowNodeRef>\n        <bpmn:flowNodeRef>EndEvent_1</bpmn:flowNodeRef>\n      </bpmn:lane>',
+        '<bpmn:lane id="Lane_Pflege" name="Pflege">\n        <bpmn:flowNodeRef>Task_2</bpmn:flowNodeRef>\n        <bpmn:flowNodeRef>GW_1</bpmn:flowNodeRef>\n        <bpmn:flowNodeRef>EndEvent_1</bpmn:flowNodeRef>\n      </bpmn:lane>')
+        .replace('<bpmn:userTask id="Task_2" name="Durchfuehren (ca. 20 Min)" />',
+            '<bpmn:userTask id="Task_2" name="Durchfuehren (ca. 20 Min)" />\n    <bpmn:exclusiveGateway id="GW_1" name="dringend?" />')
+        .replace('<bpmn:sequenceFlow id="Flow_2" sourceRef="Task_1" targetRef="Task_2" />',
+            '<bpmn:sequenceFlow id="Flow_2" sourceRef="Task_1" targetRef="GW_1" />')
+        .replace('<bpmn:sequenceFlow id="Flow_3" sourceRef="Task_2" targetRef="EndEvent_1" />',
+            '<bpmn:sequenceFlow id="Flow_3" sourceRef="GW_1" targetRef="Task_2" />\n    <bpmn:sequenceFlow id="Flow_4" sourceRef="GW_1" targetRef="EndEvent_1" />');
+    const out3 = await bpmn.layoutBpmnXml(gateway);
+    const waypointCounts = [...out3.matchAll(/<bpmndi:BPMNEdge[\s\S]*?<\/bpmndi:BPMNEdge>/g)]
+        .map((m) => (m[0].match(/<di:waypoint/g) || []).length);
+    check(waypointCounts.some((c) => c >= 3), 'Gateway-Verzweigung wird orthogonal geroutet (>= 3 Waypoints)');
 
     // Kein Process -> Fehler
     let threw = false;
