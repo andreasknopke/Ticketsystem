@@ -4229,9 +4229,45 @@ app.delete('/api/keyusers/:id', requireAuth, requireAdmin, (req, res) => {
     });
 });
 
+// Schulungsziele sind je Projekt definiert. Beim Projektwechsel werden die
+// Labels ins Zielprojekt uebernommen: ein dort bereits vorhandenes Ziel mit
+// gleichem Label wird wiederverwendet, ein fehlendes wird angelegt.
+async function resolveTrainingGoalLabels(projectId, labels) {
+    const ids = [];
+    const seen = new Set();
+
+    for (const rawLabel of labels) {
+        const label = String(rawLabel === undefined || rawLabel === null ? '' : rawLabel).trim();
+        if (!label) continue;
+
+        const existing = await dbGet(
+            `SELECT id FROM project_training_goals
+             WHERE project_id = ? AND LOWER(TRIM(label)) = LOWER(?) LIMIT 1`,
+            [projectId, label]);
+
+        let goalId = existing.id;
+        if (!goalId) {
+            const nextSort = await dbGet(
+                `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next
+                 FROM project_training_goals WHERE project_id = ?`,
+                [projectId]);
+            const created = await dbRun(
+                'INSERT INTO project_training_goals (project_id, label, sort_order) VALUES (?, ?, ?)',
+                [projectId, label, nextSort.next || 0]);
+            goalId = created.lastID;
+        }
+
+        if (seen.has(goalId)) continue;
+        seen.add(goalId);
+        ids.push(goalId);
+    }
+
+    return ids;
+}
+
 // Key-User in ein anderes Projekt verschieben (manuelle Migration nach der
-// Aufteilung in Abteilungen). Schulungsziele sind projektgebunden und werden
-// freigegeben; Termine wandern optional mit.
+// Aufteilung in Abteilungen). Schulungsziele wandern als Labels mit; Termine
+// wandern optional mit.
 app.patch('/api/keyusers/:id/project', requireAuth, requireAdmin, async (req, res) => {
     try {
         const keyUserId = Number(req.params.id);
@@ -4256,11 +4292,30 @@ app.patch('/api/keyusers/:id/project', requireAuth, requireAdmin, async (req, re
             return res.status(400).json({ error: 'Key-User ist bereits in diesem Projekt.' });
         }
 
+        // Gewuenschte Ziele: entweder explizit uebergeben (Formular) oder die
+        // aktuellen Zuordnungen des Key-Users.
+        const providedLabels = Array.isArray(req.body.training_goal_labels)
+            ? req.body.training_goal_labels.map((value) => String(value === undefined || value === null ? '' : value).trim()).filter(Boolean)
+            : null;
+
+        const currentGoals = await dbAll(
+            `SELECT g.label
+             FROM key_user_training_selections s
+             JOIN project_training_goals g ON g.id = s.training_goal_id
+             WHERE s.key_user_id = ?
+             ORDER BY g.sort_order, g.id`,
+            [keyUserId]);
+        const goalLabels = providedLabels !== null ? providedLabels : currentGoals.map((row) => row.label);
+
         await dbRun('UPDATE project_key_users SET project_id = ? WHERE id = ?', [targetProjectId, keyUserId]);
 
-        // Schulungsziele gelten je Projekt: Zuordnungen aus dem alten Projekt
-        // wuerden auf fremde Ziele zeigen.
-        const clearedGoals = await dbRun('DELETE FROM key_user_training_selections WHERE key_user_id = ?', [keyUserId]);
+        // Projektgebundene Zuordnungen loesen und im Zielprojekt neu aufbauen.
+        await dbRun('DELETE FROM key_user_training_selections WHERE key_user_id = ?', [keyUserId]);
+        const migratedGoalIds = await resolveTrainingGoalLabels(targetProjectId, goalLabels);
+        for (const goalId of migratedGoalIds) {
+            await dbRun(`INSERT OR IGNORE INTO key_user_training_selections (key_user_id, training_goal_id)
+                         VALUES (?, ?)`, [keyUserId, goalId]);
+        }
 
         let movedMeetings = 0;
         let detachedMeetings = 0;
@@ -4297,7 +4352,7 @@ app.patch('/api/keyusers/:id/project', requireAuth, requireAdmin, async (req, re
         res.json({
             id: keyUserId,
             project_id: targetProjectId,
-            cleared_training_goals: clearedGoals.changes,
+            moved_training_goals: migratedGoalIds.length,
             moved_meetings: movedMeetings,
             detached_meetings: detachedMeetings
         });

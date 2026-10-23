@@ -364,13 +364,19 @@ async function main() {
         project_id: testProjId, move_meetings: false
     }, jar);
     assert(resp.status === 200 && resp.body.project_id === testProjId, 'Key-User verschoben');
-    assert(resp.body.cleared_training_goals === 1, 'Schulungsziele beim Verschieben freigegeben');
+    assert(resp.body.moved_training_goals === 1, 'Schulungsziele wandern mit');
     assert(resp.body.detached_meetings === 1, 'Termine ohne Mitnahme abgehaengt');
 
     resp = await request('GET', '/api/projects/' + testProjId + '/keyusers', null, jar);
     assert((resp.body || []).some(k => k.id === moveKuId), 'Key-User liegt im Zielprojekt');
     const afterMove = (resp.body || []).find(k => k.id === moveKuId);
-    assert(afterMove.training_goal_ids.length === 0, 'Keine projektfremden Schulungsziele im Zielprojekt');
+    assert(afterMove.training_goal_ids.length === 1, 'Schulungsziel ist im Zielprojekt zugeordnet');
+
+    // Das Ziel muss im Zielprojekt existieren und darf nicht doppelt angelegt sein.
+    resp = await request('GET', '/api/projects/' + testProjId + '/training-goals', null, jar);
+    const migratedGoals = (resp.body || []).filter(g => g.label === 'Migrationsziel');
+    assert(migratedGoals.length === 1, 'Schulungsziel wird im Zielprojekt angelegt');
+    assert(migratedGoals[0].id === afterMove.training_goal_ids[0], 'Zuordnung zeigt auf das Ziel im Zielprojekt');
 
     // Freitext-Felder muessen den Projektwechsel ueberleben.
     assert(afterMove.notes === 'Stationsleitung', 'Notizen bleiben beim Verschieben erhalten');
@@ -401,6 +407,11 @@ async function main() {
         project_id: 1, move_meetings: true
     }, jar);
     assert(resp.status === 200 && resp.body.moved_meetings === 0, 'Rueckverschieben ohne eigene Termine');
+    assert(resp.body.moved_training_goals === 1, 'Schulungsziel wandert zurueck');
+
+    // Zurueck im Quellprojekt: vorhandenes Ziel wird wiederverwendet, nicht dupliziert.
+    resp = await request('GET', '/api/projects/1/training-goals', null, jar);
+    assert((resp.body || []).filter(g => g.label === 'Migrationsziel').length === 1, 'Vorhandenes Ziel wird wiederverwendet');
 
     resp = await request('POST', '/api/projects/1/meetings', {
         title:'Termin fuer Mitnahme', meeting_date:'2026-04-03', key_user_id: moveKuId
@@ -415,6 +426,29 @@ async function main() {
     resp = await request('GET', '/api/projects/' + testProjId + '/meetings', null, jar);
     assert((resp.body || []).some(m => m.id === beforeMoveMeetingId), 'Mitgewanderter Termin liegt im Zielprojekt');
 
+    // Explizite Label-Liste (so schickt es das Formular): fehlende Ziele werden
+    // im Zielprojekt angelegt.
+    resp = await request('PATCH', '/api/keyusers/' + moveKuId + '/project', {
+        project_id: 1, move_meetings: false,
+        training_goal_labels: ['Migrationsziel', 'Zusatzziel']
+    }, jar);
+    assert(resp.status === 200 && resp.body.moved_training_goals === 2, 'Explizite Ziel-Labels werden uebernommen');
+
+    resp = await request('GET', '/api/projects/1/training-goals', null, jar);
+    const extraGoal = (resp.body || []).find(g => g.label === 'Zusatzziel');
+    assert(Boolean(extraGoal), 'Fehlendes Ziel wird im Zielprojekt angelegt');
+
+    resp = await request('GET', '/api/projects/1/keyusers', null, jar);
+    const finalState = (resp.body || []).find(k => k.id === moveKuId);
+    assert(finalState && finalState.training_goal_ids.length === 2, 'Beide Ziele sind dem Key-User zugeordnet');
+
+    // Zugeordnete Ziele lassen sich nicht loeschen (409) - vorher loesen.
+    resp = await request('POST', '/api/projects/1/keyusers', {
+        id: moveKuId, name:'Migrations-Key-User', role:'key_user', training_goal_ids: []
+    }, jar);
+    assert(resp.status === 200, 'Zielzuordnungen geloest');
+
+    if (extraGoal) await request('DELETE', '/api/projects/1/training-goals/' + extraGoal.id, null, jar);
     resp = await request('DELETE', '/api/projects/1/training-goals/' + goalId, null, jar);
     assert(resp.status === 200, 'Schulungsziel aufgeraeumt');
 

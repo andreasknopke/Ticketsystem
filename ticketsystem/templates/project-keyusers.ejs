@@ -164,7 +164,7 @@
                                         <span class="block text-xs text-gray-500">Sonst bleiben die Termine im bisherigen Projekt und verlieren die Zuordnung zu dieser Person.</span>
                                     </span>
                                 </label>
-                                <p class="mt-1 text-xs text-amber-700">Schulungsziele sind projektgebunden und werden beim Wechsel zurückgesetzt.</p>
+                                <p class="mt-1 text-xs text-gray-500">Schulungsziele werden mitgenommen. Fehlt ein Ziel im Zielprojekt, wird es dort angelegt.</p>
                             </div>
                         </div>
                         <div class="col-span-2">
@@ -187,7 +187,7 @@
                             <div id="keyUserGoalsCheckboxes" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                 <% trainingGoals.forEach(g => { %>
                                 <label class="flex items-center gap-2 text-sm text-gray-700">
-                                    <input type="checkbox" name="training_goal_ids" value="<%= g.id %>" class="rounded border-gray-300">
+                                    <input type="checkbox" name="training_goal_ids" value="<%= g.id %>" data-goal-label="<%= g.label %>" class="rounded border-gray-300">
                                     <span><%= g.label %></span>
                                 </label>
                                 <% }); %>
@@ -477,6 +477,12 @@
             const collectGoals = () => Array.from(getGoalCheckboxes())
                 .filter(cb => cb.checked).map(cb => Number(cb.value));
 
+            // Ziele werden als Label uebergeben: IDs gelten nur im Quellprojekt.
+            const collectGoalLabels = () => Array.from(getGoalCheckboxes())
+                .filter(cb => cb.checked)
+                .map(cb => (cb.dataset.goalLabel || '').trim())
+                .filter(Boolean);
+
             // Beim Projektwechsel zuerst verschieben, danach alle Felder im
             // Zielprojekt schreiben: so kann kein Feld auf der Strecke bleiben.
             if (projectChanged) {
@@ -490,12 +496,16 @@
                 const moveResp = await fetch('/api/keyusers/' + body.id + '/project', {
                     method:'PATCH',
                     headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF_TOKEN},
-                    body: JSON.stringify({ project_id: targetProjectId, move_meetings: moveMeetings })
+                    body: JSON.stringify({
+                        project_id: targetProjectId,
+                        move_meetings: moveMeetings,
+                        training_goal_labels: collectGoalLabels()
+                    })
                 });
                 const moveData = await moveResp.json().catch(() => ({}));
                 if (!moveResp.ok) { alert('Fehler beim Verschieben: ' + (moveData.error || moveResp.statusText)); return; }
-                // Schulungsziele des alten Projekts gelten im Ziel nicht mehr.
-                body.training_goal_ids = [];
+                // Ziele sind bereits migriert; das anschliessende Speichern darf
+                // sie nicht mit Quell-IDs ueberschreiben.
             } else if (HAS_GOALS) {
                 body.training_goal_ids = collectGoals();
             }
