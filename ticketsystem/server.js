@@ -6676,8 +6676,7 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                                         FROM projects p
                                         LEFT JOIN systems s ON s.id = p.system_id
                                         LEFT JOIN departments d ON d.id = p.department_id
-                                        WHERE p.id != ?
-                                        ORDER BY p.name`, [req.params.id], (pErr, otherProjects) => {
+                                        ORDER BY p.name`, [], (pErr, allProjects) => {
                                     if (pErr) return res.status(500).send(pErr.message);
                                     res.render('project-keyusers', {
                                         project,
@@ -6685,7 +6684,7 @@ app.get('/project/:id/keyusers', requireAuth, (req, res) => {
                                         trainingGoals: goals || [],
                                         goalIdsByKeyUser,
                                         meetingsByKeyUser,
-                                        otherProjects: otherProjects || [],
+                                        allProjects: allProjects || [],
                                         today: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
                                         user: req.session.user,
                                         role: req.session.role || 'user',

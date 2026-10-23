@@ -332,7 +332,8 @@ async function main() {
     const goalId = resp.body.id;
 
     resp = await request('POST', '/api/projects/1/keyusers', {
-        name:'Migrations-Key-User', role:'key_user', training_goal_ids:[goalId]
+        name:'Migrations-Key-User', role:'key_user', training_goal_ids:[goalId],
+        notes:'Stationsleitung', training_status:'Basisschulung', test_protocol:'Pilot ok'
     }, jar);
     assert(resp.status === 201 && resp.body.id, 'Key-User im Quellprojekt');
     const moveKuId = resp.body.id;
@@ -370,6 +371,23 @@ async function main() {
     assert((resp.body || []).some(k => k.id === moveKuId), 'Key-User liegt im Zielprojekt');
     const afterMove = (resp.body || []).find(k => k.id === moveKuId);
     assert(afterMove.training_goal_ids.length === 0, 'Keine projektfremden Schulungsziele im Zielprojekt');
+
+    // Freitext-Felder muessen den Projektwechsel ueberleben.
+    assert(afterMove.notes === 'Stationsleitung', 'Notizen bleiben beim Verschieben erhalten');
+    assert(afterMove.training_status === 'Basisschulung', 'Schulungsstatus bleibt erhalten');
+    assert(afterMove.test_protocol === 'Pilot ok', 'Test-Protokoll bleibt erhalten');
+
+    // Speichern im Zielprojekt (wie das Bearbeiten-Formular) darf nichts leeren.
+    resp = await request('POST', '/api/projects/' + testProjId + '/keyusers', {
+        id: moveKuId, name:'Migrations-Key-User', role:'key_user',
+        notes:'Stationsleitung', training_status:'Basisschulung', test_protocol:'Pilot ok'
+    }, jar);
+    assert(resp.status === 200, 'Bearbeiten im Zielprojekt');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/keyusers', null, jar);
+    const afterSave = (resp.body || []).find(k => k.id === moveKuId);
+    assert(afterSave.notes === 'Stationsleitung' && afterSave.training_status === 'Basisschulung'
+        && afterSave.test_protocol === 'Pilot ok', 'Felder bleiben nach dem Speichern im Zielprojekt');
 
     resp = await request('GET', '/api/projects/1/keyusers', null, jar);
     assert(!(resp.body || []).some(k => k.id === moveKuId), 'Key-User ist aus dem Quellprojekt entfernt');
