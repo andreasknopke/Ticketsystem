@@ -54,22 +54,29 @@ Was in der Bestandsaufnahme fehlt oder unklar bleibt.`;
 
 // BPMN-Diagramm des heutigen Ablaufs. Wird als zweiter, getrennter Aufruf
 // hinter der Text-Zusammenfassung ausgefuehrt. Das Modell liefert nur das
-// semantische Modell; Diagramm-Koordinaten (DI) ergaenzt der Server per
-// bpmn-auto-layout, damit bpmn-js die Elemente nicht uebereinander zeichnet.
+// semantische Modell (inkl. Swimlanes); Diagramm-Koordinaten (DI) ergaenzt
+// der Server selbst (services/atlas/bpmn.js), damit bpmn-js die Elemente
+// nicht uebereinander zeichnet.
 const BPMN_SYSTEM_PROMPT = `Du erstellst ein BPMN-2.0-Prozessdiagramm des heutigen (Ist-)Zustands eines Software-Einfuehrungsprojekts in einer Krankenhausabteilung.
 
-Deine Aufgabe: Bilde den heutigen Ablauf als gueltiges BPMN-2.0-Prozessmodell ab.
+Deine Aufgabe: Bilde den heutigen Ablauf moeglichst detailliert als gueltiges BPMN-2.0-Prozessmodell ab.
 
 Regeln:
 - Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
 - Verwende als Root <bpmn:definitions> mit id, targetNamespace und xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL".
 - Lege genau einen <bpmn:process> an und genau ein Start-Ereignis (<bpmn:startEvent>).
-- Modelliere Taetigkeiten als <bpmn:userTask> mit eindeutiger id und kurzem, sprechendem name-Attribut (Deutsch).
-- Verwende <bpmn:exclusiveGateway> fuer Verzweigungen und <bpmn:endEvent> fuer das Ende.
+- Zerlege den Ablauf in einzelne, konkrete Schritte und modelliere jeden als <bpmn:userTask> mit eindeutiger id und kurzem, sprechendem name-Attribut (Deutsch). Fasse verwandte Taetigkeiten nicht zu einer zusammen.
+- Gib bei jeder Aktivitaet die geschaetzte Dauer an, wenn sie aus der Bestandsaufnahme hervorgeht:
+  - (1) direkt im name in Klammern, z. B. "Probe dokumentieren (ca. 5 Min)";
+  - (2) zusaetzlich als <bpmn:documentation> innerhalb des Tasks mit den Zeilen "Dauer:", "Rolle:" und "System:".
+  Ist die Dauer unbekannt, lasse beide Angaben weg statt zu raten.
+- Verwende <bpmn:exclusiveGateway> fuer Verzweigungen, <bpmn:parallelGateway> fuer parallele Taetigkeiten und <bpmn:endEvent> fuer das Ende. Bilde Verzweigungen und Zusammenfuehrungen ab, wie sie im echten Ablauf vorkommen.
 - Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
 - Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
-- Keine Pools/Lanes, keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
-- Halte das Modell klein und uebersichtlich: hoechstens 12 Aktivitaeten/Gateways.
+- Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
+- Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
+- Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
+- Halte das Modell detailliert, aber uebersichtlich: hoechstens 20 Aktivitaeten/Gateways.
 - Modelliere nur, was aus der Bestandsaufnahme belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 

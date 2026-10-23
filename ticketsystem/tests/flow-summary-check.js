@@ -80,6 +80,12 @@ check(built.text.trim().length > 0, 'Projektkopf allein ist nicht leer');
 // --- BPMN-Ausgabe ---
 check(typeof flowSummary.BPMN_SYSTEM_PROMPT === 'string' && flowSummary.BPMN_SYSTEM_PROMPT.length > 0,
     'BPMN-System-Prompt vorhanden');
+check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Dauer') && flowSummary.BPMN_SYSTEM_PROMPT.includes('documentation'),
+    'BPMN-System-Prompt fordert Dauer und documentation');
+check(flowSummary.BPMN_SYSTEM_PROMPT.includes('parallelGateway'),
+    'BPMN-System-Prompt erlaubt parallele Ablaeufe');
+check(flowSummary.BPMN_SYSTEM_PROMPT.includes('laneSet') && flowSummary.BPMN_SYSTEM_PROMPT.includes('flowNodeRef'),
+    'BPMN-System-Prompt fordert Swimlanes');
 check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
     'BPMN-User-Prompt enthaelt die Eingabe');
 

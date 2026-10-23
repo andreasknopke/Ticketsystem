@@ -500,7 +500,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     json: false
                 });
                 const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
-                bpmnXml = extracted ? await bpmn.normalizeBpmnXml(extracted) : null;
+                bpmnXml = extracted ? await bpmn.layoutBpmnXml(extracted) : null;
             } catch (err) {
                 bpmnError = err.message;
             }
