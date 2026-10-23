@@ -233,7 +233,8 @@ wir verhindern die Möglichkeit stattdessen).
 | 1 — Krankenhaus/Abteilung | umgesetzt: `hospitals`, `departments`, `projects.department_id`, Backfill, API, Formular mit Inline-Anlage |
 | 2 — Stakeholder | umgesetzt: `meeting_participants`, API, Anzeige je Termin |
 | 3 — Transkript | umgesetzt: `key_user_meetings.transcript`, API, Viewer/Editor am Termin |
-| 4 — Extraktion | umgesetzt: `workflows`, `problems`, `adoption_risks`, API, Erfassung am Termin |
+| 4 — Extraktion | umgesetzt: `workflows`, `problems`, `adoption_risks`, API, Erfassung am Termin **und** direkt im Projekt |
+| 5 — Flow Analysis | umgesetzt: Reiter `/project/:id/flow` mit Input (Transkripte, Dokumente, Erkenntnisse); Visualisierung und Output als Platzhalter |
 | Atlas archivieren | offen (nach Abnahme) |
 
 **Abweichung:** `projects.department_id` ist auf DB-Ebene nullable und wird in der
@@ -241,7 +242,28 @@ Anwendung erzwungen (`POST/PATCH /api/projects` → `400`). Grund: `NOT NULL` wa
 nur per Tabellen-Rebuild von `projects` moeglich, und dieser Rebuild konkurriert
 mit der bestehenden `projects.status`-Migration um dieselbe Tabelle.
 
-**Teststand:** `npm test` — 106 Assertions, gruen, wiederholbar.
+**Abweichung von Atlas:** `meeting_id` ist in den Wissenstabellen optional. Ein
+Eintrag gehoert immer zu einem Projekt, kann aber ohne Termin erfasst werden.
+Siehe [ADR-0004](./adr/0004-wissen-ohne-termin.md). Die Tabellen tragen deshalb
+zusaetzlich `project_id`; `department_id` wird daraus abgeleitet.
+
+## Flow Analysis
+
+`/project/:id/flow` ist der Ort der Bestandsaufnahme. Drei Abschnitte:
+
+| Abschnitt | Inhalt | Stand |
+|---|---|---|
+| Input | Transkripte aus Terminen, hochgeladene Dokumente, Workflows/Probleme/Risiken (mit Herkunft), direkte Erfassung | umgesetzt |
+| Input-Visualisierung | LLM zeichnet den bestehenden Workflow und markiert die Probleme | Platzhalter |
+| Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
+
+Dateien im Flow-Reiter sind `project_attachments` mit `phase = 'input'`
+(Spalte vorbereitet fuer `'output'`). Wissenseintraege koennen aus einem Termin
+(`POST /api/meetings/:id/<kind>`) oder direkt im Projekt
+(`POST /api/projects/:id/<kind>`) entstehen.
+
+**Teststand:** `npm test` — 18 Migrationspruefungen + 146 Assertions, gruen,
+wiederholbar.
 
 ## Reihenfolge
 

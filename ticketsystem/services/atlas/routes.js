@@ -3,8 +3,10 @@
 /**
  * API-Routen fuer die Atlas-Uebernahme.
  *
- * Bewusste Regel: `department_id` kommt nie aus dem Request-Body. Sie wird
- * immer aus Termin -> Projekt abgeleitet (docs/adr/0001-projekt-ist-die-einheit.md).
+ * Zwei Regeln gelten fuer alle Eintraege:
+ * - `department_id` und `project_id` kommen nie aus dem Request-Body, sondern
+ *   immer aus Termin -> Projekt bzw. aus der URL.
+ * - Ein Eintrag darf ohne Termin existieren (docs/adr/0004-wissen-ohne-termin.md).
  */
 
 function normalizeText(value) {
@@ -18,6 +20,34 @@ function toId(value) {
     return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+const EXTRACTION_KINDS = {
+    workflows: {
+        table: 'workflows',
+        label: 'Beschreibung',
+        textField: 'description',
+        columns: ['project_id', 'meeting_id', 'department_id', 'description'],
+        buildValues: (ctx, text, description) =>
+            [ctx.projectId, ctx.meetingId, ctx.departmentId, text]
+    },
+    problems: {
+        table: 'problems',
+        label: 'Titel',
+        textField: 'title',
+        hasWorkflow: true,
+        columns: ['project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description'],
+        buildValues: (ctx, text, description, workflowId) =>
+            [ctx.projectId, ctx.meetingId, ctx.departmentId, workflowId, text, description]
+    },
+    'adoption-risks': {
+        table: 'adoption_risks',
+        label: 'Titel',
+        textField: 'title',
+        columns: ['project_id', 'meeting_id', 'department_id', 'title', 'description'],
+        buildValues: (ctx, text, description) =>
+            [ctx.projectId, ctx.meetingId, ctx.departmentId, text, description]
+    }
+};
+
 module.exports = function registerAtlasRoutes(app, deps) {
     const { db, requireAuth, requireAdmin } = deps;
 
@@ -26,6 +56,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 FROM key_user_meetings m
                 LEFT JOIN projects p ON p.id = m.project_id
                 WHERE m.id = ?`, [meetingId], callback);
+    };
+
+    const loadProject = (projectId, callback) => {
+        db.get('SELECT id, department_id FROM projects WHERE id = ?', [projectId], callback);
     };
 
     // --- Stammdaten: Krankenhaeuser und Abteilungen ---
@@ -159,90 +193,87 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     // --- Extraktion: Workflow, Problem, Adoptionsrisiko ---
 
-    const recordExtraction = (config) => (req, res) => {
-        const text = normalizeText(req.body[config.textField]);
+    const insertExtraction = (kind, ctx, body, res) => {
+        const config = EXTRACTION_KINDS[kind];
+        const text = normalizeText(body[config.textField]);
         if (!text) return res.status(400).json({ error: `${config.label} ist erforderlich.` });
-        const description = normalizeText(req.body.description) || '';
+        const description = normalizeText(body.description) || '';
 
-        loadMeeting(req.params.meetingId, (err, meeting) => {
-            if (err) return res.status(500).json({ error: err.message });
-            if (!meeting) return res.status(404).json({ error: 'Termin nicht gefunden.' });
-            if (!meeting.department_id) {
-                return res.status(409).json({ error: 'Projekt hat keine Abteilung.' });
-            }
-
-            const insert = (workflowId) => {
-                const values = config.buildValues(meeting, text, description, workflowId);
-                const placeholders = values.map(() => '?').join(', ');
-                db.run(`INSERT INTO ${config.table} (${config.columns.join(', ')}) VALUES (${placeholders})`,
-                    values, function (insertErr) {
-                        if (insertErr) return res.status(500).json({ error: insertErr.message });
-                        res.status(201).json({ id: this.lastID, meeting_id: meeting.id, department_id: meeting.department_id });
+        const insert = (workflowId) => {
+            const values = config.buildValues(ctx, text, description, workflowId);
+            const placeholders = values.map(() => '?').join(', ');
+            db.run(`INSERT INTO ${config.table} (${config.columns.join(', ')}) VALUES (${placeholders})`,
+                values, function (insertErr) {
+                    if (insertErr) return res.status(500).json({ error: insertErr.message });
+                    res.status(201).json({
+                        id: this.lastID,
+                        project_id: ctx.projectId,
+                        meeting_id: ctx.meetingId,
+                        department_id: ctx.departmentId
                     });
-            };
-
-            if (!config.hasWorkflow) return insert(null);
-
-            const workflowId = toId(req.body.workflow_id);
-            if (!workflowId) return insert(null);
-
-            db.get('SELECT id FROM workflows WHERE id = ? AND department_id = ?',
-                [workflowId, meeting.department_id], (wfErr, workflow) => {
-                    if (wfErr) return res.status(500).json({ error: wfErr.message });
-                    if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu dieser Abteilung.' });
-                    insert(workflowId);
                 });
-        });
+        };
+
+        if (!config.hasWorkflow) return insert(null);
+
+        const workflowId = toId(body.workflow_id);
+        if (!workflowId) return insert(null);
+
+        db.get('SELECT id FROM workflows WHERE id = ? AND project_id = ?',
+            [workflowId, ctx.projectId], (wfErr, workflow) => {
+                if (wfErr) return res.status(500).json({ error: wfErr.message });
+                if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu diesem Projekt.' });
+                insert(workflowId);
+            });
     };
 
-    app.post('/api/meetings/:meetingId/workflows', requireAuth, requireAdmin,
-        recordExtraction({
-            table: 'workflows',
-            label: 'Beschreibung',
-            textField: 'description',
-            columns: ['meeting_id', 'department_id', 'description'],
-            buildValues: (meeting, text) => [meeting.id, meeting.department_id, text]
-        }));
+    // Erfassung aus einem Termin (Herkunft bleibt nachvollziehbar).
+    for (const kind of Object.keys(EXTRACTION_KINDS)) {
+        app.post(`/api/meetings/:meetingId/${kind}`, requireAuth, requireAdmin, (req, res) => {
+            loadMeeting(req.params.meetingId, (err, meeting) => {
+                if (err) return res.status(500).json({ error: err.message });
+                if (!meeting) return res.status(404).json({ error: 'Termin nicht gefunden.' });
+                insertExtraction(kind, {
+                    projectId: meeting.project_id,
+                    meetingId: meeting.id,
+                    departmentId: meeting.department_id || null
+                }, req.body, res);
+            });
+        });
 
-    app.post('/api/meetings/:meetingId/problems', requireAuth, requireAdmin,
-        recordExtraction({
-            table: 'problems',
-            label: 'Titel',
-            textField: 'title',
-            hasWorkflow: true,
-            columns: ['meeting_id', 'department_id', 'workflow_id', 'title', 'description'],
-            buildValues: (meeting, title, description, workflowId) =>
-                [meeting.id, meeting.department_id, workflowId, title, description]
-        }));
+        // Direkte Erfassung ohne Termin (z.B. aus einem Dokument abgeleitet).
+        app.post(`/api/projects/:projectId/${kind}`, requireAuth, requireAdmin, (req, res) => {
+            loadProject(req.params.projectId, (err, project) => {
+                if (err) return res.status(500).json({ error: err.message });
+                if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+                insertExtraction(kind, {
+                    projectId: project.id,
+                    meetingId: null,
+                    departmentId: project.department_id || null
+                }, req.body, res);
+            });
+        });
+    }
 
-    app.post('/api/meetings/:meetingId/adoption-risks', requireAuth, requireAdmin,
-        recordExtraction({
-            table: 'adoption_risks',
-            label: 'Titel',
-            textField: 'title',
-            columns: ['meeting_id', 'department_id', 'title', 'description'],
-            buildValues: (meeting, title, description) =>
-                [meeting.id, meeting.department_id, title, description]
-        }));
-
-    const listExtraction = (table) => (req, res) => {
+    const listExtraction = (kind) => (req, res) => {
+        const config = EXTRACTION_KINDS[kind];
         db.all(`SELECT x.*, m.title AS meeting_title, m.meeting_date
-                FROM ${table} x
-                JOIN key_user_meetings m ON m.id = x.meeting_id
-                WHERE m.project_id = ?
-                ORDER BY m.meeting_date DESC, x.id DESC`, [req.params.projectId], (err, rows) => {
+                FROM ${config.table} x
+                LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ?
+                ORDER BY x.created_at DESC, x.id DESC`, [req.params.projectId], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json(rows || []);
         });
     };
 
-    app.get('/api/projects/:projectId/workflows', requireAuth, listExtraction('workflows'));
-    app.get('/api/projects/:projectId/problems', requireAuth, listExtraction('problems'));
-    app.get('/api/projects/:projectId/adoption-risks', requireAuth, listExtraction('adoption_risks'));
+    for (const kind of Object.keys(EXTRACTION_KINDS)) {
+        app.get(`/api/projects/:projectId/${kind}`, requireAuth, listExtraction(kind));
+    }
 
     app.patch('/api/problems/:id', requireAuth, requireAdmin, (req, res) => {
         const workflowId = req.body.workflow_id === null ? null : toId(req.body.workflow_id);
-        db.get('SELECT id, department_id FROM problems WHERE id = ?', [req.params.id], (err, problem) => {
+        db.get('SELECT id, project_id FROM problems WHERE id = ?', [req.params.id], (err, problem) => {
             if (err) return res.status(500).json({ error: err.message });
             if (!problem) return res.status(404).json({ error: 'Problem nicht gefunden.' });
 
@@ -255,24 +286,25 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
             if (!workflowId) return update();
 
-            db.get('SELECT id FROM workflows WHERE id = ? AND department_id = ?',
-                [workflowId, problem.department_id], (wfErr, workflow) => {
+            db.get('SELECT id FROM workflows WHERE id = ? AND project_id = ?',
+                [workflowId, problem.project_id], (wfErr, workflow) => {
                     if (wfErr) return res.status(500).json({ error: wfErr.message });
-                    if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu dieser Abteilung.' });
+                    if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu diesem Projekt.' });
                     update();
                 });
         });
     });
 
-    const deleteExtraction = (table) => (req, res) => {
-        db.run(`DELETE FROM ${table} WHERE id = ?`, [req.params.id], function (err) {
+    const deleteExtraction = (kind) => (req, res) => {
+        const config = EXTRACTION_KINDS[kind];
+        db.run(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id], function (err) {
             if (err) return res.status(500).json({ error: err.message });
             if (this.changes === 0) return res.status(404).json({ error: 'Eintrag nicht gefunden.' });
             res.json({ status: 'deleted' });
         });
     };
 
-    app.delete('/api/workflows/:id', requireAuth, requireAdmin, deleteExtraction('workflows'));
-    app.delete('/api/problems/:id', requireAuth, requireAdmin, deleteExtraction('problems'));
-    app.delete('/api/adoption-risks/:id', requireAuth, requireAdmin, deleteExtraction('adoption_risks'));
+    for (const kind of Object.keys(EXTRACTION_KINDS)) {
+        app.delete(`/api/${kind}/:id`, requireAuth, requireAdmin, deleteExtraction(kind));
+    }
 };

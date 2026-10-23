@@ -29,6 +29,7 @@ Ein leichtgewichtiges, webbasiertes Ticketsystem mit integriertem Projektmanagem
 - **Key-User-Management:** Zuweisung von Mitarbeitern zu Projekten mit Rollen (Key-User/Evaluator/Entscheider) und Evaluierungsnotizen.
 - **Termin-Tracking mit Key-Usern:** Meetings mit Datum, Uhrzeit, Dauer, Ort, Agenda und Ergebnisnotizen festhalten. Follow-up-Termine lassen sich direkt aus einem Meeting heraus anlegen (verknuepfte Kette). Export als ICS-Datei (einzeln oder alle Termine) sowie Direkt-Uebergabe an den Google Kalender. Auf dem Handy als Kartenansicht ohne horizontales Scrollen.
 - **Wissen zum Termin:** Je Termin optional ein Transkript sowie manuell erfasste Eintraege: Workflow (Ist-Zustand), Problem im alten Workflow und Adoptionsrisiko. Die Abteilung wird dabei immer aus dem Projekt abgeleitet.
+- **Flow Analysis:** Projekt-Reiter fuer die Bestandsaufnahme. Input buendelt Transkripte aus Terminen, hochgeladene Dokumente und die erfassten Workflows/Probleme/Adoptionsrisiken (mit Herkunft) und erlaubt direkte Erfassung ohne Termin. Abschnitte fuer Input-Visualisierung und Output (Ziel-Workflow) sind als Platzhalter angelegt.
 - **Zeitleiste (Gantt):** Mermaid.js-basierte Gantt-Diagramme zur Visualisierung von Projektphasen und Meilensteinen.
 - **Wiki-Dokumentation:** Projektbezogene Wiki-Seiten mit voller Markdown-Unterstutzung, Mermaid-Diagrammen und einem integrierten Editor (EasyMDE).
 - **GitHub-Integration:**

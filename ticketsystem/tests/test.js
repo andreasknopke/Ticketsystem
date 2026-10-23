@@ -324,6 +324,52 @@ async function main() {
     resp = await request('DELETE', '/api/problems/' + problemId, null, jar);
     assert(resp.status === 200, 'DELETE Problem');
 
+    // --- API: Flow Analysis (Eintraege ohne Termin) ---
+    console.log('\n📌 API: Flow Analysis');
+
+    resp = await request('GET', '/project/' + testProjId + '/flow', null, jar);
+    assert(resp.status === 200, 'GET /project/:id/flow (200 OK)');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/workflows', {
+        description:'Dienstplan als Excel-Liste'
+    }, jar);
+    assert(resp.status === 201 && resp.body.project_id === testProjId, 'Workflow direkt im Projekt');
+    assert(resp.body.meeting_id === null, 'Direkter Workflow hat keinen Termin');
+    const directWorkflowId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/problems', {
+        title:'Excel bricht bei vielen Zeilen', workflow_id: directWorkflowId
+    }, jar);
+    assert(resp.status === 201 && resp.body.meeting_id === null, 'Problem direkt im Projekt');
+    const directProblemId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/adoption-risks', {
+        title:'Keine Zeit fuer Schulung'
+    }, jar);
+    assert(resp.status === 201 && resp.body.meeting_id === null, 'Adoptionsrisiko direkt im Projekt');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/problems', { title:'   ' }, jar);
+    assert(resp.status === 400, 'Direktes Problem ohne Titel -> 400');
+
+    resp = await request('POST', '/api/projects/999999/problems', { title:'X' }, jar);
+    assert(resp.status === 404, 'Problem in unbekanntem Projekt -> 404');
+
+    // Workflow aus einem anderen Projekt darf nicht verknuepft werden.
+    resp = await request('POST', '/api/meetings/' + meetingId + '/workflows', {
+        description:'Workflow im Testprojekt'
+    }, jar);
+    const foreignWorkflowId = resp.body.id;
+    resp = await request('POST', '/api/projects/1/problems', {
+        title:'Fremder Workflow', workflow_id: foreignWorkflowId
+    }, jar);
+    assert(resp.status === 400, 'Workflow aus fremdem Projekt -> 400');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/problems', null, jar);
+    assert(resp.body.some(p => p.id === directProblemId), 'Projektliste enthaelt direktes Problem');
+
+    resp = await request('DELETE', '/api/problems/' + directProblemId, null, jar);
+    assert(resp.status === 200, 'Direktes Problem loeschen');
+
     // --- API: Key-User verschieben (manuelle Migration) ---
     console.log('\n📌 API: Key-User verschieben');
 

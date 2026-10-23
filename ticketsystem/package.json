@@ -8,7 +8,7 @@
     "dev": "node --watch server.js",
     "seed": "node scripts/seed_db.js",
     "build:css": "npx tailwindcss -i ./public/input.css -o ./public/style.css --watch",
-    "test": "node tests/test.js"
+    "test": "node tests/migration-check.js && node tests/test.js"
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",

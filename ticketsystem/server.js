@@ -6824,6 +6824,56 @@ app.get('/project/:id/meetings', requireAuth, (req, res) => {
     })();
 });
 
+// Flow Analysis: Bestandsaufnahme (Input), spaeter Visualisierung und Zielbild.
+app.get('/project/:id/flow', requireAuth, (req, res) => {
+    (async () => {
+        const projectId = req.params.id;
+        try {
+            const project = await dbGet(`SELECT p.*, s.name as system_name,
+                    d.name as department_name, h.name as hospital_name
+                FROM projects p
+                LEFT JOIN systems s ON p.system_id = s.id
+                LEFT JOIN departments d ON p.department_id = d.id
+                LEFT JOIN hospitals h ON d.hospital_id = h.id
+                WHERE p.id = ?`, [projectId]);
+            if (!project.id) return res.status(404).send('Projekt nicht gefunden');
+
+            const transcripts = await dbAll(`SELECT id, title, meeting_date, start_time,
+                    status, LENGTH(COALESCE(transcript, '')) AS transcript_length
+                FROM key_user_meetings
+                WHERE project_id = ? AND LENGTH(COALESCE(transcript, '')) > 0
+                ORDER BY meeting_date DESC, id DESC`, [projectId]);
+
+            const attachments = await dbAll(`SELECT id, filename, original_name, mimetype, size,
+                    created_by, created_at, COALESCE(phase, 'input') AS phase
+                FROM project_attachments
+                WHERE project_id = ?
+                ORDER BY created_at DESC`, [projectId]);
+
+            const entries = {};
+            for (const [kind, table] of [['workflows', 'workflows'], ['problems', 'problems'], ['adoptionRisks', 'adoption_risks']]) {
+                entries[kind] = await dbAll(`SELECT x.*, m.title AS meeting_title, m.meeting_date
+                    FROM ${table} x
+                    LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                    WHERE x.project_id = ?
+                    ORDER BY x.created_at DESC, x.id DESC`, [projectId]);
+            }
+
+            res.render('project-flow', {
+                project,
+                transcripts,
+                attachments,
+                entries,
+                user: req.session.user,
+                role: req.session.role || 'user',
+                canManage: isAdminRole(req.session.role)
+            });
+        } catch (err) {
+            res.status(500).send(err.message);
+        }
+    })();
+});
+
 app.get('/project/:id/docs', requireAuth, (req, res) => {
     db.get('SELECT p.*, s.name as system_name FROM projects p LEFT JOIN systems s ON p.system_id = s.id WHERE p.id = ?',
         [req.params.id], (err, project) => {

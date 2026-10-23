@@ -14,6 +14,7 @@ const navClass = (key) => key === navActive
     <% if (canManage) { %><a href="/project/<%= project.id %>/milestones" class="<%= navClass('milestones') %>">Meilensteine</a><% } %>
     <a href="/project/<%= project.id %>/keyusers" class="<%= navClass('keyusers') %>">Key-User</a>
     <a href="/project/<%= project.id %>/meetings" class="<%= navClass('meetings') %>">Termine</a>
+    <a href="/project/<%= project.id %>/flow" class="<%= navClass('flow') %>">Flow Analysis</a>
     <a href="/project/<%= project.id %>/docs" class="<%= navClass('docs') %>">Wiki</a>
     <% if (canManage) { %><a href="/project/<%= project.id %>/github" class="<%= navClass('github') %>">GitHub</a><% } %>
 </div>
