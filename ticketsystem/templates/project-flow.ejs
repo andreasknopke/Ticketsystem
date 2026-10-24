@@ -665,8 +665,8 @@
                 if (!program) return;
 
                 let color = '#e5e7eb';
-                if (bo.di && typeof bo.di.get === 'function') {
-                    color = bo.di.get('bioc:fill') || color;
+                if (el.di && typeof el.di.get === 'function') {
+                    color = el.di.get('bioc:fill') || color;
                 }
                 if (!programColors.has(program)) programColors.set(program, color);
 
