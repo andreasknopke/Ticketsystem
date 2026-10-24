@@ -219,6 +219,7 @@
                         <div class="mb-2 flex items-center justify-between gap-2">
                             <h4 class="text-sm font-semibold text-gray-700">Flow-Diagramm (Ist-Zustand)</h4>
                             <div class="flex items-center gap-3">
+                                <button type="button" id="bpmnSave" class="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded px-2.5 py-1">Speichern</button>
                                 <button type="button" id="bpmnPrint" class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
                                 <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
                             </div>
@@ -399,7 +400,7 @@
     <% } %>
 
     <% if (summaries[0] && summaries[0].bpmn_xml) { %>
-    <script src="/bpmn-js/bpmn-navigated-viewer.production.min.js"></script>
+    <script src="/bpmn-js/bpmn-modeler.production.min.js"></script>
     <% } %>
     <script>
         const CSRF_TOKEN = '<%= csrfToken %>';
@@ -618,26 +619,11 @@
         // --- BPMN-Diagramm (Ist-Zustand) ---
 
         const BPMN_XML = <%- JSON.stringify((summaries[0] && summaries[0].bpmn_xml) || '').replace(/<\//g, '<\\/') %>;
+        const SUMMARY_ID = <%- JSON.stringify(summaries[0] ? summaries[0].id : null) %>;
 
         (function initBpmnDiagram() {
             const canvas = document.getElementById('bpmnCanvas');
             if (!canvas || !BPMN_XML) return;
-
-            const downloadLink = document.getElementById('bpmnDownload');
-            if (downloadLink) {
-                downloadLink.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const blob = new Blob([BPMN_XML], { type: 'application/xml' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'flow-ist-zustand.bpmn';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                });
-            }
 
             const Viewer = window.BpmnJS || window.BpmnNavigatedViewer || window.BpmnViewer;
             if (!Viewer) {
@@ -655,6 +641,48 @@
                     console.warn('[bpmn] Import fehlgeschlagen:', err);
                     canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
                 });
+
+            const downloadLink = document.getElementById('bpmnDownload');
+            if (downloadLink) {
+                downloadLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    viewer.saveXML().then(({ xml }) => {
+                        const blob = new Blob([xml], { type: 'application/xml' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'flow-ist-zustand.bpmn';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                    }).catch(() => alert('XML-Export nicht möglich.'));
+                });
+            }
+
+            const saveButton = document.getElementById('bpmnSave');
+            if (saveButton) {
+                saveButton.addEventListener('click', () => {
+                    if (!SUMMARY_ID) { alert('Keine Zusammenfassung zum Speichern vorhanden.'); return; }
+                    viewer.saveXML().then(({ xml }) => {
+                        saveButton.disabled = true;
+                        saveButton.textContent = 'Speichere…';
+                        return fetch('/api/projects/' + PROJECT_ID + '/flow-summary/' + SUMMARY_ID + '/bpmn', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                            body: JSON.stringify({ bpmn_xml: xml })
+                        }).then((resp) => resp.json().then((data) => ({ ok: resp.ok, data })));
+                    }).then(({ ok, data }) => {
+                        if (!ok) throw new Error(data.error || 'Speichern fehlgeschlagen.');
+                        alert('Diagramm gespeichert.');
+                    }).catch((err) => {
+                        alert('Fehler: ' + (err.message || err));
+                    }).finally(() => {
+                        saveButton.disabled = false;
+                        saveButton.textContent = 'Speichern';
+                    });
+                });
+            }
 
             const printButton = document.getElementById('bpmnPrint');
             if (printButton) {
