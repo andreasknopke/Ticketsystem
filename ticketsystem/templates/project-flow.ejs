@@ -37,6 +37,20 @@
             border-radius: 3px;
             border: 1px solid rgba(0, 0, 0, 0.2);
         }
+        .a4-page {
+            position: relative;
+            height: min(78vh, 1123px);
+            aspect-ratio: 210 / 297;
+            margin: 0 auto;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+        }
+        .bpmn-canvas {
+            position: absolute;
+            inset: 0;
+        }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -204,11 +218,16 @@
                     <div class="mt-4">
                         <div class="mb-2 flex items-center justify-between gap-2">
                             <h4 class="text-sm font-semibold text-gray-700">Flow-Diagramm (Ist-Zustand)</h4>
-                            <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                            <div class="flex items-center gap-3">
+                                <button type="button" id="bpmnPrint" class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
+                                <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                            </div>
                         </div>
-                        <div id="bpmnCanvas" class="h-96 w-full overflow-hidden rounded-lg border border-gray-200 bg-white"></div>
+                        <div class="a4-page">
+                            <div id="bpmnCanvas" class="bpmn-canvas"></div>
+                        </div>
                         <div id="bpmnLegend" class="mt-2 flex flex-wrap gap-3"></div>
-                        <p class="mt-2 text-xs text-gray-500">Automatisch aus der Bestandsaufnahme generiert.</p>
+                        <p class="mt-2 text-xs text-gray-500">Automatisch aus der Bestandsaufnahme generiert — passt auf eine A4-Seite.</p>
                     </div>
                     <% } %>
                     <% } else { %>
@@ -629,13 +648,40 @@
             const viewer = new Viewer({ container: canvas });
             viewer.importXML(BPMN_XML)
                 .then(() => {
-                    viewer.get('canvas').zoom('fit-viewport');
+                    viewer.get('canvas').zoom('fit-viewport', 20);
                     decoratePrograms(viewer);
                 })
                 .catch((err) => {
                     console.warn('[bpmn] Import fehlgeschlagen:', err);
                     canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
                 });
+
+            const printButton = document.getElementById('bpmnPrint');
+            if (printButton) {
+                printButton.addEventListener('click', () => {
+                    if (typeof viewer.saveSVG !== 'function') {
+                        alert('Drucken wird von dieser bpmn-js-Variante nicht unterstützt.');
+                        return;
+                    }
+                    viewer.saveSVG().then(({ svg }) => {
+                        const win = window.open('', '_blank');
+                        if (!win) { alert('Pop-up blockiert — bitte erlauben.'); return; }
+                        win.document.write(
+                            '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flow-Diagramm</title>' +
+                            '<style>@page { size: A4 portrait; margin: 10mm; }' +
+                            'html, body { margin: 0; padding: 0; }' +
+                            'svg { width: 100%; height: 100%; }</style></head><body>' +
+                            svg + '</body></html>'
+                        );
+                        win.document.close();
+                        win.focus();
+                        win.onload = () => win.print();
+                    }).catch((err) => {
+                        console.warn('[bpmn] saveSVG fehlgeschlagen:', err);
+                        alert('Drucken nicht möglich.');
+                    });
+                });
+            }
         })();
 
         // Zeigt je Aufgabe das eingesetzte Programm als Badge an und baut

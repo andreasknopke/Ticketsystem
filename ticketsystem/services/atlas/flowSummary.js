@@ -77,7 +77,7 @@ Regeln:
 - Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
 - Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
 - Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
-- Halte das Modell detailliert, aber uebersichtlich: hoechstens 20 Aktivitaeten/Gateways.
+- Halte das Modell detailliert, aber kompakt: hoechstens 14 Aktivitaeten/Gateways. Wenn der Ablauf laenger ist, fasse eng zusammengehoerende Schritte zu einem Schritt zusammen.
 - Modelliere nur, was aus der Bestandsaufnahme belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 
