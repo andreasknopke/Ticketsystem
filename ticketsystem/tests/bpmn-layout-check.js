@@ -97,6 +97,38 @@ async function main() {
     }
     check(threw, 'XML ohne Process wirft einen Fehler');
 
+    // Farben: Aufgaben werden anhand ihres Programms eingefaerbt.
+    const colored = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D" targetNamespace="http://x">
+  <bpmn:process id="P" isExecutable="false">
+    <bpmn:startEvent id="S" name="Start" />
+    <bpmn:userTask id="T1" name="A">
+      <bpmn:documentation>Dauer: ca. 5 Min
+Rolle: Arzt
+Programm: Excel</bpmn:documentation>
+    </bpmn:userTask>
+    <bpmn:userTask id="T2" name="B">
+      <bpmn:documentation>Dauer: ca. 20 Min
+Rolle: Pflege
+Programm: CuraFlow</bpmn:documentation>
+    </bpmn:userTask>
+    <bpmn:endEvent id="E" name="Ende" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T1" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T1" targetRef="T2" />
+    <bpmn:sequenceFlow id="F3" sourceRef="T2" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+    const out4 = await bpmn.layoutBpmnXml(colored);
+    check(out4.includes('xmlns:bioc="http://bpmn.io/schema/bpmn/biocolor/1.0"'),
+        'bioc-Namespace wird ergaenzt');
+    check((out4.match(/bioc:fill="/g) || []).length === 2,
+        'beide Aufgaben bekommen eine Fuellfarbe');
+    check((out4.match(/bioc:stroke="/g) || []).length === 2,
+        'beide Aufgaben bekommen eine Konturfarbe');
+    const fills = [...out4.matchAll(/bioc:fill="([^"]+)"/g)].map((m) => m[1]);
+    check(new Set(fills).size === 2 && fills.every((f) => /^#[0-9a-f]{6}$/i.test(f)),
+        'verschiedene Programme bekommen verschiedene Farben');
+
     console.log(`\n  ${passed} bestanden${failures ? `, ${failures} fehlgeschlagen` : ''}\n`);
     process.exit(failures > 0 ? 1 : 0);
 }

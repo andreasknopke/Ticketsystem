@@ -86,6 +86,8 @@ check(flowSummary.BPMN_SYSTEM_PROMPT.includes('parallelGateway'),
     'BPMN-System-Prompt erlaubt parallele Ablaeufe');
 check(flowSummary.BPMN_SYSTEM_PROMPT.includes('laneSet') && flowSummary.BPMN_SYSTEM_PROMPT.includes('flowNodeRef'),
     'BPMN-System-Prompt fordert Swimlanes');
+check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Programm:'),
+    'BPMN-System-Prompt fordert Programm-Angabe');
 check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
     'BPMN-User-Prompt enthaelt die Eingabe');
 

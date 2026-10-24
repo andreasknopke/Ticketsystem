@@ -66,10 +66,11 @@ Regeln:
 - Verwende als Root <bpmn:definitions> mit id, targetNamespace und xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL".
 - Lege genau einen <bpmn:process> an und genau ein Start-Ereignis (<bpmn:startEvent>).
 - Zerlege den Ablauf in einzelne, konkrete Schritte und modelliere jeden als <bpmn:userTask> mit eindeutiger id und kurzem, sprechendem name-Attribut (Deutsch). Fasse verwandte Taetigkeiten nicht zu einer zusammen.
-- Gib bei jeder Aktivitaet die geschaetzte Dauer an, wenn sie aus der Bestandsaufnahme hervorgeht:
-  - (1) direkt im name in Klammern, z. B. "Probe dokumentieren (ca. 5 Min)";
-  - (2) zusaetzlich als <bpmn:documentation> innerhalb des Tasks mit den Zeilen "Dauer:", "Rolle:" und "System:".
-  Ist die Dauer unbekannt, lasse beide Angaben weg statt zu raten.
+- Gib bei jeder Aktivitaet die geschaetzte Dauer an, wenn sie aus der Bestandsaufnahme hervorgeht: direkt im name in Klammern, z. B. "Probe dokumentieren (ca. 5 Min)". Ist die Dauer unbekannt, lasse sie weg statt zu raten.
+- Lege in jeder Aktivitaet ein <bpmn:documentation> mit drei Zeilen an:
+  - "Dauer:" die geschaetzte Dauer (z. B. "ca. 5 Min"), falls bekannt.
+  - "Rolle:" die ausfuehrende Rolle.
+  - "Programm:" das eingesetzte Programm/System (z. B. "Excel", "CuraFlow", "Papier"), falls es aus der Bestandsaufnahme hervorgeht. Genau ein kurzer Name, nichts dahinter.
 - Verwende <bpmn:exclusiveGateway> fuer Verzweigungen, <bpmn:parallelGateway> fuer parallele Taetigkeiten und <bpmn:endEvent> fuer das Ende. Bilde Verzweigungen und Zusammenfuehrungen ab, wie sie im echten Ablauf vorkommen.
 - Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
 - Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
