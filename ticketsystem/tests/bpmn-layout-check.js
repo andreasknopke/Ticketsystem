@@ -152,6 +152,19 @@ Programm: CuraFlow</bpmn:documentation>
     }
     check(threw, 'XML ohne Process wirft einen Fehler');
 
+    // Landscape: Lanes als Zeilen, Ablauf nach rechts, A4-Querformat.
+    const landscape = await bpmn.layoutBpmnXml(SAMPLE, { orientation: 'landscape' });
+    check(landscape.includes('isHorizontal="true"'), 'Landscape: Lanes/Pool sind horizontal');
+    const lArzt = boundsOf(landscape, 'Lane_Arzt');
+    const lPflege = boundsOf(landscape, 'Lane_Pflege');
+    check(lArzt && lPflege && lArzt.y < lPflege.y && lArzt.x === lPflege.x,
+        'Landscape: Lanes liegen untereinander als Zeilen');
+    const lTask1 = boundsOf(landscape, 'Task_1');
+    const lTask2 = boundsOf(landscape, 'Task_2');
+    check(lTask1 && lTask2 && lTask1.x < lTask2.x, 'Landscape: Ablauf laeuft von links nach rechts');
+    const lPool = boundsOf(landscape, 'Participant_1');
+    check(lPool && lPool.w > lPool.h, 'Landscape: Diagramm ist breiter als hoch (A4-Querformat)');
+
     console.log(`\n  ${passed} bestanden${failures ? `, ${failures} fehlgeschlagen` : ''}\n`);
     process.exit(failures > 0 ? 1 : 0);
 }

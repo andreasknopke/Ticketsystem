@@ -3,10 +3,11 @@
 /**
  * Deterministisches BPMN-Layout fuer den Flow-Reiter.
  *
- * Vertikales Layout statt horizontalem Links-nach-rechts-Ablauf: Swimlanes
- * werden zu Spalten, der Ablauf laeuft von oben nach unten. Damit hat das
- * Diagramm ein A4-Hochformat (210x297mm) statt beliebig breit zu werden, und
- * der Text bleibt beim Einpassen auf eine Seite lesbar.
+ * Zwei Ausrichtungen:
+ * - portrait  (Standard): Swimlanes als Spalten, Ablauf von oben nach unten
+ *   -> A4-Hochformat (210x297mm).
+ * - landscape: Swimlanes als horizontale Zeilen, Ablauf von links nach rechts
+ *   -> A4-Querformat (297x210mm).
  *
  * Das Modell liefert nur die Semantik (Nodes, Lanes, SequenceFlows); das DI
  * (Koordinaten, Kanten, Labels) wird hier deterministisch erzeugt. Zusaetzlich
@@ -20,12 +21,20 @@ const EVENT_W = 36, EVENT_H = 36;
 const GATEWAY_W = 50, GATEWAY_H = 50;
 const TASK_W = 120, TASK_H = 72;
 
-const COL_W = 230;         // Breite einer Lane-Spalte
-const LANE_HEADER = 36;    // Hoehe des Lane-Kopfs (Name)
 const POOL_MARGIN = 20;
-const NODE_STEP = 90;      // vertikaler Abstand zwischen uebereinanderliegenden Nodes
+const NODE_STEP = 90;      // Abstand zwischen uebereinanderliegenden Nodes (Stack)
 const ROW_PAD = 18;        // zusaetzlicher Abstand je Rang
 const BOTTOM_PAD = 24;
+
+// portrait (vertikal)
+const COL_W = 230;         // Breite einer Lane-Spalte
+const LANE_HEADER = 36;    // Hoehe des Lane-Kopfs (Name)
+
+// landscape (horizontal)
+const ROW_H = 220;         // Hoehe einer Lane-Zeile
+const LANE_HEADER_W = 44;  // Breite des Lane-Kopfs (Name, links)
+const LANE_GAP = 12;
+const COL_STEP = 190;      // horizontaler Abstand zwischen Raengen
 
 // --- Deterministische Farbpalette fuer Programme ---
 const PALETTE = [
@@ -154,7 +163,8 @@ async function parseBpmn(xml) {
     return { process, collaboration, participant, lanes, laneOf, nodes, edges };
 }
 
-function routeEdge(src, tgt) {
+// Kanten-Routing portrait (Ablauf nach unten)
+function routeEdgeV(src, tgt) {
     const sx = Math.round(src.x + src.w / 2);
     const sy = Math.round(src.y + src.h);
     const tx = Math.round(tgt.x + tgt.w / 2);
@@ -169,9 +179,25 @@ function routeEdge(src, tgt) {
     return [[sx, sy], [railX, sy], [railX, ty], [tx, ty]];
 }
 
-function buildDiagramXml(model, ranks) {
-    const { process, collaboration, participant, lanes, laneOf, nodes, edges } = model;
+// Kanten-Routing landscape (Ablauf nach rechts)
+function routeEdgeH(src, tgt) {
+    const sx = Math.round(src.x + src.w);
+    const sy = Math.round(src.y + src.h / 2);
+    const tx = Math.round(tgt.x);
+    const ty = Math.round(tgt.y + tgt.h / 2);
 
+    if (tx > sx) {
+        if (Math.abs(ty - sy) <= 1) return [[sx, sy], [tx, ty]];
+        const midX = Math.round((sx + tx) / 2);
+        return [[sx, sy], [midX, sy], [midX, ty], [tx, ty]];
+    }
+    const railY = Math.round(Math.max(sy, ty)) + 30;
+    return [[sx, sy], [sx, railY], [tx, railY], [tx, ty]];
+}
+
+// --- Portrait-Layout (Lanes als Spalten, Ablauf nach unten) ---
+function layoutPortrait(model, ranks) {
+    const { lanes, laneOf, nodes } = model;
     const laneCount = lanes.length > 0 ? lanes.length : 1;
 
     const cell = {};
@@ -216,6 +242,57 @@ function buildDiagramXml(model, ranks) {
         nodePos[n.id] = { x, y, w, h, lane, rank: r };
     }
 
+    return { nodePos, totalW, totalH, laneCount, laneBounds: (i) => {
+        const laneH = LANE_HEADER + contentHeight;
+        return { x: POOL_MARGIN + i * COL_W, y: POOL_MARGIN, w: COL_W, h: laneH };
+    }, route: routeEdgeV, isHorizontal: false, labelBelow: false };
+}
+
+// --- Landscape-Layout (Lanes als Zeilen, Ablauf nach rechts) ---
+function layoutLandscape(model, ranks) {
+    const { lanes, laneOf, nodes } = model;
+    const laneCount = lanes.length > 0 ? lanes.length : 1;
+
+    const cell = {};
+    for (const n of nodes) {
+        const lane = lanes.length > 0 ? (laneOf[n.id] !== undefined ? laneOf[n.id] : 0) : 0;
+        const key = lane + ':' + ranks[n.id];
+        (cell[key] = cell[key] || []).push(n);
+    }
+
+    const maxRank = nodes.reduce((m, n) => Math.max(m, ranks[n.id]), 0);
+    const contentW = LANE_HEADER_W + (maxRank + 1) * COL_STEP + ROW_PAD;
+    const totalW = POOL_MARGIN * 2 + contentW;
+    const totalH = POOL_MARGIN * 2 + laneCount * ROW_H + (laneCount - 1) * LANE_GAP;
+
+    const laneTop = (i) => POOL_MARGIN + i * (ROW_H + LANE_GAP);
+
+    const nodePos = {};
+    const cellStack = {};
+    for (const n of nodes) {
+        const lane = lanes.length > 0 ? (laneOf[n.id] !== undefined ? laneOf[n.id] : 0) : 0;
+        const r = ranks[n.id];
+        const [w, h] = nodeSize(n.type);
+        const key = lane + ':' + r;
+        const idx = cellStack[key] || 0;
+        cellStack[key] = idx + 1;
+        const stackCount = (cell[key] || []).length;
+
+        const x = POOL_MARGIN + LANE_HEADER_W + r * COL_STEP + Math.round((COL_STEP - w) / 2);
+        const y = laneTop(lane) + Math.round((ROW_H - stackCount * NODE_STEP) / 2)
+            + idx * NODE_STEP + Math.round((NODE_STEP - h) / 2);
+        nodePos[n.id] = { x, y, w, h, lane, rank: r };
+    }
+
+    return { nodePos, totalW, totalH, laneCount, laneBounds: (i) => {
+        return { x: POOL_MARGIN, y: laneTop(i), w: contentW, h: ROW_H };
+    }, route: routeEdgeH, isHorizontal: true, labelBelow: true };
+}
+
+function buildDiagramXml(model, ranks, orientation) {
+    const { process, collaboration, participant, lanes, nodes, edges } = model;
+    const L = orientation === 'landscape' ? layoutLandscape(model, ranks) : layoutPortrait(model, ranks);
+    const { nodePos, totalW, totalH, laneBounds, route, isHorizontal } = L;
     const planeElement = collaboration ? collaboration.id : process.id;
 
     let di = '';
@@ -223,15 +300,15 @@ function buildDiagramXml(model, ranks) {
     di += `    <bpmndi:BPMNPlane id="BPMNPlane_${escapeXml(planeElement)}" bpmnElement="${escapeXml(planeElement)}">\n`;
 
     if (participant && participant.id) {
-        di += `      <bpmndi:BPMNShape id="${escapeXml(participant.id)}_di" bpmnElement="${escapeXml(participant.id)}" isHorizontal="false">\n`;
+        di += `      <bpmndi:BPMNShape id="${escapeXml(participant.id)}_di" bpmnElement="${escapeXml(participant.id)}" isHorizontal="${isHorizontal}">\n`;
         di += `        <dc:Bounds x="0" y="0" width="${totalW}" height="${totalH}" />\n`;
         di += `      </bpmndi:BPMNShape>\n`;
     }
 
     lanes.forEach((lane, i) => {
-        const laneH = LANE_HEADER + contentHeight;
-        di += `      <bpmndi:BPMNShape id="${escapeXml(lane.id)}_di" bpmnElement="${escapeXml(lane.id)}" isHorizontal="false">\n`;
-        di += `        <dc:Bounds x="${POOL_MARGIN + i * COL_W}" y="${POOL_MARGIN}" width="${COL_W}" height="${laneH}" />\n`;
+        const b = laneBounds(i);
+        di += `      <bpmndi:BPMNShape id="${escapeXml(lane.id)}_di" bpmnElement="${escapeXml(lane.id)}" isHorizontal="${isHorizontal}">\n`;
+        di += `        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />\n`;
         di += `      </bpmndi:BPMNShape>\n`;
     });
 
@@ -241,8 +318,14 @@ function buildDiagramXml(model, ranks) {
         di += `        <dc:Bounds x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />\n`;
         if (isExternalLabel(n.type) && n.name) {
             const lw = Math.min(130, Math.max(40, n.name.length * 7 + 12));
-            const lx = p.x + p.w + 4;
-            const ly = Math.round(p.y + p.h / 2 - 7);
+            let lx, ly;
+            if (L.labelBelow) {
+                lx = p.x + Math.round((p.w - lw) / 2);
+                ly = p.y + p.h + 4;
+            } else {
+                lx = p.x + p.w + 4;
+                ly = Math.round(p.y + p.h / 2 - 7);
+            }
             di += `        <bpmndi:BPMNLabel><dc:Bounds x="${lx}" y="${ly}" width="${lw}" height="14" /></bpmndi:BPMNLabel>\n`;
         }
         di += `      </bpmndi:BPMNShape>\n`;
@@ -252,7 +335,7 @@ function buildDiagramXml(model, ranks) {
         const src = nodePos[e.source];
         const tgt = nodePos[e.target];
         if (!src || !tgt) continue;
-        const wps = routeEdge(src, tgt);
+        const wps = route(src, tgt);
         di += `      <bpmndi:BPMNEdge id="${escapeXml(e.id)}_di" bpmnElement="${escapeXml(e.id)}">\n`;
         for (const [x, y] of wps) di += `        <di:waypoint x="${x}" y="${y}" />\n`;
         di += `      </bpmndi:BPMNEdge>\n`;
@@ -305,13 +388,13 @@ function addBiocNamespace(xml) {
     );
 }
 
-async function layoutBpmnXml(xml) {
+async function layoutBpmnXml(xml, { orientation = 'portrait' } = {}) {
     if (!xml) return null;
     const model = await parseBpmn(xml);
     const ids = new Set(model.nodes.map((n) => n.id));
     const ranks = computeRanks(ids, model.edges);
 
-    const diagram = buildDiagramXml(model, ranks);
+    const diagram = buildDiagramXml(model, ranks, orientation);
     const namespaced = diagram.replace(
         '<bpmndi:BPMNDiagram',
         '<bpmndi:BPMNDiagram xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI"'

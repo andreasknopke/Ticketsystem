@@ -500,7 +500,8 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     json: false
                 });
                 const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
-                bpmnXml = extracted ? await bpmn.layoutBpmnXml(extracted) : null;
+                const orientation = req.body.orientation === 'landscape' ? 'landscape' : 'portrait';
+                bpmnXml = extracted ? await bpmn.layoutBpmnXml(extracted, { orientation }) : null;
             } catch (err) {
                 bpmnError = err.message;
             }

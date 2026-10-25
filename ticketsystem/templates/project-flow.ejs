@@ -47,6 +47,10 @@
             border-radius: 8px;
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
         }
+        .a4-page--landscape {
+            height: min(70vh, 793px);
+            aspect-ratio: 297 / 210;
+        }
         .bpmn-canvas {
             position: absolute;
             inset: 0;
@@ -224,7 +228,7 @@
                                 <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
                             </div>
                         </div>
-                        <div class="a4-page">
+                        <div class="a4-page <%= (latestSummary.bpmn_xml || '').includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
                             <div id="bpmnCanvas" class="bpmn-canvas"></div>
                         </div>
                         <div id="bpmnLegend" class="mt-2 flex flex-wrap gap-3"></div>
@@ -249,6 +253,10 @@
                             <% } %>
                         </div>
                         <div class="flex flex-wrap items-center gap-2">
+                            <label class="flex items-center gap-1.5 text-xs text-gray-600">
+                                <input type="checkbox" id="summaryLandscape" class="rounded border-gray-300">
+                                Querformat
+                            </label>
                             <button type="button" class="btn-secondary text-sm" onclick="previewSummary()">Vorschau</button>
                             <button type="button" id="summaryButton" class="btn-primary text-sm"
                                 <%= aiStaff.length === 0 ? 'disabled' : '' %>
@@ -602,10 +610,14 @@
             button.disabled = true;
             button.textContent = 'Erstelle…';
             try {
+                const landscape = document.getElementById('summaryLandscape');
                 const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
-                    body: JSON.stringify({ staff_id: summaryStaffId() })
+                    body: JSON.stringify({
+                        staff_id: summaryStaffId(),
+                        orientation: landscape && landscape.checked ? 'landscape' : 'portrait'
+                    })
                 });
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
@@ -694,9 +706,11 @@
                     viewer.saveSVG().then(({ svg }) => {
                         const win = window.open('', '_blank');
                         if (!win) { alert('Pop-up blockiert — bitte erlauben.'); return; }
+                        const pageSize = BPMN_XML.includes('isHorizontal="true"')
+                            ? 'A4 landscape' : 'A4 portrait';
                         win.document.write(
                             '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flow-Diagramm</title>' +
-                            '<style>@page { size: A4 portrait; margin: 10mm; }' +
+                            '<style>@page { size: ' + pageSize + '; margin: 10mm; }' +
                             'html, body { margin: 0; padding: 0; }' +
                             'svg { width: 100%; height: 100%; }</style></head><body>' +
                             svg + '</body></html>'
