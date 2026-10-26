@@ -165,6 +165,95 @@ Programm: CuraFlow</bpmn:documentation>
     const lPool = boundsOf(landscape, 'Participant_1');
     check(lPool && lPool.w > lPool.h, 'Landscape: Diagramm ist breiter als hoch (A4-Querformat)');
 
+    // Zyklen (Korrektur-Schleifen) duerfen das Ranking nicht kollabieren lassen:
+    // alle Knoten im Zyklus behielten sonst Rang 0 und stapelten sich in der
+    // ersten Spalte (Diagramm wirkte halb vertikal).
+    const loop = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D" targetNamespace="http://x">
+  <bpmn:collaboration id="C"><bpmn:participant id="P1" name="Praxis" processRef="Proc" /></bpmn:collaboration>
+  <bpmn:process id="Proc" isExecutable="false">
+    <bpmn:laneSet id="LS">
+      <bpmn:lane id="L1" name="Steuerung">
+        <bpmn:flowNodeRef>S</bpmn:flowNodeRef><bpmn:flowNodeRef>T1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>T2</bpmn:flowNodeRef><bpmn:flowNodeRef>G1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>T3</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="L2" name="Speaking">
+        <bpmn:flowNodeRef>T4</bpmn:flowNodeRef><bpmn:flowNodeRef>E</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="S" name="Diktat erstellt" />
+    <bpmn:userTask id="T1" name="Brief durchlesen" />
+    <bpmn:userTask id="T2" name="Diktat aufnehmen" />
+    <bpmn:exclusiveGateway id="G1" name="Korrektur noetig?" />
+    <bpmn:userTask id="T3" name="Brief absenden" />
+    <bpmn:userTask id="T4" name="Audiodatei transkribieren" />
+    <bpmn:endEvent id="E" name="Fertig" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T1" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T1" targetRef="T2" />
+    <bpmn:sequenceFlow id="F3" sourceRef="T2" targetRef="G1" />
+    <bpmn:sequenceFlow id="F4" sourceRef="G1" targetRef="T1" name="Korrektur noetig" />
+    <bpmn:sequenceFlow id="F5" sourceRef="G1" targetRef="T3" name="ok" />
+    <bpmn:sequenceFlow id="F6" sourceRef="T3" targetRef="T4" />
+    <bpmn:sequenceFlow id="F7" sourceRef="T4" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+    const outLoop = await bpmn.layoutBpmnXml(loop, { orientation: 'landscape' });
+    const lb = (id) => boundsOf(outLoop, id);
+    check(lb('T1') && lb('T2') && lb('T1').x < lb('T2').x, 'Zyklus: Ablauf laeuft trotz Schleife nach rechts');
+    check(lb('T2') && lb('G1') && lb('T2').x < lb('G1').x, 'Zyklus: Gateway liegt rechts der Aufgabe');
+    check(lb('G1') && lb('T3') && lb('G1').x < lb('T3').x, 'Zyklus: Ausstieg aus der Schleife laeuft weiter nach rechts');
+    check(new Set(['T1', 'T2', 'G1', 'T3'].map((id) => lb(id).x)).size >= 3,
+        'Zyklus: Knoten verteilen sich auf mehrere Spalten');
+
+    // Stapel im selben Rang/Lane bleiben in der Lane-Zeile (kein Ueberlauf in
+    // die Nachbarzeile oder aus dem Pool heraus).
+    const parallel = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D" targetNamespace="http://x">
+  <bpmn:collaboration id="C"><bpmn:participant id="P1" name="Praxis" processRef="Proc" /></bpmn:collaboration>
+  <bpmn:process id="Proc" isExecutable="false">
+    <bpmn:laneSet id="LS">
+      <bpmn:lane id="L1" name="Arzt">
+        <bpmn:flowNodeRef>S</bpmn:flowNodeRef><bpmn:flowNodeRef>G</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>T1</bpmn:flowNodeRef><bpmn:flowNodeRef>T2</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>T3</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="L2" name="Pflege">
+        <bpmn:flowNodeRef>T4</bpmn:flowNodeRef><bpmn:flowNodeRef>E</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="S" name="Start" />
+    <bpmn:exclusiveGateway id="G" name="parallel?" />
+    <bpmn:userTask id="T1" name="A" />
+    <bpmn:userTask id="T2" name="B" />
+    <bpmn:userTask id="T3" name="C" />
+    <bpmn:userTask id="T4" name="D" />
+    <bpmn:endEvent id="E" name="Ende" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="G" />
+    <bpmn:sequenceFlow id="F2" sourceRef="G" targetRef="T1" />
+    <bpmn:sequenceFlow id="F3" sourceRef="G" targetRef="T2" />
+    <bpmn:sequenceFlow id="F4" sourceRef="T1" targetRef="T3" />
+    <bpmn:sequenceFlow id="F5" sourceRef="T2" targetRef="T3" />
+    <bpmn:sequenceFlow id="F6" sourceRef="T3" targetRef="T4" />
+    <bpmn:sequenceFlow id="F7" sourceRef="T4" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+    const outPar = await bpmn.layoutBpmnXml(parallel, { orientation: 'landscape' });
+    const pb = (id) => boundsOf(outPar, id);
+    const lane1 = pb('L1');
+    const t1 = pb('T1');
+    const t2 = pb('T2');
+    check(t1 && t2 && t1.x === t2.x && t1.y !== t2.y, 'Stack: parallele Aufgaben liegen untereinander');
+    check(t1 && t2 && Math.abs(t1.y - t2.y) >= t1.h, 'Stack: gestapelte Aufgaben ueberlappen nicht');
+    check(t1 && lane1 && t1.y >= lane1.y && t1.y + t1.h <= lane1.y + lane1.h
+        && t2.y >= lane1.y && t2.y + t2.h <= lane1.y + lane1.h,
+        'Stack: Lane-Zeile waechst mit dem Stapel (keine Ueberlaeufe)');
+    const poolPar = pb('P1');
+    const shapes = [...outPar.matchAll(/bpmnElement="([^"]+)"[^>]*>\s*<dc:Bounds x="(-?\d+)" y="(-?\d+)" width="(\d+)" height="(\d+)"/gs)]
+        .map((m) => ({ id: m[1], x: +m[2], y: +m[3], w: +m[4], h: +m[5] }));
+    check(shapes.every((s) => s.y >= 0 && s.y + s.h <= poolPar.h && s.x >= 0 && s.x + s.w <= poolPar.w),
+        'Stack: alle Shapes bleiben innerhalb des Pools');
+
     console.log(`\n  ${passed} bestanden${failures ? `, ${failures} fehlgeschlagen` : ''}\n`);
     process.exit(failures > 0 ? 1 : 0);
 }

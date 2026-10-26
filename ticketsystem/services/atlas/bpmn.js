@@ -102,6 +102,44 @@ function computeRanks(ids, edges) {
         }
     });
 
+    // Zyklen (z.B. Korrektur-Schleifen) vor dem Ranking entfernen: bei Kahn
+    // erreichen Knoten im Zyklus nie Eingangsgrad 0, behalten Rang 0 und
+    // stapeln sich alle in der ersten Spalte. DFS-Rueckkanten kappen macht den
+    // Graphen azyklisch, ohne die Ablaufrichtung zu veraendern.
+    const state = {};
+    ids.forEach((id) => { state[id] = 0; }); // 0 = offen, 1 = auf dem Stack, 2 = fertig
+    const dropEdge = (s, t) => {
+        outgoing[s] = outgoing[s].filter((x) => x !== t);
+        incoming[t] = incoming[t].filter((x) => x !== s);
+    };
+    const visit = (start) => {
+        state[start] = 1;
+        const stack = [[start, 0]];
+        while (stack.length > 0) {
+            const frame = stack[stack.length - 1];
+            const id = frame[0];
+            if (frame[1] >= outgoing[id].length) {
+                state[id] = 2;
+                stack.pop();
+                continue;
+            }
+            const target = outgoing[id][frame[1]];
+            if (state[target] === 1) {
+                // Rueckkante -> ignorieren (nicht hochzaehlen, Array schrumpft)
+                dropEdge(id, target);
+                continue;
+            }
+            frame[1] += 1;
+            if (state[target] === 0) {
+                state[target] = 1;
+                stack.push([target, 0]);
+            }
+        }
+    };
+    for (const id of ids) {
+        if (state[id] === 0) visit(id);
+    }
+
     const rank = {};
     const indeg = {};
     ids.forEach((id) => { rank[id] = 0; indeg[id] = incoming[id].length; });
@@ -261,11 +299,29 @@ function layoutLandscape(model, ranks) {
     }
 
     const maxRank = nodes.reduce((m, n) => Math.max(m, ranks[n.id]), 0);
+
+    // Mehrere Nodes im selben Rang einer Lane werden untereinander gestapelt.
+    // Die Zeilenhoehe muss diesen Stapel aufnehmen, sonst ragen Knoten in die
+    // Nachbarzeile oder aus dem Pool heraus.
+    const laneHeights = [];
+    for (let l = 0; l < laneCount; l += 1) {
+        let maxStack = 1;
+        for (let r = 0; r <= maxRank; r += 1) {
+            maxStack = Math.max(maxStack, (cell[l + ':' + r] || []).length);
+        }
+        laneHeights.push(Math.max(ROW_H, maxStack * NODE_STEP + ROW_PAD));
+    }
+
+    const laneTops = [];
+    let cursor = POOL_MARGIN;
+    for (let l = 0; l < laneCount; l += 1) {
+        laneTops.push(cursor);
+        cursor += laneHeights[l] + LANE_GAP;
+    }
+
     const contentW = LANE_HEADER_W + (maxRank + 1) * COL_STEP + ROW_PAD;
     const totalW = POOL_MARGIN * 2 + contentW;
-    const totalH = POOL_MARGIN * 2 + laneCount * ROW_H + (laneCount - 1) * LANE_GAP;
-
-    const laneTop = (i) => POOL_MARGIN + i * (ROW_H + LANE_GAP);
+    const totalH = cursor - LANE_GAP + POOL_MARGIN;
 
     const nodePos = {};
     const cellStack = {};
@@ -279,13 +335,13 @@ function layoutLandscape(model, ranks) {
         const stackCount = (cell[key] || []).length;
 
         const x = POOL_MARGIN + LANE_HEADER_W + r * COL_STEP + Math.round((COL_STEP - w) / 2);
-        const y = laneTop(lane) + Math.round((ROW_H - stackCount * NODE_STEP) / 2)
+        const yPos = laneTops[lane] + Math.round((laneHeights[lane] - stackCount * NODE_STEP) / 2)
             + idx * NODE_STEP + Math.round((NODE_STEP - h) / 2);
-        nodePos[n.id] = { x, y, w, h, lane, rank: r };
+        nodePos[n.id] = { x, y: yPos, w, h, lane, rank: r };
     }
 
     return { nodePos, totalW, totalH, laneCount, laneBounds: (i) => {
-        return { x: POOL_MARGIN, y: laneTop(i), w: contentW, h: ROW_H };
+        return { x: POOL_MARGIN, y: laneTops[i], w: contentW, h: laneHeights[i] };
     }, route: routeEdgeH, isHorizontal: true, labelBelow: true };
 }
 
