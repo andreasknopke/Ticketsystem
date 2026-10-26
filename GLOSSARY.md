@@ -47,8 +47,9 @@ _Avoid_: Notizen, Protokoll, Aufzeichnung, Mitschrift
 
 **Workflow**:
 Die aktuelle (Ist-)Arbeitsweise einer Abteilung für einen Prozess, vor der
-Einführung. Zielzustand wird nur in Empfehlungen und Konfigurationen beschrieben,
-nie als zweiter Soll-Workflow.
+Einführung. Ein Projekt beschreibt **mehrere** Workflows, jeder mit eigenem
+Namen (z. B. „Entlassungsbrief“, „Wochenplan erstellen“). Zielzustand wird nur
+in Empfehlungen und Konfigurationen beschrieben, nie als zweiter Soll-Workflow.
 _Avoid_: Prozess, Ablauf, Current State
 
 **Problem**:

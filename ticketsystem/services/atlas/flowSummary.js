@@ -42,6 +42,8 @@ Wer ist betroffen, welche Software wird eingefuehrt, wie ist der Stand.
 
 ## Heutiger Ablauf
 Der Ist-Workflow, soweit er aus den Angaben hervorgeht. In Schritten.
+Sind mehrere benannte Workflows erfasst, beschreibe jeden unter einer eigenen
+Unterueberschrift (### Name des Workflows).
 
 ## Probleme im heutigen Ablauf
 Die erfassten Probleme, jeweils mit Auswirkung.
@@ -79,6 +81,7 @@ Regeln:
 - Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
 - Halte das Modell detailliert, aber kompakt: hoechstens 14 Aktivitaeten/Gateways. Wenn der Ablauf laenger ist, fasse eng zusammengehoerende Schritte zu einem Schritt zusammen.
 - Modelliere nur, was aus der Bestandsaufnahme belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
+- Sind mehrere benannte Workflows erfasst, modelliere den umfangreichsten davon (den mit den meisten Schritten). Die uebrigen bleiben unberuecksichtigt.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 
 function truncate(text, limit) {
@@ -216,7 +219,7 @@ function buildInput({ project, transcripts = [], attachments = [], entries = {} 
     };
 
     entrySection('Workflows (Ist-Zustand)', entries.workflows || [],
-        (item) => `- ${item.description || item.text || '(ohne Beschreibung)'}`);
+        (item) => `- ${item.name || '(ohne Namen)'}: ${item.description || item.text || '(ohne Beschreibung)'}`);
     entrySection('Probleme im heutigen Ablauf', entries.problems || [],
         (item) => `- ${item.title}${item.description ? ': ' + item.description : ''}`);
     entrySection('Adoptionsrisiken', entries.adoptionRisks || [],

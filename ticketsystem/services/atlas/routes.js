@@ -22,14 +22,23 @@ function toId(value) {
     return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+// Ein Projekt kann mehrere Workflows beschreiben. Der Name ist optional; fehlt
+// er, dient die erste Zeile der Beschreibung als Ueberschrift.
+function deriveWorkflowName(text) {
+    const firstLine = String(text || '').split(/\r?\n/)[0].trim();
+    return firstLine ? firstLine.slice(0, 80) : null;
+}
+
 const EXTRACTION_KINDS = {
     workflows: {
         table: 'workflows',
         label: 'Beschreibung',
         textField: 'description',
-        columns: ['project_id', 'meeting_id', 'department_id', 'description'],
-        buildValues: (ctx, text, description) =>
-            [ctx.projectId, ctx.meetingId, ctx.departmentId, text]
+        hasName: true,
+        columns: ['project_id', 'meeting_id', 'department_id', 'name', 'description'],
+        buildValues: (ctx, text, description, workflowId, body) =>
+            [ctx.projectId, ctx.meetingId, ctx.departmentId,
+                normalizeText(body.name) || deriveWorkflowName(text), text]
     },
     problems: {
         table: 'problems',
@@ -202,7 +211,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
         const description = normalizeText(body.description) || '';
 
         const insert = (workflowId) => {
-            const values = config.buildValues(ctx, text, description, workflowId);
+            const values = config.buildValues(ctx, text, description, workflowId, body);
             const placeholders = values.map(() => '?').join(', ');
             db.run(`INSERT INTO ${config.table} (${config.columns.join(', ')}) VALUES (${placeholders})`,
                 values, function (insertErr) {
@@ -294,11 +303,14 @@ module.exports = function registerAtlasRoutes(app, deps) {
         const workflowId = hasWorkflowField
             ? (req.body.workflow_id === null ? null : toId(req.body.workflow_id))
             : undefined;
+        // Nur Workflows tragen einen eigenen Namen.
+        const hasNameField = Boolean(config.hasName) && req.body.name !== undefined;
+        const name = hasNameField ? normalizeText(req.body.name) : undefined;
 
         if (hasTextField && !text) {
             return res.status(400).json({ error: `${config.label} ist erforderlich.` });
         }
-        if (!hasTextField && !hasWorkflowField) {
+        if (!hasTextField && !hasWorkflowField && !hasNameField) {
             return res.status(400).json({ error: `${config.label} ist erforderlich.` });
         }
 
@@ -325,6 +337,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     assignments.push('workflow_id = ?');
                     params.push(workflowId);
                 }
+                if (hasNameField) {
+                    assignments.push('name = ?');
+                    params.push(name);
+                }
                 params.push(row.id);
 
                 db.run(`UPDATE ${config.table} SET ${assignments.join(', ')} WHERE id = ?`, params, (updateErr) => {
@@ -332,6 +348,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     const payload = { id: row.id };
                     if (hasTextField) payload[config.textField] = text;
                     if (hasWorkflowField) payload.workflow_id = workflowId;
+                    if (hasNameField) payload.name = name;
                     res.json(payload);
                 });
             };

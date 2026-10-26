@@ -318,9 +318,13 @@ async function main() {
     resp = await request('GET', '/api/meetings/' + meetingId + '/transcript', null, jar);
     assert(resp.status === 200 && resp.body.transcript.includes('Umlaute äöü'), 'GET Transkript (Roundtrip)');
 
-    resp = await request('POST', '/api/meetings/' + meetingId + '/workflows', { description:'Dienstplan per Excel' }, jar);
+    resp = await request('POST', '/api/meetings/' + meetingId + '/workflows', { name:'Dienstplan', description:'Dienstplan per Excel' }, jar);
     assert(resp.status === 201 && resp.body.department_id === testDepartmentId, 'POST Workflow (Abteilung abgeleitet)');
     const workflowId = resp.body.id;
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/workflows', null, jar);
+    const namedWorkflow = (resp.body || []).find(w => w.id === workflowId);
+    assert(namedWorkflow && namedWorkflow.name === 'Dienstplan', 'Workflow-Name wird gespeichert');
 
     resp = await request('POST', '/api/meetings/' + meetingId + '/problems', { title:'Excel bricht bei >50 Personen', workflow_id: workflowId }, jar);
     assert(resp.status === 201 && resp.body.department_id === testDepartmentId, 'POST Problem (Abteilung abgeleitet)');
@@ -354,11 +358,24 @@ async function main() {
     assert(resp.status === 200, 'GET /project/:id/flow (200 OK)');
 
     resp = await request('POST', '/api/projects/' + testProjId + '/workflows', {
-        description:'Dienstplan als Excel-Liste'
+        name:'Wochenplan erstellen', description:'Dienstplan als Excel-Liste'
     }, jar);
     assert(resp.status === 201 && resp.body.project_id === testProjId, 'Workflow direkt im Projekt');
     assert(resp.body.meeting_id === null, 'Direkter Workflow hat keinen Termin');
     const directWorkflowId = resp.body.id;
+
+    // Ohne Namen dient die erste Zeile der Beschreibung als Ueberschrift.
+    resp = await request('POST', '/api/projects/' + testProjId + '/workflows', {
+        description:'Entlassungsbrief\nArzt diktiert, Pflege prueft'
+    }, jar);
+    assert(resp.status === 201, 'Workflow ohne Namen wird angelegt');
+    const unnamedWorkflowId = resp.body.id;
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/workflows', null, jar);
+    const workflowsNow = resp.body || [];
+    const derived = workflowsNow.find(w => w.id === unnamedWorkflowId);
+    assert(derived && derived.name === 'Entlassungsbrief', 'Name wird aus der ersten Zeile abgeleitet');
+    assert(workflowsNow.some(w => w.id === directWorkflowId), 'mehrere Workflows je Projekt moeglich');
 
     resp = await request('POST', '/api/projects/' + testProjId + '/problems', {
         title:'Excel bricht bei vielen Zeilen', workflow_id: directWorkflowId
@@ -392,9 +409,14 @@ async function main() {
 
     // Bearbeiten (PATCH) je Wissensart
     resp = await request('PATCH', '/api/workflows/' + directWorkflowId, {
-        description:'Dienstplan als Excel-Liste, Stand 2026'
+        name:'Wochenplan', description:'Dienstplan als Excel-Liste, Stand 2026'
     }, jar);
     assert(resp.status === 200 && resp.body.description.includes('Stand 2026'), 'Workflow bearbeiten');
+    assert(resp.body.name === 'Wochenplan', 'Workflow-Name bearbeiten');
+
+    // Name allein laesst sich ebenfalls aendern (Teil-Update).
+    resp = await request('PATCH', '/api/workflows/' + directWorkflowId, { name:'Wochenplan neu' }, jar);
+    assert(resp.status === 200 && resp.body.name === 'Wochenplan neu', 'Workflow-Name allein bearbeiten');
 
     resp = await request('PATCH', '/api/problems/' + directProblemId, {
         title:'Excel bricht bei vielen Zeilen', description:'ab ca. 50 Personen'

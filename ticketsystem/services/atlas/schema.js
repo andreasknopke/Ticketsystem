@@ -61,6 +61,7 @@ const WORKFLOWS_DDL = `CREATE TABLE workflows (
     project_id INTEGER,
     meeting_id INTEGER,
     department_id INTEGER,
+    name TEXT,
     description TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -188,7 +189,7 @@ async function migrate(db) {
     await makeMeetingOptional(db, 'adoption_risks', RISKS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'title', 'description', 'created_at']);
     await makeMeetingOptional(db, 'workflows', WORKFLOWS_DDL,
-        ['id', 'project_id', 'meeting_id', 'department_id', 'description', 'created_at']);
+        ['id', 'project_id', 'meeting_id', 'department_id', 'name', 'description', 'created_at']);
 
     await run(db, `${WORKFLOWS_DDL.replace('CREATE TABLE workflows', 'CREATE TABLE IF NOT EXISTS workflows')}`);
     await run(db, `${PROBLEMS_DDL.replace('CREATE TABLE problems', 'CREATE TABLE IF NOT EXISTS problems')}`);
@@ -228,6 +229,22 @@ async function migrate(db) {
     // BPMN-Diagramm zur KI-Zusammenfassung (wird erst ab der Flow-Diagramm-Funktion befuellt).
     await addColumnIfMissing(db, 'project_flow_summaries', 'bpmn_xml',
         'ALTER TABLE project_flow_summaries ADD COLUMN bpmn_xml TEXT');
+    // Ein Projekt kann mehrere Workflows beschreiben (z. B. "Entlassungsbrief",
+    // "Wochenplan erstellen"). Der Name ist die Ueberschrift der einklappbaren
+    // Karte; die Beschreibung bleibt der eigentliche Inhalt.
+    await addColumnIfMissing(db, 'workflows', 'name',
+        'ALTER TABLE workflows ADD COLUMN name TEXT');
+
+    // 5b. Bestehenden Workflows einen Namen aus der ersten Zeile geben, damit die
+    // Liste nicht mit leeren Ueberschriften startet. Der Name bleibt editierbar.
+    const unnamed = await all(db, `SELECT id, description FROM workflows
+        WHERE name IS NULL OR trim(name) = ''`);
+    for (const row of unnamed) {
+        const firstLine = String(row.description || '').split(/\r?\n/)[0].trim();
+        if (!firstLine) continue;
+        await run(db, 'UPDATE workflows SET name = ? WHERE id = ?',
+            [firstLine.slice(0, 80), row.id]);
+    }
 
     // 6. Bestandsdaten (CuraFlow, Schreibdienst, ...) der Default-Abteilung zuordnen.
     await run(db, `UPDATE projects

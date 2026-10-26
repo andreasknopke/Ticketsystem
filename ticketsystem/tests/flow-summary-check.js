@@ -42,7 +42,10 @@ built = flowSummary.buildInput({
         { filename: 'fehlt.txt', original_name: 'Fehlt.txt', mimetype: 'text/plain' }
     ],
     entries: {
-        workflows: [{ description: 'Excel-Liste', meeting_title: 'Kickoff' }],
+        workflows: [
+            { name: 'Entlassungsbrief', description: 'Arzt diktiert, Pflege prueft', meeting_title: 'Kickoff' },
+            { name: 'Wochenplan erstellen', description: 'Dienstplan als Excel-Liste', meeting_title: 'Kickoff' }
+        ],
         problems: [{ title: 'Formel bricht', description: 'ab 50 Zeilen', meeting_title: null }],
         adoptionRisks: [{ title: 'Keine Zeit', meeting_title: 'Kickoff' }]
     }
@@ -58,7 +61,9 @@ check(built.stats.unreadableFiles === 2, 'zaehlt zwei nicht lesbare Dateien');
 check(built.text.includes('(aus Termin "Kickoff")'), 'Herkunft aus Termin markiert');
 check(built.text.includes('(direkt erfasst)'), 'Herkunft direkt erfasst markiert');
 check(built.text.includes('ab 50 Zeilen'), 'Problembeschreibung enthalten');
-check(built.stats.workflows === 1 && built.stats.problems === 1 && built.stats.adoptionRisks === 1,
+check(built.text.includes('Entlassungsbrief') && built.text.includes('Wochenplan erstellen'),
+    'mehrere Workflows werden mit Namen gelistet');
+check(built.stats.workflows === 2 && built.stats.problems === 1 && built.stats.adoptionRisks === 1,
     'zaehlt alle Wissensarten');
 
 // --- Kuerzung respektiert das Gesamtbudget ---

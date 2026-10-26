@@ -247,14 +247,21 @@ Eintrag gehoert immer zu einem Projekt, kann aber ohne Termin erfasst werden.
 Siehe [ADR-0004](./adr/0004-wissen-ohne-termin.md). Die Tabellen tragen deshalb
 zusaetzlich `project_id`; `department_id` wird daraus abgeleitet.
 
+**Abweichung von Atlas:** Ein Projekt beschreibt beliebig viele **benannte**
+Workflows (z. B. „Entlassungsbrief“, „Wochenplan erstellen“), nicht genau einen.
+`workflows.name` ist die Ueberschrift der einklappbaren Karte; fehlt er, wird die
+erste Zeile der Beschreibung uebernommen. Bestehende Zeilen bekommen den Namen
+per Migration nachgezogen.
+
 ## Flow Analysis
 
 `/project/:id/flow` ist der Ort der Bestandsaufnahme. Drei Abschnitte:
 
 | Abschnitt | Inhalt | Stand |
 |---|---|---|
-| Input | Transkripte aus Terminen, hochgeladene Dokumente, Workflows/Probleme/Risiken (mit Herkunft), direkte Erfassung | umgesetzt |
-| Input-Visualisierung | LLM zeichnet den bestehenden Workflow und markiert die Probleme | Platzhalter || Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
+| Input | Workflows/Probleme/Risiken (mit Herkunft), hochgeladene Dokumente, direkte Erfassung | umgesetzt |
+| Input-Visualisierung | BPMN-Diagramm des Ist-Zustands aus der KI-Zusammenfassung (Hoch-/Querformat), bearbeitbar und druckbar | umgesetzt |
+| Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
 
 Dateien im Flow-Reiter sind `project_attachments` mit `phase = 'input'`
 (Spalte vorbereitet fuer `'output'`). Wissenseintraege koennen aus einem Termin

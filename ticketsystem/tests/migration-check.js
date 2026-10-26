@@ -76,7 +76,7 @@ async function createLegacyDatabase(db) {
     await run(db, 'INSERT INTO departments (hospital_id, name) VALUES (1, ?)', ['Allgemein']);
     await run(db, 'INSERT INTO projects (name, department_id) VALUES (?, ?)', ['Alt', 1]);
     await run(db, 'INSERT INTO key_user_meetings (project_id, title, meeting_date) VALUES (1, ?, ?)', ['Termin A', '2026-01-01']);
-    await run(db, 'INSERT INTO workflows (meeting_id, department_id, description) VALUES (1, 1, ?)', ['Alter Workflow']);
+    await run(db, 'INSERT INTO workflows (meeting_id, department_id, description) VALUES (1, 1, ?)', ['Alter Workflow\nZweite Zeile der Beschreibung']);
     await run(db, 'INSERT INTO problems (meeting_id, department_id, workflow_id, title) VALUES (1, 1, 1, ?)', ['Altes Problem']);
     await run(db, 'INSERT INTO adoption_risks (meeting_id, department_id, title) VALUES (1, 1, ?)', ['Altes Risiko']);
 }
@@ -114,6 +114,16 @@ async function main() {
 
         check((await all(db, 'PRAGMA foreign_keys'))[0].foreign_keys === 1, 'foreign_keys wieder aktiv');
         check((await all(db, 'PRAGMA legacy_alter_table'))[0].legacy_alter_table === 0, 'legacy_alter_table zurueckgesetzt');
+
+        // Mehrere Workflows je Projekt: Name wird nachgezogen, damit die Liste
+        // nicht mit leeren Ueberschriften startet.
+        const wfCols = await all(db, 'PRAGMA table_info(workflows)');
+        check(wfCols.some((c) => c.name === 'name'), 'workflows: name existiert');
+        const wfRows = await all(db, 'SELECT name, description FROM workflows');
+        check(wfRows[0] && wfRows[0].name === 'Alter Workflow',
+            'workflows: Name aus der ersten Zeile nachgetragen');
+        check(wfRows[0] && wfRows[0].description.includes('Zweite Zeile'),
+            'workflows: Beschreibung bleibt vollstaendig');
 
         await run(db, 'INSERT INTO problems (project_id, meeting_id, department_id, title) VALUES (1, NULL, 1, ?)', ['Direkt']);
         check((await all(db, 'SELECT COUNT(*) AS c FROM problems'))[0].c === 2, 'Eintrag ohne Termin speicherbar');
