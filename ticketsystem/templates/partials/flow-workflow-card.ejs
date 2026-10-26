@@ -1,0 +1,324 @@
+<%
+/*
+ * Eine Workflow-Karte im Flow-Reiter.
+ *
+ * Erwartet `group` (workflow + zugehoerige Eintraege), `canManage`, `aiStaff`
+ * und `hasWorkflows`. Alles, was zu einem Workflow gehoert, steht zusammen in
+ * dieser einklappbaren Karte: Beschreibung, Probleme, Adoptionsrisiken,
+ * Dokumente, Input-Visualisierung und Output.
+ */
+const groupWorkflowId = group.workflow ? group.workflow.id : '';
+const groupCanCreate = Boolean(group.workflow) || !hasWorkflows;
+const latestSummary = group.summaries[0] || null;
+const originLabel = (item) => item.meeting_title
+    ? `aus: ${item.meeting_title}`
+    : 'direkt erfasst';
+%>
+<details class="card mb-4" data-flow-group="<%= group.key %>" data-workflow-id="<%= groupWorkflowId %>" <%= group.isFirst ? 'open' : '' %>>
+    <summary class="px-4 py-3 cursor-pointer">
+        <span class="text-base font-semibold text-gray-900"><%= group.title %></span>
+        <span class="ml-2 text-xs text-gray-500">
+            <%= group.problems.length %> Probleme ·
+            <%= group.adoptionRisks.length %> Adoptionsrisiken ·
+            <%= group.inputFiles.length %> Dokumente<% if (latestSummary) { %> · Zusammenfassung<% } %>
+        </span>
+    </summary>
+
+    <div class="border-t border-gray-100 px-4 py-4 space-y-3">
+        <% if (!group.workflow) { %>
+        <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <% if (hasWorkflows) { %>
+            Diese Einträge sind noch keinem Workflow zugeordnet. Bearbeite sie, um sie einem Workflow zuzuordnen.
+            <% } else { %>
+            Noch kein Workflow angelegt. Die Einträge liegen vorerst ohne Zuordnung.
+            <% } %>
+        </p>
+        <% } %>
+
+        <% if (group.workflow) { %>
+        <!-- ===== Workflow-Beschreibung ===== -->
+        <details class="rounded-lg border border-gray-200" open>
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">Workflow-Beschreibung</summary>
+            <div class="border-t border-gray-100 px-3 py-2">
+                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= group.workflow.text %></p>
+                <p class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                    <span><%= originLabel(group.workflow) %></span>
+                    <% if (canManage) { %>
+                    <button type="button" class="text-primary-600 hover:text-primary-800"
+                        data-entry='<%- JSON.stringify({ kind: 'workflows', id: group.workflow.id, name: group.workflow.name || '', text: group.workflow.text || '', description: '', meeting: group.workflow.meeting_title || '' }).replace(/'/g, "&#39;") %>'
+                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
+                    <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('workflows', <%= group.workflow.id %>)">Workflow entfernen</button>
+                    <% } %>
+                </p>
+            </div>
+        </details>
+        <% } %>
+
+        <!-- ===== Probleme ===== -->
+        <details class="rounded-lg border border-gray-200" open>
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Probleme <span class="ml-1 text-xs font-normal text-gray-500">(<%= group.problems.length %>)</span>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-2">
+                <% if (group.problems.length === 0) { %>
+                <p class="text-sm text-gray-500">Noch nichts erfasst.</p>
+                <% } else { %>
+                <ul class="space-y-2">
+                    <% group.problems.forEach(item => { %>
+                    <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                        <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
+                        <% if (item.description) { %>
+                        <p class="mt-1 whitespace-pre-wrap break-words text-xs text-gray-600"><%= item.description %></p>
+                        <% } %>
+                        <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                            <span><%= originLabel(item) %></span>
+                            <% if (canManage) { %>
+                            <button type="button" class="text-primary-600 hover:text-primary-800"
+                                data-entry='<%- JSON.stringify({ kind: 'problems', id: item.id, text: item.text || '', description: item.description || '', workflow_id: item.workflow_id, meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
+                                onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
+                            <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('problems', <%= item.id %>)">entfernen</button>
+                            <% } %>
+                        </p>
+                    </li>
+                    <% }); %>
+                </ul>
+                <% } %>
+
+                <% if (canManage) { %>
+                <form class="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3" onsubmit="addEntry(event, 'problems')">
+                    <input type="hidden" name="workflow_id" value="<%= groupWorkflowId %>">
+                    <textarea name="value" rows="2" required class="form-input text-sm" placeholder="Was funktioniert heute nicht?"></textarea>
+                    <button type="submit" class="btn-secondary text-sm">Hinzufügen</button>
+                </form>
+                <% } %>
+            </div>
+        </details>
+
+        <!-- ===== Adoptionsrisiken ===== -->
+        <details class="rounded-lg border border-gray-200" open>
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Adoptionsrisiken <span class="ml-1 text-xs font-normal text-gray-500">(<%= group.adoptionRisks.length %>)</span>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-2">
+                <% if (group.adoptionRisks.length === 0) { %>
+                <p class="text-sm text-gray-500">Noch nichts erfasst.</p>
+                <% } else { %>
+                <ul class="space-y-2">
+                    <% group.adoptionRisks.forEach(item => { %>
+                    <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                        <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
+                        <% if (item.description) { %>
+                        <p class="mt-1 whitespace-pre-wrap break-words text-xs text-gray-600"><%= item.description %></p>
+                        <% } %>
+                        <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                            <span><%= originLabel(item) %></span>
+                            <% if (canManage) { %>
+                            <button type="button" class="text-primary-600 hover:text-primary-800"
+                                data-entry='<%- JSON.stringify({ kind: 'adoptionRisks', id: item.id, text: item.text || '', description: item.description || '', workflow_id: item.workflow_id, meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
+                                onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
+                            <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('adoptionRisks', <%= item.id %>)">entfernen</button>
+                            <% } %>
+                        </p>
+                    </li>
+                    <% }); %>
+                </ul>
+                <% } %>
+
+                <% if (canManage) { %>
+                <form class="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3" onsubmit="addEntry(event, 'adoptionRisks')">
+                    <input type="hidden" name="workflow_id" value="<%= groupWorkflowId %>">
+                    <textarea name="value" rows="2" required class="form-input text-sm" placeholder="Warum könnte die Abteilung nicht wechseln wollen?"></textarea>
+                    <button type="submit" class="btn-secondary text-sm">Hinzufügen</button>
+                </form>
+                <% } %>
+            </div>
+        </details>
+
+        <!-- ===== Dokumente ===== -->
+        <details class="rounded-lg border border-gray-200">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Dokumente <span class="ml-1 text-xs font-normal text-gray-500">(<%= group.inputFiles.length %>)</span>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-2">
+                <% if (group.inputFiles.length === 0) { %>
+                <p class="text-sm text-gray-500">Noch keine Dokumente hochgeladen.</p>
+                <% } else { %>
+                <ul class="divide-y divide-gray-100">
+                    <% group.inputFiles.forEach(a => { %>
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2">
+                        <div class="min-w-0">
+                            <a href="/uploads/projects/<%= a.filename %>" target="_blank" rel="noopener"
+                               class="text-sm font-medium text-primary-600 hover:text-primary-800 break-all"><%= a.original_name %></a>
+                            <p class="text-xs text-gray-500">
+                                <%= (a.size / 1024).toFixed(0) %> KB · <%= a.created_by || 'unbekannt' %>
+                            </p>
+                        </div>
+                        <% if (canManage) { %>
+                        <button type="button" class="text-sm text-red-600 hover:text-red-900" onclick="deleteFile(<%= a.id %>)">entfernen</button>
+                        <% } %>
+                    </li>
+                    <% }); %>
+                </ul>
+                <% } %>
+
+                <% if (canManage) { %>
+                <form class="file-upload-form mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center">
+                    <input type="hidden" name="workflow_id" value="<%= groupWorkflowId %>">
+                    <input type="hidden" name="phase" value="input">
+                    <input type="file" name="attachments" multiple
+                           class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100">
+                    <button type="submit" class="btn-primary text-sm whitespace-nowrap">Hochladen</button>
+                </form>
+                <p class="mt-1 text-xs text-gray-400">PDF, Word, Excel, Bilder oder Text – max. 20 MB pro Datei, 10 Dateien pro Upload.</p>
+                <% } %>
+            </div>
+        </details>
+
+        <!-- ===== Input-Visualisierung ===== -->
+        <details class="rounded-lg border border-gray-200">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Input-Visualisierung
+                <% if (latestSummary && latestSummary.bpmn_xml) { %>
+                <span class="ml-1 text-xs font-normal text-gray-500">(Diagramm)</span>
+                <% } %>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-3">
+                <% if (!groupCanCreate && !latestSummary) { %>
+                <p class="text-sm text-gray-600">
+                    Die Visualisierung entsteht je Workflow. Ordne die Einträge zuerst einem Workflow zu.
+                </p>
+                <% } else { %>
+                <% if (latestSummary) { %>
+                <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+                    <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSummary.content %></p>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    <%= latestSummary.model || latestSummary.provider || 'unbekannt' %> ·
+                    <%= formatDateTime(latestSummary.created_at) %>
+                    <% if (latestSummary.input_chars) { %>· <%= latestSummary.input_chars %> Zeichen Eingabe<% } %>
+                    <% if (latestSummary.prompt_tokens) { %>· <%= latestSummary.prompt_tokens %> Prompt-Token<% } %>
+                    <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
+                </p>
+
+                <% if (latestSummary.bpmn_xml) { %>
+                <div class="mt-3 a4-page <%= latestSummary.bpmn_xml.includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
+                    <div class="bpmn-canvas" data-bpmn-canvas></div>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-3" data-bpmn-legend></div>
+                <div class="mt-2 flex flex-wrap items-center gap-3">
+                    <button type="button" data-bpmn-save class="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded px-2.5 py-1">Speichern</button>
+                    <button type="button" data-bpmn-print class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
+                    <a href="#" data-bpmn-download class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    Automatisch aus der Bestandsaufnahme dieses Workflows generiert.
+                </p>
+                <% } else { %>
+                <p class="mt-2 text-sm text-gray-600">Die letzte Zusammenfassung enthielt kein Diagramm.</p>
+                <% } %>
+                <% } else { %>
+                <p class="text-sm text-gray-600">
+                    Noch keine Visualisierung. Sie entsteht zusammen mit der Zusammenfassung aus den Eingaben dieses Workflows.
+                </p>
+                <% } %>
+
+                <% if (canManage && groupCanCreate) { %>
+                <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
+                    <div class="flex-1">
+                        <label for="summaryStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
+                        <select id="summaryStaff-<%= group.key %>" data-summary-staff class="form-select text-sm">
+                            <% aiStaff.forEach(bot => { %>
+                            <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
+                            <% }); %>
+                        </select>
+                        <% if (aiStaff.length === 0) { %>
+                        <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
+                        <% } %>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+                            <input type="checkbox" data-summary-landscape class="rounded border-gray-300">
+                            Querformat
+                        </label>
+                        <button type="button" class="btn-secondary text-sm" onclick="previewSummary('<%= group.key %>')">Vorschau</button>
+                        <button type="button" data-summary-create class="btn-primary text-sm"
+                            <%= aiStaff.length === 0 ? 'disabled' : '' %>
+                            onclick="createSummary('<%= group.key %>')">Zusammenfassung erstellen</button>
+                    </div>
+                </div>
+                <% if (latestSummary) { %>
+                <p class="mt-2 text-xs text-gray-400">
+                    Eine neue Zusammenfassung ersetzt die bisherige Anzeige; ältere Versionen bleiben gespeichert.
+                </p>
+                <% } %>
+                <% } %>
+
+                <% if (group.summaries.length > 1) { %>
+                <details class="mt-3">
+                    <summary class="cursor-pointer text-sm text-primary-700">Ältere Versionen (<%= group.summaries.length - 1 %>)</summary>
+                    <ul class="mt-2 divide-y divide-gray-100">
+                        <% group.summaries.slice(1).forEach(s => { %>
+                        <li class="py-2">
+                            <p class="text-xs text-gray-500">
+                                <%= formatDateTime(s.created_at) %> · <%= s.model || s.provider || 'unbekannt' %>
+                                · <%= s.input_chars || 0 %> Zeichen Eingabe
+                            </p>
+                            <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700"><%= s.content %></p>
+                        </li>
+                        <% }); %>
+                    </ul>
+                </details>
+                <% } %>
+                <% } %>
+            </div>
+        </details>
+
+        <!-- ===== Output ===== -->
+        <details class="rounded-lg border border-gray-200">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Output <span class="ml-1 text-xs font-normal text-gray-500">(Zielzustand)</span>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-3">
+                <% if (!groupCanCreate && group.outputFiles.length === 0) { %>
+                <p class="text-sm text-gray-600">Der Zielzustand wird je Workflow beschrieben.</p>
+                <% } else { %>
+                <p class="text-sm text-gray-600">
+                    Der Zielzustand: ein Workflow, der mit der neuen Software möglich ist — als Vorschlag aus den erfassten Problemen.
+                </p>
+                <p class="mt-1 text-xs text-gray-500">
+                    Screenshots und Beschreibungen der fertigen Integration können hier abgelegt werden. Die Ableitung per KI ist noch geplant.
+                </p>
+
+                <% if (group.outputFiles.length > 0) { %>
+                <ul class="mt-3 divide-y divide-gray-100 border-t border-gray-100 pt-2">
+                    <% group.outputFiles.forEach(a => { %>
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2">
+                        <div class="min-w-0">
+                            <a href="/uploads/projects/<%= a.filename %>" target="_blank" rel="noopener"
+                               class="text-sm font-medium text-primary-600 hover:text-primary-800 break-all"><%= a.original_name %></a>
+                            <p class="text-xs text-gray-500">
+                                <%= (a.size / 1024).toFixed(0) %> KB · <%= a.created_by || 'unbekannt' %>
+                            </p>
+                        </div>
+                        <% if (canManage) { %>
+                        <button type="button" class="text-sm text-red-600 hover:text-red-900" onclick="deleteFile(<%= a.id %>)">entfernen</button>
+                        <% } %>
+                    </li>
+                    <% }); %>
+                </ul>
+                <% } %>
+
+                <% if (canManage && groupCanCreate) { %>
+                <form class="file-upload-form mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center">
+                    <input type="hidden" name="workflow_id" value="<%= groupWorkflowId %>">
+                    <input type="hidden" name="phase" value="output">
+                    <input type="file" name="attachments" multiple
+                           class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100">
+                    <button type="submit" class="btn-primary text-sm whitespace-nowrap">Hochladen</button>
+                </form>
+                <% } %>
+                <% } %>
+            </div>
+        </details>
+    </div>
+</details>

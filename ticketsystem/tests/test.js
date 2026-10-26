@@ -388,6 +388,27 @@ async function main() {
     }, jar);
     assert(resp.status === 201 && resp.body.meeting_id === null, 'Adoptionsrisiko direkt im Projekt');
 
+    resp = await request('POST', '/api/projects/' + testProjId + '/adoption-risks', {
+        title:'Angst vor Doppelerfassung', workflow_id: directWorkflowId
+    }, jar);
+    assert(resp.status === 201 && resp.body.workflow_id === directWorkflowId,
+        'Adoptionsrisiko mit Workflow');
+    const directRiskId = resp.body.id;
+
+    resp = await request('PATCH', '/api/adoption-risks/' + directRiskId, {
+        workflow_id: directWorkflowId
+    }, jar);
+    assert(resp.status === 200 && resp.body.workflow_id === directWorkflowId,
+        'Adoptionsrisiko-Workflow per PATCH');
+
+    resp = await request('GET', '/api/projects/' + testProjId + '/adoption-risks', null, jar);
+    assert((resp.body || []).some(r => r.id === directRiskId && r.workflow_id === directWorkflowId),
+        'Projektliste enthaelt Workflow-Zuordnung des Risikos');
+
+    // Die Flow-Seite gruppiert alles je Workflow in einklappbare Karten.
+    resp = await request('GET', '/project/' + testProjId + '/flow', null, jar);
+    assert(resp.status === 200, 'GET /project/:id/flow mit Workflows (200 OK)');
+
     resp = await request('POST', '/api/projects/' + testProjId + '/problems', { title:'   ' }, jar);
     assert(resp.status === 400, 'Direktes Problem ohne Titel -> 400');
 
@@ -403,6 +424,11 @@ async function main() {
         title:'Fremder Workflow', workflow_id: foreignWorkflowId
     }, jar);
     assert(resp.status === 400, 'Workflow aus fremdem Projekt -> 400');
+
+    resp = await request('POST', '/api/projects/1/adoption-risks', {
+        title:'Risiko mit fremdem Workflow', workflow_id: foreignWorkflowId
+    }, jar);
+    assert(resp.status === 400, 'Adoptionsrisiko mit fremdem Workflow -> 400');
 
     resp = await request('GET', '/api/projects/' + testProjId + '/problems', null, jar);
     assert(resp.body.some(p => p.id === directProblemId), 'Projektliste enthaelt direktes Problem');
@@ -469,6 +495,27 @@ async function main() {
     assert(resp.body.stats.workflows >= 1, 'Vorschau zaehlt Workflows');
     assert(resp.body.stats.problems >= 1, 'Vorschau zaehlt Probleme');
 
+    // Vorschau je Workflow: nur dessen Workflow, Probleme und Risiken.
+    resp = await request('POST', '/api/projects/' + testProjId + '/problems', {
+        title:'Problem fuer Workflow-Zusammenfassung', workflow_id: directWorkflowId
+    }, jar);
+    const workflowScopedProblemId = resp.body.id;
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary', {
+        dry_run: true, workflow_id: directWorkflowId
+    }, jar);
+    assert(resp.status === 200, 'POST flow-summary dry_run je Workflow');
+    assert(resp.body.stats.workflows === 1, 'Vorschau je Workflow zaehlt genau einen Workflow');
+    assert(resp.body.stats.problems === 1, 'Vorschau je Workflow zaehlt nur dessen Probleme');
+    assert(resp.body.stats.adoptionRisks === 1, 'Vorschau je Workflow zaehlt nur dessen Risiken');
+
+    // Ein Workflow aus einem anderen Projekt darf nicht verwendet werden.
+    resp = await request('POST', '/api/projects/1/flow-summary', {
+        dry_run: true, workflow_id: foreignWorkflowId
+    }, jar);
+    assert(resp.status === 404, 'Zusammenfassung mit fremdem Workflow -> 404');
+    await request('DELETE', '/api/problems/' + workflowScopedProblemId, null, jar);
+
     // Kontaktdaten aus dem Transkript muessen vor dem Aufruf redigiert sein.
     await request('PUT', '/api/meetings/' + meetingId + '/transcript', {
         transcript:'Kontakt: mara.koenig@projekt.example, Telefon +49 30 555 0101. Ablauf per Excel.'
@@ -485,6 +532,7 @@ async function main() {
     assert(resp.status === 404, 'Zusammenfassung fuer unbekanntes Projekt -> 404');
 
     await request('DELETE', '/api/problems/' + summaryProblemId, null, jar);
+    await request('DELETE', '/api/adoption-risks/' + directRiskId, null, jar);
 
     // --- API: Key-User verschieben (manuelle Migration) ---
     console.log('\n📌 API: Key-User verschieben');

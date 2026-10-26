@@ -89,12 +89,14 @@ const RISKS_DDL = `CREATE TABLE adoption_risks (
     project_id INTEGER,
     meeting_id INTEGER,
     department_id INTEGER,
+    workflow_id INTEGER,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (meeting_id) REFERENCES key_user_meetings(id) ON DELETE CASCADE,
-    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE SET NULL
+    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
 )`;
 
 /**
@@ -170,6 +172,7 @@ async function migrate(db) {
     await run(db, `CREATE TABLE IF NOT EXISTS project_flow_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
+        workflow_id INTEGER,
         content TEXT NOT NULL,
         bpmn_xml TEXT,
         provider TEXT,
@@ -180,14 +183,15 @@ async function migrate(db) {
         input_chars INTEGER,
         created_by TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
     )`);
 
     // 3. Wissenstabellen (Reihenfolge: Kinder vor Elterntabelle)
     await makeMeetingOptional(db, 'problems', PROBLEMS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
     await makeMeetingOptional(db, 'adoption_risks', RISKS_DDL,
-        ['id', 'project_id', 'meeting_id', 'department_id', 'title', 'description', 'created_at']);
+        ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
     await makeMeetingOptional(db, 'workflows', WORKFLOWS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'name', 'description', 'created_at']);
 
@@ -234,6 +238,18 @@ async function migrate(db) {
     // Karte; die Beschreibung bleibt der eigentliche Inhalt.
     await addColumnIfMissing(db, 'workflows', 'name',
         'ALTER TABLE workflows ADD COLUMN name TEXT');
+    // Alles, was zu einem Workflow gehoert, traegt dessen id. Ein Eintrag ohne
+    // workflow_id bleibt projektweit sichtbar ("Ohne Workflow").
+    await addColumnIfMissing(db, 'adoption_risks', 'workflow_id',
+        'ALTER TABLE adoption_risks ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL');
+    await addColumnIfMissing(db, 'project_attachments', 'workflow_id',
+        'ALTER TABLE project_attachments ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL');
+    await addColumnIfMissing(db, 'project_flow_summaries', 'workflow_id',
+        'ALTER TABLE project_flow_summaries ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL');
+
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_workflow ON adoption_risks(workflow_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_attachments_workflow ON project_attachments(workflow_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_flow_summaries_workflow ON project_flow_summaries(workflow_id)');
 
     // 5b. Bestehenden Workflows einen Namen aus der ersten Zeile geben, damit die
     // Liste nicht mit leeren Ueberschriften startet. Der Name bleibt editierbar.
@@ -259,6 +275,28 @@ async function migrate(db) {
         await run(db, `UPDATE ${table}
                        SET department_id = (SELECT p.department_id FROM projects p WHERE p.id = ${table}.project_id)
                        WHERE department_id IS NULL AND project_id IS NOT NULL`);
+    }
+
+    // 8. Bestandsdaten einmalig dem ersten Workflow ihres Projekts zuordnen.
+    // Ohne Marker wuerde jeder Serverstart Eintraege wieder neu zuordnen, die
+    // nach dem Loeschen eines Workflows bewusst ohne Zuordnung sind.
+    await run(db, `CREATE TABLE IF NOT EXISTS atlas_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    const backfillDone = await all(db,
+        "SELECT name FROM atlas_migrations WHERE name = 'workflow_id_backfill'");
+    if (backfillDone.length === 0) {
+        for (const table of ['problems', 'adoption_risks', 'project_attachments', 'project_flow_summaries']) {
+            await run(db, `UPDATE ${table}
+                           SET workflow_id = (SELECT MIN(w.id) FROM workflows w
+                                              WHERE w.project_id = ${table}.project_id)
+                           WHERE workflow_id IS NULL
+                             AND project_id IS NOT NULL
+                             AND EXISTS (SELECT 1 FROM workflows w
+                                         WHERE w.project_id = ${table}.project_id)`);
+        }
+        await run(db, "INSERT INTO atlas_migrations (name) VALUES ('workflow_id_backfill')");
     }
 }
 

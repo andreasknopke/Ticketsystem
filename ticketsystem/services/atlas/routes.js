@@ -53,9 +53,10 @@ const EXTRACTION_KINDS = {
         table: 'adoption_risks',
         label: 'Titel',
         textField: 'title',
-        columns: ['project_id', 'meeting_id', 'department_id', 'title', 'description'],
-        buildValues: (ctx, text, description) =>
-            [ctx.projectId, ctx.meetingId, ctx.departmentId, text, description]
+        hasWorkflow: true,
+        columns: ['project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description'],
+        buildValues: (ctx, text, description, workflowId) =>
+            [ctx.projectId, ctx.meetingId, ctx.departmentId, workflowId, text, description]
     }
 };
 
@@ -204,6 +205,27 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     // --- Extraktion: Workflow, Problem, Adoptionsrisiko ---
 
+    // Beim ersten Workflow eines Projekts wandern vorhandene Eintraege ohne
+    // Zuordnung mit, damit die neue Workflow-Karte nicht leer startet.
+    const adoptUnassignedEntries = (projectId, workflowId, callback) => {
+        db.get('SELECT COUNT(*) AS c FROM workflows WHERE project_id = ?', [projectId], (countErr, row) => {
+            if (countErr) return callback(countErr);
+            if (!row || row.c !== 1) return callback();
+
+            const tables = ['problems', 'adoption_risks', 'project_attachments', 'project_flow_summaries'];
+            let pending = tables.length;
+            let firstError = null;
+            tables.forEach((table) => {
+                db.run(`UPDATE ${table} SET workflow_id = ? WHERE project_id = ? AND workflow_id IS NULL`,
+                    [workflowId, projectId], (updateErr) => {
+                        if (updateErr && !firstError) firstError = updateErr;
+                        pending -= 1;
+                        if (pending === 0) callback(firstError);
+                    });
+            });
+        });
+    };
+
     const insertExtraction = (kind, ctx, body, res) => {
         const config = EXTRACTION_KINDS[kind];
         const text = normalizeText(body[config.textField]);
@@ -216,11 +238,18 @@ module.exports = function registerAtlasRoutes(app, deps) {
             db.run(`INSERT INTO ${config.table} (${config.columns.join(', ')}) VALUES (${placeholders})`,
                 values, function (insertErr) {
                     if (insertErr) return res.status(500).json({ error: insertErr.message });
-                    res.status(201).json({
-                        id: this.lastID,
+                    const insertedId = this.lastID;
+                    const respond = () => res.status(201).json({
+                        id: insertedId,
                         project_id: ctx.projectId,
                         meeting_id: ctx.meetingId,
-                        department_id: ctx.departmentId
+                        department_id: ctx.departmentId,
+                        workflow_id: workflowId
+                    });
+                    if (kind !== 'workflows') return respond();
+                    adoptUnassignedEntries(ctx.projectId, insertedId, (adoptErr) => {
+                        if (adoptErr) console.error('[atlas] Zuordnung zum ersten Workflow fehlgeschlagen:', adoptErr.message);
+                        respond();
                     });
                 });
         };
@@ -284,10 +313,33 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     const deleteExtraction = (kind) => (req, res) => {
         const config = EXTRACTION_KINDS[kind];
-        db.run(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id], function (err) {
+        const remove = () => db.run(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id], function (err) {
             if (err) return res.status(500).json({ error: err.message });
             if (this.changes === 0) return res.status(404).json({ error: 'Eintrag nicht gefunden.' });
             res.json({ status: 'deleted' });
+        });
+
+        if (kind !== 'workflows') return remove();
+
+        // project_attachments/project_flow_summaries haengen nicht hart per FK
+        // am Workflow (PRAGMA foreign_keys ist nicht ueberall aktiv). Deshalb
+        // die Zuordnung explizit loesen, damit die Eintraege als "Ohne
+        // Workflow" sichtbar bleiben statt zu verschwinden.
+        const tables = ['problems', 'adoption_risks', 'project_attachments', 'project_flow_summaries'];
+        let pending = tables.length;
+        let firstError = null;
+        tables.forEach((table) => {
+            db.run(`UPDATE ${table} SET workflow_id = NULL WHERE workflow_id = ?`,
+                [req.params.id], (updateErr) => {
+                    if (updateErr && !firstError) firstError = updateErr;
+                    pending -= 1;
+                    if (pending === 0) {
+                        if (firstError) {
+                            console.error('[atlas] Workflow-Zuordnung loesen fehlgeschlagen:', firstError.message);
+                        }
+                        remove();
+                    }
+                });
         });
     };
 
@@ -299,7 +351,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
         const config = EXTRACTION_KINDS[kind];
         const hasTextField = req.body[config.textField] !== undefined;
         const text = normalizeText(req.body[config.textField]);
-        const hasWorkflowField = kind === 'problems' && req.body.workflow_id !== undefined;
+        const hasWorkflowField = config.hasWorkflow && req.body.workflow_id !== undefined;
         const workflowId = hasWorkflowField
             ? (req.body.workflow_id === null ? null : toId(req.body.workflow_id))
             : undefined;
@@ -384,7 +436,9 @@ module.exports = function registerAtlasRoutes(app, deps) {
         });
     });
 
-    async function collectSummaryInput(projectId) {
+    // workflowId gesetzt: nur die Daten dieses Workflows. Ohne workflowId
+    // bleibt das Verhalten projektweit (Alt-Aufrufe und "Ohne Workflow").
+    async function collectSummaryInput(projectId, workflowId = null) {
         const project = await getAsync(`SELECT p.id, p.name, p.description, p.status,
                 p.start_date, p.end_date,
                 s.name AS system_name, d.name AS department_name, h.name AS hospital_name
@@ -395,31 +449,45 @@ module.exports = function registerAtlasRoutes(app, deps) {
             WHERE p.id = ?`, [projectId]);
         if (!project) return null;
 
+        let workflow = null;
+        if (workflowId) {
+            workflow = await getAsync('SELECT id, name, description FROM workflows WHERE id = ? AND project_id = ?',
+                [workflowId, projectId]);
+            if (!workflow) return { error: 'Workflow nicht gefunden.' };
+        }
+
+        // Transkripte sind die Rohquelle des Termins und nicht workflowgebunden;
+        // sie fliessen in jede Zusammenfassung des Projekts ein.
         const transcripts = await allAsync(`SELECT id, title, meeting_date, start_time, transcript
             FROM key_user_meetings
             WHERE project_id = ? AND LENGTH(COALESCE(transcript, '')) > 0
             ORDER BY meeting_date ASC, id ASC`, [projectId]);
 
         // Nur den Input-Abschnitt: Output-Dateien beschreiben den Zielzustand.
+        const attachmentFilter = workflowId ? 'AND workflow_id = ?' : '';
         const attachments = await allAsync(`SELECT filename, original_name, mimetype,
                 COALESCE(phase, 'input') AS phase
             FROM project_attachments
-            WHERE project_id = ? AND COALESCE(phase, 'input') != 'output'
-            ORDER BY created_at ASC`, [projectId]);
+            WHERE project_id = ? AND COALESCE(phase, 'input') != 'output' ${attachmentFilter}
+            ORDER BY created_at ASC`,
+        workflowId ? [projectId, workflowId] : [projectId]);
 
+        const entryFilter = workflowId ? 'AND x.workflow_id = ?' : '';
+        const entryParams = workflowId ? [projectId, workflowId] : [projectId];
         const entries = {
             workflows: await allAsync(`SELECT x.*, m.title AS meeting_title
                 FROM workflows x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
-                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId]),
+                WHERE x.project_id = ? ${workflowId ? 'AND x.id = ?' : ''}
+                ORDER BY x.id ASC`, entryParams),
             problems: await allAsync(`SELECT x.*, m.title AS meeting_title
                 FROM problems x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
-                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId]),
+                WHERE x.project_id = ? ${entryFilter} ORDER BY x.id ASC`, entryParams),
             adoptionRisks: await allAsync(`SELECT x.*, m.title AS meeting_title
                 FROM adoption_risks x LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
-                WHERE x.project_id = ? ORDER BY x.id ASC`, [projectId])
+                WHERE x.project_id = ? ${entryFilter} ORDER BY x.id ASC`, entryParams)
         };
 
-        return { project, transcripts, attachments, entries };
+        return { project, workflow, transcripts, attachments, entries };
     }
 
     async function pickSummaryStaff(staffId) {
@@ -443,11 +511,17 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     app.get('/api/projects/:projectId/flow-summary', requireAuth, async (req, res) => {
         try {
-            const rows = await allAsync(`SELECT id, content, bpmn_xml, provider, model, prompt_tokens,
-                    completion_tokens, duration_ms, input_chars, created_by, created_at
+            // Ohne workflow_id bleibt die Abfrage projektweit (Alt-Verhalten).
+            // Mit gesetzter id zaehlt nur dieser Workflow.
+            const hasFilter = req.query.workflow_id !== undefined;
+            const workflowId = hasFilter ? toId(req.query.workflow_id) : null;
+            const rows = await allAsync(`SELECT id, project_id, workflow_id, content, bpmn_xml, provider, model,
+                    prompt_tokens, completion_tokens, duration_ms, input_chars, created_by, created_at
                 FROM project_flow_summaries
-                WHERE project_id = ?
-                ORDER BY id DESC`, [req.params.projectId]);
+                WHERE project_id = ? ${hasFilter ? (workflowId ? 'AND workflow_id = ?' : 'AND workflow_id IS NULL') : ''}
+                ORDER BY id DESC`, hasFilter && workflowId
+                ? [req.params.projectId, workflowId]
+                : [req.params.projectId]);
             res.json({ latest: rows[0] || null, history: rows.slice(1) });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -456,8 +530,17 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
     app.post('/api/projects/:projectId/flow-summary', requireAuth, requireAdmin, async (req, res) => {
         try {
-            const collected = await collectSummaryInput(req.params.projectId);
+            const rawWorkflowId = req.body.workflow_id;
+            const workflowId = rawWorkflowId === undefined || rawWorkflowId === null || rawWorkflowId === ''
+                ? null
+                : toId(rawWorkflowId);
+            if (rawWorkflowId !== undefined && rawWorkflowId !== null && rawWorkflowId !== '' && !workflowId) {
+                return res.status(400).json({ error: 'Ungueltige workflow_id.' });
+            }
+
+            const collected = await collectSummaryInput(req.params.projectId, workflowId);
             if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+            if (collected.error) return res.status(404).json({ error: collected.error });
 
             const built = flowSummary.buildInput(collected);
             if (!built.text.trim()) return res.status(400).json({ error: 'Keine Eingaben vorhanden.' });
@@ -524,15 +607,16 @@ module.exports = function registerAtlasRoutes(app, deps) {
             }
 
             const inserted = await runAsync(`INSERT INTO project_flow_summaries
-                    (project_id, content, bpmn_xml, provider, model, prompt_tokens, completion_tokens,
+                    (project_id, workflow_id, content, bpmn_xml, provider, model, prompt_tokens, completion_tokens,
                      duration_ms, input_chars, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [req.params.projectId, content, bpmnXml, result.provider || provider, result.model || staff.ai_model || null,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.params.projectId, workflowId, content, bpmnXml, result.provider || provider, result.model || staff.ai_model || null,
                 result.prompt_tokens || null, result.completion_tokens || null,
                 result.duration_ms || null, built.text.length, req.session.user || null]);
 
             res.status(201).json({
                 id: inserted.lastID,
+                workflow_id: workflowId,
                 content,
                 bpmn_xml: bpmnXml,
                 bpmn_error: bpmnError,

@@ -48,8 +48,10 @@ _Avoid_: Notizen, Protokoll, Aufzeichnung, Mitschrift
 **Workflow**:
 Die aktuelle (Ist-)Arbeitsweise einer Abteilung für einen Prozess, vor der
 Einführung. Ein Projekt beschreibt **mehrere** Workflows, jeder mit eigenem
-Namen (z. B. „Entlassungsbrief“, „Wochenplan erstellen“). Zielzustand wird nur
-in Empfehlungen und Konfigurationen beschrieben, nie als zweiter Soll-Workflow.
+Namen (z. B. „Entlassungsbrief“, „Wochenplan erstellen“). Zu einem Workflow
+gehören seine Beschreibung, Probleme, Adoptionsrisiken, Dokumente, die
+Input-Visualisierung und der Output. Zielzustand wird nur in Empfehlungen und
+Konfigurationen beschrieben, nie als zweiter Soll-Workflow.
 _Avoid_: Prozess, Ablauf, Current State
 
 **Problem**:

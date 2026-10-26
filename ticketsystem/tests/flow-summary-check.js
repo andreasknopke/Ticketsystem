@@ -66,6 +66,16 @@ check(built.text.includes('Entlassungsbrief') && built.text.includes('Wochenplan
 check(built.stats.workflows === 2 && built.stats.problems === 1 && built.stats.adoptionRisks === 1,
     'zaehlt alle Wissensarten');
 
+// Eine Zusammenfassung je Workflow nennt den Workflow im Kopf.
+built = flowSummary.buildInput({
+    project,
+    workflow: { name: 'Wochenplan erstellen' },
+    transcripts: [],
+    attachments: [],
+    entries: { workflows: [{ name: 'Wochenplan erstellen', description: 'Dienstplan als Excel-Liste' }] }
+});
+check(built.text.includes('Workflow: Wochenplan erstellen'), 'Workflow-Name steht im Projektkopf');
+
 // --- Kuerzung respektiert das Gesamtbudget ---
 const manyTranscripts = Array.from({ length: 12 }, (_, i) => ({
     title: `Termin ${i}`,

@@ -3687,7 +3687,9 @@ app.patch('/api/projects/:id', requireAuth, requireAdmin, (req, res) => {
 // --- API: Project Attachments ---
 
 app.get('/api/projects/:projectId/attachments', requireAuth, (req, res) => {
-    db.all('SELECT id, project_id, filename, original_name, mimetype, size, created_by, created_at FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC',
+    db.all(`SELECT id, project_id, workflow_id, COALESCE(phase, 'input') AS phase, filename,
+                   original_name, mimetype, size, created_by, created_at
+            FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC`,
         [req.params.projectId], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json(rows);
@@ -3698,16 +3700,37 @@ app.post('/api/projects/:projectId/attachments', requireAuth, requireAdmin, hand
     if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'Keine Dateien ausgewaehlt.' });
     const projectId = req.params.projectId;
     const createdBy = req.session.user || 'unknown';
-    const inserted = [];
-    let pending = req.files.length;
-    req.files.forEach(file => {
-        db.run(`INSERT INTO project_attachments (project_id, filename, original_name, mimetype, size, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
-            [projectId, file.filename, file.originalname, file.mimetype, file.size, createdBy],
-            function(err) {
-                if (!err) inserted.push({ id: this.lastID, filename: file.filename, original_name: file.originalname });
-                pending--;
-                if (pending === 0) res.status(201).json({ attachments: inserted });
-            });
+    const rawWorkflowId = req.body && req.body.workflow_id;
+    const workflowId = rawWorkflowId === undefined || rawWorkflowId === null || rawWorkflowId === '' || rawWorkflowId === 'null'
+        ? null
+        : Number(rawWorkflowId);
+    if (rawWorkflowId !== undefined && rawWorkflowId !== '' && rawWorkflowId !== 'null'
+        && (!Number.isInteger(workflowId) || workflowId <= 0)) {
+        return res.status(400).json({ error: 'Ungueltige workflow_id.' });
+    }
+    const phase = req.body && req.body.phase === 'output' ? 'output' : 'input';
+
+    const insertFiles = () => {
+        const inserted = [];
+        let pending = req.files.length;
+        req.files.forEach(file => {
+            db.run(`INSERT INTO project_attachments
+                    (project_id, workflow_id, phase, filename, original_name, mimetype, size, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [projectId, workflowId, phase, file.filename, file.originalname, file.mimetype, file.size, createdBy],
+                function(err) {
+                    if (!err) inserted.push({ id: this.lastID, workflow_id: workflowId, phase, filename: file.filename, original_name: file.originalname });
+                    pending--;
+                    if (pending === 0) res.status(201).json({ attachments: inserted });
+                });
+        });
+    };
+
+    if (!workflowId) return insertFiles();
+    db.get('SELECT id FROM workflows WHERE id = ? AND project_id = ?', [workflowId, projectId], (err, workflow) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!workflow) return res.status(400).json({ error: 'Workflow gehoert nicht zu diesem Projekt.' });
+        insertFiles();
     });
 });
 
@@ -6841,44 +6864,96 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE p.id = ?`, [projectId]);
             if (!project.id) return res.status(404).send('Projekt nicht gefunden');
 
-            const transcripts = await dbAll(`SELECT id, title, meeting_date, start_time,
-                    status, LENGTH(COALESCE(transcript, '')) AS transcript_length
-                FROM key_user_meetings
-                WHERE project_id = ? AND LENGTH(COALESCE(transcript, '')) > 0
-                ORDER BY meeting_date DESC, id DESC`, [projectId]);
+            // workflows traegt den Text in `description`, die uebrigen in `title`.
+            // Ein einheitliches `text` erspart dem Template die Fallunterscheidung.
+            const workflows = await dbAll(`SELECT x.*, x.description AS text,
+                    m.title AS meeting_title, m.meeting_date
+                FROM workflows x
+                LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ?
+                ORDER BY x.id ASC`, [projectId]);
+
+            const problems = await dbAll(`SELECT x.*, x.title AS text,
+                    m.title AS meeting_title, m.meeting_date
+                FROM problems x
+                LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ?
+                ORDER BY x.id ASC`, [projectId]);
+
+            const adoptionRisks = await dbAll(`SELECT x.*, x.title AS text,
+                    m.title AS meeting_title, m.meeting_date
+                FROM adoption_risks x
+                LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
+                WHERE x.project_id = ?
+                ORDER BY x.id ASC`, [projectId]);
 
             const attachments = await dbAll(`SELECT id, filename, original_name, mimetype, size,
-                    created_by, created_at, COALESCE(phase, 'input') AS phase
+                    created_by, created_at, COALESCE(phase, 'input') AS phase, workflow_id
                 FROM project_attachments
                 WHERE project_id = ?
                 ORDER BY created_at DESC`, [projectId]);
 
-            const entries = {};
-            // workflows traegt den Text in `description`, die uebrigen in `title`.
-            // Ein einheitliches `text` erspart dem Template die Fallunterscheidung.
-            for (const entry of [
-                { kind: 'workflows', table: 'workflows', textExpr: 'x.description' },
-                { kind: 'problems', table: 'problems', textExpr: 'x.title' },
-                { kind: 'adoptionRisks', table: 'adoption_risks', textExpr: 'x.title' }
-            ]) {
-                entries[entry.kind] = await dbAll(`SELECT x.*, ${entry.textExpr} AS text,
-                        m.title AS meeting_title, m.meeting_date
-                    FROM ${entry.table} x
-                    LEFT JOIN key_user_meetings m ON m.id = x.meeting_id
-                    WHERE x.project_id = ?
-                    ORDER BY x.created_at DESC, x.id DESC`, [projectId]);
+            const summaries = await dbAll(`SELECT id, content, bpmn_xml, provider, model, created_by,
+                    created_at, input_chars, prompt_tokens, completion_tokens, workflow_id
+                FROM project_flow_summaries
+                WHERE project_id = ?
+                ORDER BY id DESC`, [projectId]);
+
+            // Verwaiste workflow_ids (z.B. nach dem Loeschen eines Workflows)
+            // zaehlen als "Ohne Workflow", damit nichts unsichtbar wird.
+            const workflowIds = new Set(workflows.map((row) => row.id));
+            const normalizeWorkflowId = (value) => {
+                const numeric = Number(value);
+                return Number.isInteger(numeric) && workflowIds.has(numeric) ? numeric : null;
+            };
+            const sameWorkflow = (value, workflowId) => normalizeWorkflowId(value) === normalizeWorkflowId(workflowId);
+            const buildGroup = (workflow) => {
+                const workflowId = workflow ? workflow.id : null;
+                const derivedName = workflow
+                    ? (String(workflow.name || '').trim()
+                        || String(workflow.text || '').split(/\r?\n/)[0].trim().slice(0, 80)
+                        || 'Workflow ohne Namen')
+                    : 'Ohne Workflow';
+                return {
+                    key: workflow ? `wf-${workflow.id}` : 'unassigned',
+                    workflow,
+                    title: derivedName,
+                    problems: problems.filter((row) => sameWorkflow(row.workflow_id, workflowId)),
+                    adoptionRisks: adoptionRisks.filter((row) => sameWorkflow(row.workflow_id, workflowId)),
+                    inputFiles: attachments.filter((row) => sameWorkflow(row.workflow_id, workflowId) && row.phase !== 'output'),
+                    outputFiles: attachments.filter((row) => sameWorkflow(row.workflow_id, workflowId) && row.phase === 'output'),
+                    summaries: summaries.filter((row) => sameWorkflow(row.workflow_id, workflowId))
+                };
+            };
+
+            const workflowGroups = workflows.map((workflow, index) => {
+                const group = buildGroup(workflow);
+                group.isFirst = index === 0;
+                return group;
+            });
+
+            const unassigned = buildGroup(null);
+            unassigned.hasData = (unassigned.problems.length + unassigned.adoptionRisks.length
+                + unassigned.inputFiles.length + unassigned.outputFiles.length
+                + unassigned.summaries.length) > 0;
+            unassigned.hasWorkflows = workflows.length > 0;
+
+            const bpmnDiagrams = [];
+            const groupsWithData = workflowGroups.concat(unassigned.hasData ? [unassigned] : []);
+            for (const group of groupsWithData) {
+                const latest = group.summaries[0];
+                if (latest && latest.bpmn_xml) {
+                    bpmnDiagrams.push({ key: group.key, summaryId: latest.id, xml: latest.bpmn_xml });
+                }
             }
 
             res.render('project-flow', {
                 project,
-                transcripts,
-                attachments,
-                entries,
-                summaries: await dbAll(`SELECT id, content, bpmn_xml, provider, model, created_by,
-                        created_at, input_chars, prompt_tokens, completion_tokens
-                    FROM project_flow_summaries
-                    WHERE project_id = ?
-                    ORDER BY id DESC`, [projectId]),
+                workflows,
+                workflowGroups,
+                unassigned,
+                hasWorkflows: workflows.length > 0,
+                bpmnDiagrams,
                 aiStaff: await dbAll(`SELECT id, name, ai_model FROM staff
                     WHERE kind = 'ai' AND active = 1 ORDER BY name`, []),
                 user: req.session.user,

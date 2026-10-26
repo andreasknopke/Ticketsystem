@@ -255,31 +255,45 @@ per Migration nachgezogen.
 
 ## Flow Analysis
 
-`/project/:id/flow` ist der Ort der Bestandsaufnahme. Drei Abschnitte:
+`/project/:id/flow` ist der Ort der Bestandsaufnahme. Ein Projekt kann mehrere
+benannte Workflows (z. B. „Entlassungsbrief“, „Wochenplan erstellen“)
+beschreiben. Jeder Workflow ist eine einklappbare Karte, die alles zu ihm
+Gehoerende zusammenfasst:
 
-| Abschnitt | Inhalt | Stand |
+| Abschnitt (je Workflow) | Inhalt | Stand |
 |---|---|---|
-| Input | Workflows/Probleme/Risiken (mit Herkunft), hochgeladene Dokumente, direkte Erfassung | umgesetzt |
-| Input-Visualisierung | BPMN-Diagramm des Ist-Zustands aus der KI-Zusammenfassung (Hoch-/Querformat), bearbeitbar und druckbar | umgesetzt |
-| Output | LLM schlaegt den Ziel-Workflow vor; Screenshots und Beschreibungen der fertigen Integration | Platzhalter |
+| Beschreibung | Ist-Ablauf des Workflows (aus Termin oder direkt erfasst) | umgesetzt |
+| Probleme | Maengel im heutigen Ablauf, optional einem Workflow zugeordnet | umgesetzt |
+| Adoptionsrisiken | Hindernisse fuer den Wechsel, optional einem Workflow zugeordnet | umgesetzt |
+| Dokumente | `project_attachments` mit `phase = 'input'` und `workflow_id` | umgesetzt |
+| Input-Visualisierung | KI-Zusammenfassung + BPMN-Diagramm des Ist-Zustands fuer diesen Workflow (Hoch-/Querformat), bearbeitbar und druckbar | umgesetzt |
+| Output | Ziel-Workflow als Text/Screenshots; Dateien mit `phase = 'output'` | Platzhalter |
 
-Dateien im Flow-Reiter sind `project_attachments` mit `phase = 'input'`
-(Spalte vorbereitet fuer `'output'`). Wissenseintraege koennen aus einem Termin
-(`POST /api/meetings/:id/<kind>`) oder direkt im Projekt
-(`POST /api/projects/:id/<kind>`) entstehen.
+Alles, was zu einem Workflow gehoert, traegt `workflow_id`: `problems`,
+`adoption_risks`, `project_attachments` und `project_flow_summaries`.
+Eintraege ohne Zuordnung erscheinen in einer eigenen Karte „Ohne Workflow“,
+damit nichts unsichtbar wird. Beim ersten Workflow eines Projekts werden
+vorhandene Eintraege ohne Zuordnung automatisch uebernommen; eine einmalige
+Migration ordnet Bestandsdaten dem jeweils ersten Workflow zu
+(`atlas_migrations.name = 'workflow_id_backfill'`).
+
+Wissenseintraege koennen aus einem Termin (`POST /api/meetings/:id/<kind>`)
+oder direkt im Projekt (`POST /api/projects/:id/<kind>`) entstehen.
 
 ## KI-Zusammenfassung
 
-`POST /api/projects/:id/flow-summary` fasst die Bestandsaufnahme zusammen:
+`POST /api/projects/:id/flow-summary` fasst die Bestandsaufnahme zusammen. Mit
+`workflow_id` im Body (bzw. als Query bei `GET`) gilt die Zusammenfassung nur
+fuer diesen Workflow; ohne Angabe bleibt sie projektweit.
 
 | Aspekt | Umsetzung |
 |---|---|
-| Eingabe | Projektkopf, Transkripte, Textdokumente, Workflows/Probleme/Risiken (mit Herkunft) |
+| Eingabe | Projektkopf (inkl. Workflow-Name), Transkripte, Textdokumente, Workflows/Probleme/Risiken (mit Herkunft) |
 | Grenzen | 120k Zeichen gesamt, 30k pro Transkript, 20k pro Datei (per ENV anpassbar) |
 | Redaction | `services/ai/redact.js` vor dem Aufruf; Treffer werden zurueckgemeldet |
 | Modell | KI-Mitarbeiter (`staff.kind='ai'`), Default = einer mit Rolle `planning` |
 | Ausgabe | reiner Text mit 5 Abschnitten (Ausgangslage, Ablauf, Probleme, Risiken, offene Punkte) |
-| Speicherung | `project_flow_summaries`, versioniert; Anzeige = neueste Version |
+| Speicherung | `project_flow_summaries` inkl. `workflow_id`, versioniert; Anzeige = neueste Version je Workflow |
 | Kosten | Token-Verbrauch landet wie bei den Ticket-Stages in `ai_token_usage` |
 | `dry_run: true` | liefert die redigierte Eingabe + Statistik, ohne Modellaufruf |
 

@@ -59,6 +59,21 @@ async function waitForBackfill(db, tables, timeoutMs = 15000) {
     return false;
 }
 
+// Die Workflow-Zuordnung ist der letzte Schritt; der Marker signalisiert, dass
+// auch die UPDATEs durch sind.
+async function waitForWorkflowBackfill(db, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const rows = await all(db,
+                "SELECT name FROM atlas_migrations WHERE name = 'workflow_id_backfill'");
+            if (rows.length > 0) return true;
+        } catch (_) { /* Tabelle noch nicht angelegt */ }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+}
+
 async function createLegacyDatabase(db) {
     await run(db, `CREATE TABLE hospitals (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
     await run(db, `CREATE TABLE departments (id INTEGER PRIMARY KEY AUTOINCREMENT, hospital_id INTEGER NOT NULL, name TEXT NOT NULL, active INTEGER DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(hospital_id, name))`);
@@ -79,6 +94,8 @@ async function createLegacyDatabase(db) {
     await run(db, 'INSERT INTO workflows (meeting_id, department_id, description) VALUES (1, 1, ?)', ['Alter Workflow\nZweite Zeile der Beschreibung']);
     await run(db, 'INSERT INTO problems (meeting_id, department_id, workflow_id, title) VALUES (1, 1, 1, ?)', ['Altes Problem']);
     await run(db, 'INSERT INTO adoption_risks (meeting_id, department_id, title) VALUES (1, 1, ?)', ['Altes Risiko']);
+    await run(db, 'INSERT INTO project_attachments (project_id, filename, original_name, mimetype, size) VALUES (1, ?, ?, ?, ?)',
+        ['alt.pdf', 'Alt.pdf', 'application/pdf', 123]);
 }
 
 async function main() {
@@ -96,6 +113,7 @@ async function main() {
         const ready = await waitFor(db, 'problems');
         check(ready, 'Migration abgeschlossen');
         await waitForBackfill(db, ['workflows', 'problems', 'adoption_risks']);
+        check(await waitForWorkflowBackfill(db), 'Workflow-Zuordnung abgeschlossen');
 
         for (const table of ['workflows', 'problems', 'adoption_risks']) {
             const cols = await all(db, `PRAGMA table_info(${table})`);
@@ -111,6 +129,23 @@ async function main() {
         const fks = await all(db, 'PRAGMA foreign_key_list(problems)');
         check(fks.some((fk) => fk.table === 'workflows'), 'problems verweist weiter auf workflows');
         check(!fks.some((fk) => String(fk.table).includes('__old')), 'kein Fremdschluessel auf __old');
+
+        // Alles, was zu einem Workflow gehoert, bekommt die workflow_id des
+        // ersten Workflows (hier id 1) nachgezogen.
+        const riskCols = await all(db, 'PRAGMA table_info(adoption_risks)');
+        check(riskCols.some((c) => c.name === 'workflow_id'), 'adoption_risks: workflow_id existiert');
+        const riskRows = await all(db, 'SELECT workflow_id FROM adoption_risks');
+        check(riskRows[0] && riskRows[0].workflow_id === 1,
+            'adoption_risks: Bestandsdaten dem ersten Workflow zugeordnet');
+
+        const attachmentCols = await all(db, 'PRAGMA table_info(project_attachments)');
+        check(attachmentCols.some((c) => c.name === 'workflow_id'), 'project_attachments: workflow_id existiert');
+        const attachmentRows = await all(db, 'SELECT workflow_id FROM project_attachments');
+        check(attachmentRows[0] && attachmentRows[0].workflow_id === 1,
+            'project_attachments: Bestandsdaten dem ersten Workflow zugeordnet');
+
+        const summaryCols = await all(db, 'PRAGMA table_info(project_flow_summaries)');
+        check(summaryCols.some((c) => c.name === 'workflow_id'), 'project_flow_summaries: workflow_id existiert');
 
         check((await all(db, 'PRAGMA foreign_keys'))[0].foreign_keys === 1, 'foreign_keys wieder aktiv');
         check((await all(db, 'PRAGMA legacy_alter_table'))[0].legacy_alter_table === 0, 'legacy_alter_table zurueckgesetzt');

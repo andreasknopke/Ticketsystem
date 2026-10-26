@@ -115,7 +115,7 @@ function readAttachmentText(attachment) {
  *
  * @returns {{ text: string, stats: Object, truncated: boolean }}
  */
-function buildInput({ project, transcripts = [], attachments = [], entries = {} }) {
+function buildInput({ project, workflow = null, transcripts = [], attachments = [], entries = {} }) {
     const parts = [];
     const stats = {
         transcripts: 0,
@@ -152,6 +152,7 @@ function buildInput({ project, transcripts = [], attachments = [], entries = {} 
     // --- Projektkopf ---
     push([
         `# Projekt: ${project.name}`,
+        workflow ? `Workflow: ${workflow.name || '(ohne Namen)'}` : null,
         project.system_name ? `Software: ${project.system_name}` : null,
         project.department_name
             ? `Abteilung: ${[project.hospital_name, project.department_name].filter(Boolean).join(' / ')}`

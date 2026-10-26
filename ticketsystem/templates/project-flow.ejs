@@ -113,322 +113,44 @@
                 <%= project.name %><% if (project.system_name) { %> · <%= project.system_name %><% } %><% if (project.department_name) { %> · <%= project.hospital_name ? project.hospital_name + ' · ' : '' %><%= project.department_name %><% } %>
             </p>
             <p class="text-sm text-gray-600 mt-2">
-                Bestehenden Workflow erfassen, Probleme sammeln und daraus den Zielzustand ableiten.
+                Bestehende Workflows erfassen, Probleme sammeln und daraus den Zielzustand ableiten.
             </p>
         </div>
 
         <%- include('partials/project-nav', { active: 'flow' }) %>
 
-        <% const latestSummary = summaries[0] || null; %>
-
-        <!-- ========== INPUT ========== -->
-        <section class="mb-10">
-            <div class="flex items-center gap-2 mb-3">
-                <span class="flex h-7 w-7 items-center justify-center rounded-full bg-primary-600 text-sm font-semibold text-white">1</span>
-                <h2 class="text-lg font-semibold text-gray-900">Input</h2>
-                <span class="text-sm text-gray-400">Bestandsaufnahme</span>
+        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900">Workflows</h2>
+                <p class="mt-1 text-sm text-gray-600">
+                    Je Workflow stehen Beschreibung, Probleme, Adoptionsrisiken, Dokumente,
+                    Input-Visualisierung und Output zusammen in einer einklappbaren Karte.
+                </p>
             </div>
-            <p class="text-sm text-gray-600 mb-4">
-                Erfasst wird der heutige Ablauf: wie der Prozess läuft, was daran stört — und welche Dokumente das belegen.
-            </p>
+            <% if (canManage) { %>
+            <button type="button" class="btn-primary text-sm whitespace-nowrap" onclick="openNewWorkflow()">+ Neuer Workflow</button>
+            <% } %>
+        </div>
 
-            <!-- Workflows: ein Projekt kann mehrere beschreiben, je einklappbar -->
-            <%
-            const workflowList = entries.workflows || [];
-            // Aeltere Eintraege haben noch keinen Namen: erste Zeile als Titel.
-            const workflowName = (item) => {
-                const name = (item.name || '').trim();
-                if (name) return name;
-                const firstLine = String(item.text || '').split(/\r?\n/)[0].trim();
-                return firstLine ? firstLine.slice(0, 80) : 'Workflow ohne Namen';
-            };
-            const workflowPreview = (item) => {
-                const lines = String(item.text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                if (lines.length > 1) return lines.length + ' Absätze';
-                return lines.length ? '' : 'Keine Beschreibung';
-            };
-            %>
-            <div class="card mb-4">
-                <div class="card-header flex flex-wrap items-center justify-between gap-2">
-                    <h3 class="text-base font-semibold text-gray-900">Workflow (Ist-Zustand)</h3>
-                    <div class="flex items-center gap-3">
-                        <span class="text-sm text-gray-400"><%= workflowList.length %></span>
-                        <% if (canManage) { %>
-                        <button type="button" class="text-sm font-medium text-primary-600 hover:text-primary-800"
-                            onclick="openNewWorkflow()">+ Neuer Workflow</button>
-                        <% } %>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <% if (workflowList.length === 0) { %>
-                    <p class="text-sm text-gray-500">
-                        Noch kein Workflow erfasst.
-                        <% if (canManage) { %>Lege einen an, z. B. „Entlassungsbrief“ oder „Wochenplan erstellen“.<% } %>
-                    </p>
-                    <% } else { %>
-                    <div class="space-y-2">
-                        <% workflowList.forEach(item => { %>
-                        <details class="rounded-lg border border-gray-200" <%= workflowList.length === 1 ? 'open' : '' %>>
-                            <summary class="cursor-pointer px-3 py-2">
-                                <span class="text-sm font-medium text-gray-900"><%= workflowName(item) %></span>
-                                <span class="ml-2 text-xs text-gray-500"><%= workflowPreview(item) %></span>
-                            </summary>
-                            <div class="border-t border-gray-100 px-3 py-2">
-                                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
-                                <p class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                    <% if (item.meeting_title) { %>
-                                    <span>aus: <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800"><%= item.meeting_title %></a></span>
-                                    <% } else { %>
-                                    <span class="badge bg-gray-200 text-gray-700">direkt erfasst</span>
-                                    <% } %>
-                                    <% if (canManage) { %>
-                                    <button type="button" class="text-primary-600 hover:text-primary-800"
-                                        data-entry='<%- JSON.stringify({ kind: 'workflows', id: item.id, name: item.name || '', text: item.text || '', description: '', meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
-                                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
-                                    <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('workflows', <%= item.id %>)">entfernen</button>
-                                    <% } %>
-                                </p>
-                            </div>
-                        </details>
-                        <% }); %>
-                    </div>
-                    <% } %>
-                </div>
-            </div>
-
-            <!-- Probleme und Adoptionsrisiken -->
-            <div class="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <%
-                const groups = [
-                    { kind: 'problems', title: 'Probleme', placeholder: 'Was funktioniert heute nicht?', label: 'Titel' },
-                    { kind: 'adoptionRisks', title: 'Adoptionsrisiken', placeholder: 'Warum könnte die Abteilung nicht wechseln wollen?', label: 'Titel' }
-                ];
-                %>
-                <% groups.forEach(group => { const list = entries[group.kind] || []; %>
-                <div class="card">
-                    <div class="card-header flex items-center justify-between gap-2">
-                        <h3 class="text-base font-semibold text-gray-900"><%= group.title %></h3>
-                        <span class="text-sm text-gray-400"><%= list.length %></span>
-                    </div>
-                    <div class="card-body">
-                        <% if (list.length === 0) { %>
-                        <p class="text-sm text-gray-500">Noch nichts erfasst.</p>
-                        <% } else { %>
-                        <ul class="space-y-2">
-                            <% list.forEach(item => { %>
-                            <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
-                                <% if (canManage) { %>
-                                <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                    <% if (item.meeting_title) { %>
-                                    <span>aus: <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800"><%= item.meeting_title %></a></span>
-                                    <% } else { %>
-                                    <span class="badge bg-gray-200 text-gray-700">direkt erfasst</span>
-                                    <% } %>
-                                    <button type="button" class="text-primary-600 hover:text-primary-800"
-                                        data-entry='<%- JSON.stringify({ kind: group.kind, id: item.id, text: item.text || '', description: item.description || '', meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
-                                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
-                                    <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('<%= group.kind %>', <%= item.id %>)">entfernen</button>
-                                </p>
-                                <% } else if (item.meeting_title) { %>
-                                <p class="mt-1 text-xs text-gray-500">aus: <%= item.meeting_title %></p>
-                                <% } %>
-                            </li>
-                            <% }); %>
-                        </ul>
-                        <% } %>
-
-                        <% if (canManage) { %>
-                        <form class="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3" onsubmit="addEntry(event, '<%= group.kind %>')">
-                            <textarea name="value" rows="2" required class="form-input text-sm" placeholder="<%= group.placeholder %>"></textarea>
-                            <button type="submit" class="btn-secondary text-sm">Hinzufügen</button>
-                        </form>
-                        <% } %>
-                    </div>
-                </div>
-                <% }); %>
-            </div>
-
-            <!-- Dateien -->
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="text-base font-semibold text-gray-900">Dokumente</h3></div>
-                <div class="card-body">
-                    <% const inputFiles = attachments.filter(a => a.phase !== 'output'); %>
-                    <% if (inputFiles.length === 0) { %>
-                    <p class="text-sm text-gray-500">Noch keine Dateien hochgeladen.</p>
-                    <% } else { %>
-                    <ul class="divide-y divide-gray-100">
-                        <% inputFiles.forEach(a => { %>
-                        <li class="flex flex-wrap items-center justify-between gap-2 py-2">
-                            <div class="min-w-0">
-                                <a href="/uploads/projects/<%= a.filename %>" target="_blank" rel="noopener"
-                                   class="text-sm font-medium text-primary-600 hover:text-primary-800 break-all"><%= a.original_name %></a>
-                                <p class="text-xs text-gray-500">
-                                    <%= (a.size / 1024).toFixed(0) %> KB · <%= a.created_by || 'unbekannt' %>
-                                </p>
-                            </div>
-                            <% if (canManage) { %>
-                            <button type="button" class="text-sm text-red-600 hover:text-red-900" onclick="deleteFile(<%= a.id %>)">entfernen</button>
-                            <% } %>
-                        </li>
-                        <% }); %>
-                    </ul>
-                    <% } %>
-
-                    <% if (canManage) { %>
-                    <form id="fileUploadForm" class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-center">
-                        <input type="file" name="attachments" multiple
-                               class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100">
-                        <button type="submit" id="fileUploadButton" class="btn-primary text-sm whitespace-nowrap">Hochladen</button>
-                    </form>
-                    <p class="mt-1 text-xs text-gray-400">PDF, Word, Excel, Bilder oder Text – max. 20 MB pro Datei, 10 Dateien pro Upload.</p>
-                    <% } %>
-                </div>
-            </div>
-
-            <!-- KI-Zusammenfassung der Bestandsaufnahme -->
-            <div class="card mb-4">
-                <div class="card-header flex flex-wrap items-center justify-between gap-2">
-                    <h3 class="text-base font-semibold text-gray-900">Zusammenfassung (KI)</h3>
-                    <% if (summaries.length > 0) { %>
-                    <span class="text-xs text-gray-500">
-                        <%= summaries[0].model || summaries[0].provider || 'unbekannt' %> ·
-                        <%= formatDateTime(summaries[0].created_at) %>
-                    </span>
-                    <% } %>
-                </div>
-                <div class="card-body">
-                    <% if (latestSummary) { %>
-                    <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
-                        <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSummary.content %></p>
-                    </div>
-                    <p class="mt-2 text-xs text-gray-500">
-                        Eingabe: <%= latestSummary.input_chars || 0 %> Zeichen
-                        <% if (latestSummary.prompt_tokens) { %>· <%= latestSummary.prompt_tokens %> Prompt-Token<% } %>
-                        <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
-                        <% if (latestSummary.created_by) { %>· von <%= latestSummary.created_by %><% } %>
-                    </p>
-                    <% } else { %>
-                    <p class="text-sm text-gray-500">Noch keine Zusammenfassung erstellt.</p>
-                    <% } %>
-
-                    <% if (canManage) { %>
-                    <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
-                        <div class="flex-1">
-                            <label for="summaryStaff" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
-                            <select id="summaryStaff" class="form-select text-sm">
-                                <% aiStaff.forEach(bot => { %>
-                                <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
-                                <% }); %>
-                            </select>
-                            <% if (aiStaff.length === 0) { %>
-                            <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
-                            <% } %>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-2">
-                            <label class="flex items-center gap-1.5 text-xs text-gray-600">
-                                <input type="checkbox" id="summaryLandscape" class="rounded border-gray-300">
-                                Querformat
-                            </label>
-                            <button type="button" class="btn-secondary text-sm" onclick="previewSummary()">Vorschau</button>
-                            <button type="button" id="summaryButton" class="btn-primary text-sm"
-                                <%= aiStaff.length === 0 ? 'disabled' : '' %>
-                                onclick="createSummary()">Zusammenfassung erstellen</button>
-                        </div>
-                    </div>
-                    <% if (latestSummary) { %>
-                    <p class="mt-2 text-xs text-gray-400">
-                        Eine neue Zusammenfassung ersetzt die bisherige Anzeige; ältere Versionen bleiben gespeichert.
-                    </p>
-                    <% } %>
-                    <% } %>
-
-                    <% if (summaries.length > 1) { %>
-                    <details class="mt-3">
-                        <summary class="cursor-pointer text-sm text-primary-700">Ältere Versionen (<%= summaries.length - 1 %>)</summary>
-                        <ul class="mt-2 divide-y divide-gray-100">
-                            <% summaries.slice(1).forEach(s => { %>
-                            <li class="py-2">
-                                <p class="text-xs text-gray-500">
-                                    <%= formatDateTime(s.created_at) %> · <%= s.model || s.provider || 'unbekannt' %>
-                                    · <%= s.input_chars || 0 %> Zeichen Eingabe
-                                </p>
-                                <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700"><%= s.content %></p>
-                            </li>
-                            <% }); %>
-                        </ul>
-                    </details>
-                    <% } %>
-                </div>
-            </div>
-        </section>
-
-        <!-- ========== INPUT-VISUALISIERUNG ========== -->
-        <section class="mb-10">
-            <div class="flex items-center gap-2 mb-3">
-                <span class="flex h-7 w-7 items-center justify-center rounded-full <%= latestSummary && latestSummary.bpmn_xml ? 'bg-primary-600' : 'bg-gray-300' %> text-sm font-semibold text-white">2</span>
-                <h2 class="text-lg font-semibold text-gray-900">Input-Visualisierung</h2>
-                <% if (!latestSummary || !latestSummary.bpmn_xml) { %>
-                <span class="badge bg-amber-100 text-amber-800 text-xs">geplant</span>
+        <% if (workflowGroups.length === 0 && !unassigned.hasData) { %>
+        <div class="card border-2 border-dashed border-gray-200 bg-white/60">
+            <div class="card-body text-sm text-gray-600">
+                <p>Noch kein Workflow erfasst.</p>
+                <p class="mt-2 text-gray-500">Lege einen an, z. B. „Entlassungsbrief“ oder „Wochenplan erstellen“.</p>
+                <% if (canManage) { %>
+                <button type="button" class="btn-primary mt-3 text-sm" onclick="openNewWorkflow()">Ersten Workflow anlegen</button>
                 <% } %>
             </div>
-            <p class="text-sm text-gray-600 mb-4">
-                Der bestehende Workflow, wie das Modell ihn aus den Eingaben ableitet.
-            </p>
+        </div>
+        <% } %>
 
-            <% if (latestSummary && latestSummary.bpmn_xml) { %>
-            <div class="card">
-                <div class="card-header flex flex-wrap items-center justify-between gap-2">
-                    <h3 class="text-base font-semibold text-gray-900">Flow-Diagramm (Ist-Zustand)</h3>
-                    <div class="flex items-center gap-3">
-                        <button type="button" id="bpmnSave" class="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded px-2.5 py-1">Speichern</button>
-                        <button type="button" id="bpmnPrint" class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
-                        <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="a4-page <%= latestSummary.bpmn_xml.includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
-                        <div id="bpmnCanvas" class="bpmn-canvas"></div>
-                    </div>
-                    <div id="bpmnLegend" class="mt-2 flex flex-wrap gap-3"></div>
-                    <p class="mt-2 text-xs text-gray-500">
-                        Automatisch aus der Bestandsaufnahme generiert — passt auf eine A4-Seite.
-                        Hoch- oder Querformat wird beim Erstellen der Zusammenfassung gewählt.
-                    </p>
-                </div>
-            </div>
-            <% } else { %>
-            <div class="card border-2 border-dashed border-gray-200 bg-white/60">
-                <div class="card-body text-sm text-gray-600">
-                    <% if (!latestSummary) { %>
-                    <p>Noch keine Visualisierung. Sie entsteht zusammen mit der Zusammenfassung aus den Eingaben.</p>
-                    <p class="mt-2 text-gray-500">Dafür oben unter „Input“ eine Zusammenfassung erstellen.</p>
-                    <% } else { %>
-                    <p>Die letzte Zusammenfassung enthielt kein Diagramm.</p>
-                    <p class="mt-2 text-gray-500">Zusammenfassung oben erneut erstellen, um die Visualisierung zu erzeugen.</p>
-                    <% } %>
-                    <p class="mt-2 text-gray-500">Das Markieren der erfassten Probleme im Diagramm ist noch geplant.</p>
-                </div>
-            </div>
-            <% } %>
-        </section>
+        <% workflowGroups.forEach(group => { %>
+        <%- include('partials/flow-workflow-card', { group, canManage, aiStaff, hasWorkflows }) %>
+        <% }); %>
 
-        <!-- ========== OUTPUT ========== -->
-        <section class="mb-10">
-            <div class="flex items-center gap-2 mb-3">
-                <span class="flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-sm font-semibold text-white">3</span>
-                <h2 class="text-lg font-semibold text-gray-900">Output</h2>
-                <span class="badge bg-amber-100 text-amber-800 text-xs">geplant</span>
-            </div>
-            <div class="card border-2 border-dashed border-gray-200 bg-white/60">
-                <div class="card-body text-sm text-gray-600">
-                    <p>Der Zielzustand: ein Workflow, der mit der neuen Software möglich ist — als Vorschlag aus den erfassten Problemen.</p>
-                    <p class="mt-2 text-gray-500">
-                        Zusätzlich sollen Screenshots und Beschreibungen der fertigen Integration hier abgelegt werden können.
-                    </p>
-                </div>
-            </div>
-        </section>
+        <% if (unassigned.hasData) { %>
+        <%- include('partials/flow-workflow-card', { group: unassigned, canManage, aiStaff, hasWorkflows }) %>
+        <% } %>
     </main>
 
     <% if (canManage) { %>
@@ -446,6 +168,16 @@
                     <input type="text" id="entryName" name="name" class="form-input"
                            placeholder="z. B. Workflow Entlassungsbrief">
                     <p class="mt-1 text-xs text-gray-500">Kurzer Titel, unter dem der Workflow in der Liste erscheint.</p>
+                </div>
+                <div id="entryWorkflowRow" class="hidden">
+                    <label for="entryWorkflow" class="mb-1 block text-sm font-medium text-gray-700">Workflow</label>
+                    <select id="entryWorkflow" name="workflow_id" class="form-select">
+                        <option value="">Ohne Workflow</option>
+                        <% workflows.forEach(workflow => { %>
+                        <option value="<%= workflow.id %>"><%= workflow.name || workflow.text %></option>
+                        <% }); %>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500">Ordnet den Eintrag einer Workflow-Karte zu.</p>
                 </div>
                 <div>
                     <label id="entryTextLabel" class="mb-1 block text-sm font-medium text-gray-700">Text</label>
@@ -465,23 +197,40 @@
     </div>
     <% } %>
 
-    <% if (summaries[0] && summaries[0].bpmn_xml) { %>
+    <% if (bpmnDiagrams.length > 0) { %>
     <script src="/bpmn-js/bpmn-modeler.production.min.js"></script>
     <% } %>
     <script>
         const CSRF_TOKEN = '<%= csrfToken %>';
         const PROJECT_ID = <%= project.id %>;
 
-        const ENTRY_FIELDS = {
-            workflows: 'description',
-            problems: 'title',
-            adoptionRisks: 'title'
-        };
         const ENTRY_ENDPOINTS = {
             workflows: 'workflows',
             problems: 'problems',
             adoptionRisks: 'adoption-risks'
         };
+        const ENTRY_TEXT_FIELDS = {
+            workflows: 'description',
+            problems: 'title',
+            adoptionRisks: 'title'
+        };
+        const ENTRY_LABELS = {
+            workflows: 'Beschreibung',
+            problems: 'Titel',
+            adoptionRisks: 'Titel'
+        };
+
+        function groupRoot(key) {
+            return document.querySelector('[data-flow-group="' + key + '"]');
+        }
+
+        function workflowIdOf(key) {
+            const root = groupRoot(key);
+            const value = root ? root.dataset.workflowId : '';
+            return value ? Number(value) : null;
+        }
+
+        // --- Eintraege anlegen und entfernen ---
 
         async function addEntry(event, kind) {
             event.preventDefault();
@@ -490,7 +239,11 @@
             if (!value) { form.elements.value.focus(); return; }
 
             const payload = {};
-            payload[ENTRY_FIELDS[kind]] = value;
+            payload[ENTRY_TEXT_FIELDS[kind]] = value;
+            const workflowField = form.elements.workflow_id;
+            if (workflowField && workflowField.value) {
+                payload.workflow_id = Number(workflowField.value);
+            }
 
             const resp = await fetch('/api/projects/' + PROJECT_ID + '/' + ENTRY_ENDPOINTS[kind], {
                 method: 'POST',
@@ -513,14 +266,7 @@
             alert('Fehler: ' + (err.error || resp.statusText));
         }
 
-        // --- Eintrag oeffnen und bearbeiten ---
-
-        const ENTRY_TEXT_FIELDS = { workflows: 'description', problems: 'title', adoptionRisks: 'title' };
-        const ENTRY_LABELS = {
-            workflows: 'Beschreibung',
-            problems: 'Titel',
-            adoptionRisks: 'Titel'
-        };
+        // --- Gemeinsames Modal fuer Bearbeiten und Anlegen ---
 
         function openEntry(rawEntry) {
             const entry = JSON.parse(rawEntry);
@@ -533,15 +279,18 @@
             form.elements.text.value = entry.text || '';
             form.elements.description.value = entry.description || '';
             form.elements.name.value = entry.name || '';
+            if (form.elements.workflow_id) {
+                form.elements.workflow_id.value = entry.workflow_id ? String(entry.workflow_id) : '';
+            }
 
             document.getElementById('entryModalTitle').textContent =
                 entry.kind === 'workflows' ? 'Workflow bearbeiten' : 'Eintrag bearbeiten';
             document.getElementById('entryTextLabel').textContent = ENTRY_LABELS[entry.kind] || 'Text';
 
             // workflows hat nur ein Textfeld; die Beschreibung IST der Text.
-            const descriptionRow = document.getElementById('entryDescriptionRow');
-            descriptionRow.classList.toggle('hidden', entry.kind === 'workflows');
+            document.getElementById('entryDescriptionRow').classList.toggle('hidden', entry.kind === 'workflows');
             document.getElementById('entryNameRow').classList.toggle('hidden', entry.kind !== 'workflows');
+            document.getElementById('entryWorkflowRow').classList.toggle('hidden', entry.kind === 'workflows');
 
             document.getElementById('entryOrigin').textContent = entry.meeting
                 ? `Herkunft: Termin "${entry.meeting}"`
@@ -566,6 +315,7 @@
             document.getElementById('entryTextLabel').textContent = 'Beschreibung';
             document.getElementById('entryDescriptionRow').classList.add('hidden');
             document.getElementById('entryNameRow').classList.remove('hidden');
+            document.getElementById('entryWorkflowRow').classList.add('hidden');
             document.getElementById('entryOrigin').textContent =
                 'Der Workflow wird direkt im Projekt erfasst.';
 
@@ -591,7 +341,14 @@
 
             const payload = {};
             payload[ENTRY_TEXT_FIELDS[kind]] = form.elements.text.value;
-            if (kind !== 'workflows') payload.description = form.elements.description.value;
+            if (kind !== 'workflows') {
+                payload.description = form.elements.description.value;
+                if (form.elements.workflow_id) {
+                    payload.workflow_id = form.elements.workflow_id.value
+                        ? Number(form.elements.workflow_id.value)
+                        : null;
+                }
+            }
             if (kind === 'workflows') payload.name = form.elements.name.value;
 
             const button = document.getElementById('entrySaveButton');
@@ -620,28 +377,36 @@
             if (event.key === 'Escape') closeEntry();
         });
 
-        document.getElementById('fileUploadForm')?.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const form = event.target;
-            const input = form.querySelector('input[type="file"]');
-            if (!input || !input.files || input.files.length === 0) return;
+        // --- Dokumente ---
 
-            const button = document.getElementById('fileUploadButton');
-            button.disabled = true;
-            try {
-                const body = new FormData();
-                for (const file of input.files) body.append('attachments', file);
-                const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments', {
-                    method: 'POST',
-                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
-                    body
-                });
-                if (resp.ok) { location.reload(); return; }
-                const err = await resp.json().catch(() => ({}));
-                alert('Fehler: ' + (err.error || resp.statusText));
-            } finally {
-                button.disabled = false;
-            }
+        document.querySelectorAll('.file-upload-form').forEach((form) => {
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const input = form.querySelector('input[type="file"]');
+                if (!input || !input.files || input.files.length === 0) return;
+
+                const button = form.querySelector('button[type="submit"]');
+                if (button) button.disabled = true;
+                try {
+                    const body = new FormData();
+                    for (const file of input.files) body.append('attachments', file);
+                    if (form.elements.workflow_id && form.elements.workflow_id.value) {
+                        body.append('workflow_id', form.elements.workflow_id.value);
+                    }
+                    if (form.elements.phase) body.append('phase', form.elements.phase.value);
+
+                    const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments', {
+                        method: 'POST',
+                        headers: { 'X-CSRF-Token': CSRF_TOKEN },
+                        body
+                    });
+                    if (resp.ok) { location.reload(); return; }
+                    const err = await resp.json().catch(() => ({}));
+                    alert('Fehler: ' + (err.error || resp.statusText));
+                } finally {
+                    if (button) button.disabled = false;
+                }
+            });
         });
 
         async function deleteFile(id) {
@@ -655,19 +420,15 @@
             alert('Fehler: ' + (err.error || resp.statusText));
         }
 
-        // --- KI-Zusammenfassung ---
-
-        function summaryStaffId() {
-            const select = document.getElementById('summaryStaff');
-            return select && select.value ? Number(select.value) : undefined;
-        }
+        // --- KI-Zusammenfassung je Workflow ---
 
         // Zeigt, was an das Modell gehen wuerde - ohne Aufruf und ohne Kosten.
-        async function previewSummary() {
+        async function previewSummary(key) {
+            const workflowId = workflowIdOf(key);
             const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
-                body: JSON.stringify({ dry_run: true })
+                body: JSON.stringify({ dry_run: true, workflow_id: workflowId || undefined })
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
@@ -689,132 +450,155 @@
             }
         }
 
-        async function createSummary() {
-            const button = document.getElementById('summaryButton');
+        async function createSummary(key) {
+            const root = groupRoot(key);
+            const button = root ? root.querySelector('[data-summary-create]') : null;
             if (!confirm('Zusammenfassung durch das Modell erstellen? Das kann einige Sekunden dauern.')) return;
-            button.disabled = true;
-            button.textContent = 'Erstelle…';
+
+            const workflowId = workflowIdOf(key);
+            const staffSelect = root ? root.querySelector('[data-summary-staff]') : null;
+            const landscape = root ? root.querySelector('[data-summary-landscape]') : null;
+
+            if (button) { button.disabled = true; button.textContent = 'Erstelle…'; }
             try {
-                const landscape = document.getElementById('summaryLandscape');
                 const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                     body: JSON.stringify({
-                        staff_id: summaryStaffId(),
-                        orientation: landscape && landscape.checked ? 'landscape' : 'portrait'
+                        staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
+                        orientation: landscape && landscape.checked ? 'landscape' : 'portrait',
+                        workflow_id: workflowId || undefined
                     })
                 });
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
                 location.reload();
             } finally {
-                button.disabled = false;
-                button.textContent = 'Zusammenfassung erstellen';
+                if (button) { button.disabled = false; button.textContent = 'Zusammenfassung erstellen'; }
             }
         }
 
-        // --- BPMN-Diagramm (Ist-Zustand) ---
+        // --- BPMN-Diagramme (Ist-Zustand, je Workflow) ---
 
-        const BPMN_XML = <%- JSON.stringify((summaries[0] && summaries[0].bpmn_xml) || '').replace(/<\//g, '<\\/') %>;
-        const SUMMARY_ID = <%- JSON.stringify(summaries[0] ? summaries[0].id : null) %>;
+        const BPMN_DIAGRAMS = <%- JSON.stringify(bpmnDiagrams).replace(/</g, '\\u003c') %>;
 
-        (function initBpmnDiagram() {
-            const canvas = document.getElementById('bpmnCanvas');
-            if (!canvas || !BPMN_XML) return;
+        (function initBpmnDiagrams() {
+            if (!BPMN_DIAGRAMS.length) return;
 
             const Viewer = window.BpmnJS || window.BpmnNavigatedViewer || window.BpmnViewer;
             if (!Viewer) {
                 console.warn('[bpmn] bpmn-js nicht geladen');
-                canvas.textContent = 'Diagramm-Renderer konnte nicht geladen werden.';
                 return;
             }
-            const viewer = new Viewer({ container: canvas });
-            viewer.importXML(BPMN_XML)
-                .then(() => {
-                    viewer.get('canvas').zoom('fit-viewport', 20);
-                    decoratePrograms(viewer);
-                })
-                .catch((err) => {
-                    console.warn('[bpmn] Import fehlgeschlagen:', err);
-                    canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
-                });
 
-            const downloadLink = document.getElementById('bpmnDownload');
-            if (downloadLink) {
-                downloadLink.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    viewer.saveXML().then(({ xml }) => {
-                        const blob = new Blob([xml], { type: 'application/xml' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'flow-ist-zustand.bpmn';
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                    }).catch(() => alert('XML-Export nicht möglich.'));
-                });
-            }
+            BPMN_DIAGRAMS.forEach((diagram) => {
+                const root = groupRoot(diagram.key);
+                const canvas = root ? root.querySelector('[data-bpmn-canvas]') : null;
+                if (!canvas) return;
 
-            const saveButton = document.getElementById('bpmnSave');
-            if (saveButton) {
-                saveButton.addEventListener('click', () => {
-                    if (!SUMMARY_ID) { alert('Keine Zusammenfassung zum Speichern vorhanden.'); return; }
-                    viewer.saveXML().then(({ xml }) => {
-                        saveButton.disabled = true;
-                        saveButton.textContent = 'Speichere…';
-                        return fetch('/api/projects/' + PROJECT_ID + '/flow-summary/' + SUMMARY_ID + '/bpmn', {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
-                            body: JSON.stringify({ bpmn_xml: xml })
-                        }).then((resp) => resp.json().then((data) => ({ ok: resp.ok, data })));
-                    }).then(({ ok, data }) => {
-                        if (!ok) throw new Error(data.error || 'Speichern fehlgeschlagen.');
-                        alert('Diagramm gespeichert.');
-                    }).catch((err) => {
-                        alert('Fehler: ' + (err.message || err));
-                    }).finally(() => {
-                        saveButton.disabled = false;
-                        saveButton.textContent = 'Speichern';
+                const viewer = new Viewer({ container: canvas });
+                viewer.importXML(diagram.xml)
+                    .then(() => {
+                        viewer.get('canvas').zoom('fit-viewport', 20);
+                        decoratePrograms(viewer, root);
+                    })
+                    .catch((err) => {
+                        console.warn('[bpmn] Import fehlgeschlagen:', err);
+                        canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
                     });
-                });
-            }
 
-            const printButton = document.getElementById('bpmnPrint');
-            if (printButton) {
-                printButton.addEventListener('click', () => {
-                    if (typeof viewer.saveSVG !== 'function') {
-                        alert('Drucken wird von dieser bpmn-js-Variante nicht unterstützt.');
-                        return;
+                // Die Visualisierung liegt in einklappbaren <details>. bpmn-js
+                // kann die Groesse erst messen, wenn der Abschnitt sichtbar ist.
+                const refreshSize = () => {
+                    if (!canvas.offsetParent) return;
+                    try {
+                        viewer.get('canvas').resized();
+                        viewer.get('canvas').zoom('fit-viewport', 20);
+                    } catch (err) {
+                        console.warn('[bpmn] resize fehlgeschlagen:', err);
                     }
-                    viewer.saveSVG().then(({ svg }) => {
-                        const win = window.open('', '_blank');
-                        if (!win) { alert('Pop-up blockiert — bitte erlauben.'); return; }
-                        const pageSize = BPMN_XML.includes('isHorizontal="true"')
-                            ? 'A4 landscape' : 'A4 portrait';
-                        win.document.write(
-                            '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flow-Diagramm</title>' +
-                            '<style>@page { size: ' + pageSize + '; margin: 10mm; }' +
-                            'html, body { margin: 0; padding: 0; }' +
-                            'svg { width: 100%; height: 100%; }</style></head><body>' +
-                            svg + '</body></html>'
-                        );
-                        win.document.close();
-                        win.focus();
-                        win.onload = () => win.print();
-                    }).catch((err) => {
-                        console.warn('[bpmn] saveSVG fehlgeschlagen:', err);
-                        alert('Drucken nicht möglich.');
+                };
+                [canvas.closest('[data-flow-group]'), canvas.closest('details')]
+                    .filter((el) => el && el.tagName === 'DETAILS')
+                    .forEach((el) => el.addEventListener('toggle', () => setTimeout(refreshSize, 0)));
+
+                const downloadLink = root.querySelector('[data-bpmn-download]');
+                if (downloadLink) {
+                    downloadLink.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        viewer.saveXML().then(({ xml }) => {
+                            const blob = new Blob([xml], { type: 'application/xml' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'flow-ist-zustand.bpmn';
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            URL.revokeObjectURL(url);
+                        }).catch(() => alert('XML-Export nicht möglich.'));
                     });
-                });
-            }
+                }
+
+                const saveButton = root.querySelector('[data-bpmn-save]');
+                if (saveButton) {
+                    saveButton.addEventListener('click', () => {
+                        if (!diagram.summaryId) { alert('Keine Zusammenfassung zum Speichern vorhanden.'); return; }
+                        viewer.saveXML().then(({ xml }) => {
+                            saveButton.disabled = true;
+                            saveButton.textContent = 'Speichere…';
+                            return fetch('/api/projects/' + PROJECT_ID + '/flow-summary/' + diagram.summaryId + '/bpmn', {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                                body: JSON.stringify({ bpmn_xml: xml })
+                            }).then((resp) => resp.json().then((data) => ({ ok: resp.ok, data })));
+                        }).then(({ ok, data }) => {
+                            if (!ok) throw new Error(data.error || 'Speichern fehlgeschlagen.');
+                            alert('Diagramm gespeichert.');
+                        }).catch((err) => {
+                            alert('Fehler: ' + (err.message || err));
+                        }).finally(() => {
+                            saveButton.disabled = false;
+                            saveButton.textContent = 'Speichern';
+                        });
+                    });
+                }
+
+                const printButton = root.querySelector('[data-bpmn-print]');
+                if (printButton) {
+                    printButton.addEventListener('click', () => {
+                        if (typeof viewer.saveSVG !== 'function') {
+                            alert('Drucken wird von dieser bpmn-js-Variante nicht unterstützt.');
+                            return;
+                        }
+                        viewer.saveSVG().then(({ svg }) => {
+                            const win = window.open('', '_blank');
+                            if (!win) { alert('Pop-up blockiert — bitte erlauben.'); return; }
+                            const pageSize = diagram.xml.includes('isHorizontal="true"')
+                                ? 'A4 landscape' : 'A4 portrait';
+                            win.document.write(
+                                '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flow-Diagramm</title>' +
+                                '<style>@page { size: ' + pageSize + '; margin: 10mm; }' +
+                                'html, body { margin: 0; padding: 0; }' +
+                                'svg { width: 100%; height: 100%; }</style></head><body>' +
+                                svg + '</body></html>'
+                            );
+                            win.document.close();
+                            win.focus();
+                            win.onload = () => win.print();
+                        }).catch((err) => {
+                            console.warn('[bpmn] saveSVG fehlgeschlagen:', err);
+                            alert('Drucken nicht möglich.');
+                        });
+                    });
+                }
+            });
         })();
 
         // Zeigt je Aufgabe das eingesetzte Programm als Badge an und baut
         // daraus eine Legende. Die Farbe stammt aus dem XML (bioc:fill),
         // der Programmname aus der <bpmn:documentation> ("Programm: X").
-        function decoratePrograms(viewer) {
+        function decoratePrograms(viewer, root) {
             const elementRegistry = viewer.get('elementRegistry');
             const overlays = viewer.get('overlays');
             const programColors = new Map();
@@ -850,7 +634,7 @@
                 });
             });
 
-            const legend = document.getElementById('bpmnLegend');
+            const legend = root.querySelector('[data-bpmn-legend]');
             if (!legend || programColors.size === 0) return;
             legend.innerHTML = '';
             programColors.forEach((color, program) => {
