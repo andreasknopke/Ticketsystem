@@ -119,6 +119,8 @@
 
         <%- include('partials/project-nav', { active: 'flow' }) %>
 
+        <% const latestSummary = summaries[0] || null; %>
+
         <!-- ========== INPUT ========== -->
         <section class="mb-10">
             <div class="flex items-center gap-2 mb-3">
@@ -127,35 +129,61 @@
                 <span class="text-sm text-gray-400">Bestandsaufnahme</span>
             </div>
             <p class="text-sm text-gray-600 mb-4">
-                Alles, was den heutigen Ablauf beschreibt: Gespräche, Dokumente und die daraus erkannten Probleme.
+                Erfasst wird der heutige Ablauf: wie der Prozess läuft, was daran stört — und welche Dokumente das belegen.
             </p>
 
-            <!-- Termine mit Transkript -->
-            <div class="card mb-4">
-                <div class="card-header"><h3 class="text-base font-semibold text-gray-900">Transkripte aus Terminen</h3></div>
-                <div class="card-body">
-                    <% if (transcripts.length === 0) { %>
-                    <p class="text-sm text-gray-500">
-                        Noch keine Transkripte erfasst.
-                        <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800">Zu den Terminen</a>
-                    </p>
-                    <% } else { %>
-                    <ul class="divide-y divide-gray-100">
-                        <% transcripts.forEach(t => { %>
-                        <li class="flex flex-wrap items-center justify-between gap-2 py-2">
-                            <div class="min-w-0">
-                                <p class="text-sm font-medium text-gray-900"><%= t.title %></p>
-                                <p class="text-xs text-gray-500">
-                                    <%= t.meeting_date %><% if (t.start_time) { %> · <%= t.start_time %> Uhr<% } %>
-                                    · <%= t.transcript_length %> Zeichen
+            <!-- Erkenntnisse: Workflow, Probleme, Adoptionsrisiken -->
+            <div class="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <%
+                const groups = [
+                    { kind: 'workflows', title: 'Workflow (Ist-Zustand)', placeholder: 'Wie läuft der Prozess heute ab?', label: 'Beschreibung' },
+                    { kind: 'problems', title: 'Probleme', placeholder: 'Was funktioniert heute nicht?', label: 'Titel' },
+                    { kind: 'adoptionRisks', title: 'Adoptionsrisiken', placeholder: 'Warum könnte die Abteilung nicht wechseln wollen?', label: 'Titel' }
+                ];
+                %>
+                <% groups.forEach(group => { const list = entries[group.kind] || []; %>
+                <div class="card">
+                    <div class="card-header flex items-center justify-between gap-2">
+                        <h3 class="text-base font-semibold text-gray-900"><%= group.title %></h3>
+                        <span class="text-sm text-gray-400"><%= list.length %></span>
+                    </div>
+                    <div class="card-body">
+                        <% if (list.length === 0) { %>
+                        <p class="text-sm text-gray-500">Noch nichts erfasst.</p>
+                        <% } else { %>
+                        <ul class="space-y-2">
+                            <% list.forEach(item => { %>
+                            <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
+                                <% if (canManage) { %>
+                                <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                    <% if (item.meeting_title) { %>
+                                    <span>aus: <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800"><%= item.meeting_title %></a></span>
+                                    <% } else { %>
+                                    <span class="badge bg-gray-200 text-gray-700">direkt erfasst</span>
+                                    <% } %>
+                                    <button type="button" class="text-primary-600 hover:text-primary-800"
+                                        data-entry='<%- JSON.stringify({ kind: group.kind, id: item.id, text: item.text || '', description: item.description || '', meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
+                                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
+                                    <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('<%= group.kind %>', <%= item.id %>)">entfernen</button>
                                 </p>
-                            </div>
-                            <a href="/project/<%= project.id %>/meetings" class="text-sm text-primary-600 hover:text-primary-800">Ansehen</a>
-                        </li>
-                        <% }); %>
-                    </ul>
-                    <% } %>
+                                <% } else if (item.meeting_title) { %>
+                                <p class="mt-1 text-xs text-gray-500">aus: <%= item.meeting_title %></p>
+                                <% } %>
+                            </li>
+                            <% }); %>
+                        </ul>
+                        <% } %>
+
+                        <% if (canManage) { %>
+                        <form class="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3" onsubmit="addEntry(event, '<%= group.kind %>')">
+                            <textarea name="value" rows="2" required class="form-input text-sm" placeholder="<%= group.placeholder %>"></textarea>
+                            <button type="submit" class="btn-secondary text-sm">Hinzufügen</button>
+                        </form>
+                        <% } %>
+                    </div>
                 </div>
+                <% }); %>
             </div>
 
             <!-- Dateien -->
@@ -207,7 +235,6 @@
                     <% } %>
                 </div>
                 <div class="card-body">
-                    <% const latestSummary = summaries[0] || null; %>
                     <% if (latestSummary) { %>
                     <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
                         <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSummary.content %></p>
@@ -218,23 +245,6 @@
                         <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
                         <% if (latestSummary.created_by) { %>· von <%= latestSummary.created_by %><% } %>
                     </p>
-                    <% if (latestSummary.bpmn_xml) { %>
-                    <div class="mt-4">
-                        <div class="mb-2 flex items-center justify-between gap-2">
-                            <h4 class="text-sm font-semibold text-gray-700">Flow-Diagramm (Ist-Zustand)</h4>
-                            <div class="flex items-center gap-3">
-                                <button type="button" id="bpmnSave" class="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded px-2.5 py-1">Speichern</button>
-                                <button type="button" id="bpmnPrint" class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
-                                <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
-                            </div>
-                        </div>
-                        <div class="a4-page <%= (latestSummary.bpmn_xml || '').includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
-                            <div id="bpmnCanvas" class="bpmn-canvas"></div>
-                        </div>
-                        <div id="bpmnLegend" class="mt-2 flex flex-wrap gap-3"></div>
-                        <p class="mt-2 text-xs text-gray-500">Automatisch aus der Bestandsaufnahme generiert — passt auf eine A4-Seite.</p>
-                    </div>
-                    <% } %>
                     <% } else { %>
                     <p class="text-sm text-gray-500">Noch keine Zusammenfassung erstellt.</p>
                     <% } %>
@@ -288,77 +298,56 @@
                     <% } %>
                 </div>
             </div>
-
-            <!-- Erkenntnisse -->
-            <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <%
-                const groups = [
-                    { kind: 'workflows', title: 'Workflow (Ist-Zustand)', placeholder: 'Wie läuft der Prozess heute ab?', label: 'Beschreibung' },
-                    { kind: 'problems', title: 'Probleme', placeholder: 'Was funktioniert heute nicht?', label: 'Titel' },
-                    { kind: 'adoptionRisks', title: 'Adoptionsrisiken', placeholder: 'Warum könnte die Abteilung nicht wechseln wollen?', label: 'Titel' }
-                ];
-                %>
-                <% groups.forEach(group => { const list = entries[group.kind] || []; %>
-                <div class="card">
-                    <div class="card-header flex items-center justify-between gap-2">
-                        <h3 class="text-base font-semibold text-gray-900"><%= group.title %></h3>
-                        <span class="text-sm text-gray-400"><%= list.length %></span>
-                    </div>
-                    <div class="card-body">
-                        <% if (list.length === 0) { %>
-                        <p class="text-sm text-gray-500">Noch nichts erfasst.</p>
-                        <% } else { %>
-                        <ul class="space-y-2">
-                            <% list.forEach(item => { %>
-                            <li class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                                <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= item.text %></p>
-                                <% if (canManage) { %>
-                                <p class="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                    <% if (item.meeting_title) { %>
-                                    <span>aus: <a href="/project/<%= project.id %>/meetings" class="text-primary-600 hover:text-primary-800"><%= item.meeting_title %></a></span>
-                                    <% } else { %>
-                                    <span class="badge bg-gray-200 text-gray-700">direkt erfasst</span>
-                                    <% } %>
-                                    <button type="button" class="text-primary-600 hover:text-primary-800"
-                                        data-entry='<%- JSON.stringify({ kind: group.kind, id: item.id, text: item.text || '', description: item.description || '', meeting: item.meeting_title || '' }).replace(/'/g, "&#39;") %>'
-                                        onclick='openEntry(this.dataset.entry)'>bearbeiten</button>
-                                    <button type="button" class="text-red-600 hover:text-red-900" onclick="deleteEntry('<%= group.kind %>', <%= item.id %>)">entfernen</button>
-                                </p>
-                                <% } else if (item.meeting_title) { %>
-                                <p class="mt-1 text-xs text-gray-500">aus: <%= item.meeting_title %></p>
-                                <% } %>
-                            </li>
-                            <% }); %>
-                        </ul>
-                        <% } %>
-
-                        <% if (canManage) { %>
-                        <form class="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3" onsubmit="addEntry(event, '<%= group.kind %>')">
-                            <textarea name="value" rows="2" required class="form-input text-sm" placeholder="<%= group.placeholder %>"></textarea>
-                            <button type="submit" class="btn-secondary text-sm">Hinzufügen</button>
-                        </form>
-                        <% } %>
-                    </div>
-                </div>
-                <% }); %>
-            </div>
         </section>
 
         <!-- ========== INPUT-VISUALISIERUNG ========== -->
         <section class="mb-10">
             <div class="flex items-center gap-2 mb-3">
-                <span class="flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-sm font-semibold text-white">2</span>
+                <span class="flex h-7 w-7 items-center justify-center rounded-full <%= latestSummary && latestSummary.bpmn_xml ? 'bg-primary-600' : 'bg-gray-300' %> text-sm font-semibold text-white">2</span>
                 <h2 class="text-lg font-semibold text-gray-900">Input-Visualisierung</h2>
+                <% if (!latestSummary || !latestSummary.bpmn_xml) { %>
                 <span class="badge bg-amber-100 text-amber-800 text-xs">geplant</span>
+                <% } %>
             </div>
-            <div class="card border-2 border-dashed border-gray-200 bg-white/60">
-                <div class="card-body text-sm text-gray-600">
-                    <p>Aus den Eingaben soll ein Modell den bestehenden Workflow aufzeichnen und die erfassten Probleme darin markieren.</p>
-                    <p class="mt-2 text-gray-500">
-                        Voraussetzung: die Erfassung oben ist vollständig genug, um Ablauf und Probleme abzubilden.
+            <p class="text-sm text-gray-600 mb-4">
+                Der bestehende Workflow, wie das Modell ihn aus den Eingaben ableitet.
+            </p>
+
+            <% if (latestSummary && latestSummary.bpmn_xml) { %>
+            <div class="card">
+                <div class="card-header flex flex-wrap items-center justify-between gap-2">
+                    <h3 class="text-base font-semibold text-gray-900">Flow-Diagramm (Ist-Zustand)</h3>
+                    <div class="flex items-center gap-3">
+                        <button type="button" id="bpmnSave" class="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded px-2.5 py-1">Speichern</button>
+                        <button type="button" id="bpmnPrint" class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
+                        <a href="#" id="bpmnDownload" class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="a4-page <%= latestSummary.bpmn_xml.includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
+                        <div id="bpmnCanvas" class="bpmn-canvas"></div>
+                    </div>
+                    <div id="bpmnLegend" class="mt-2 flex flex-wrap gap-3"></div>
+                    <p class="mt-2 text-xs text-gray-500">
+                        Automatisch aus der Bestandsaufnahme generiert — passt auf eine A4-Seite.
+                        Hoch- oder Querformat wird beim Erstellen der Zusammenfassung gewählt.
                     </p>
                 </div>
             </div>
+            <% } else { %>
+            <div class="card border-2 border-dashed border-gray-200 bg-white/60">
+                <div class="card-body text-sm text-gray-600">
+                    <% if (!latestSummary) { %>
+                    <p>Noch keine Visualisierung. Sie entsteht zusammen mit der Zusammenfassung aus den Eingaben.</p>
+                    <p class="mt-2 text-gray-500">Dafür oben unter „Input“ eine Zusammenfassung erstellen.</p>
+                    <% } else { %>
+                    <p>Die letzte Zusammenfassung enthielt kein Diagramm.</p>
+                    <p class="mt-2 text-gray-500">Zusammenfassung oben erneut erstellen, um die Visualisierung zu erzeugen.</p>
+                    <% } %>
+                    <p class="mt-2 text-gray-500">Das Markieren der erfassten Probleme im Diagramm ist noch geplant.</p>
+                </div>
+            </div>
+            <% } %>
         </section>
 
         <!-- ========== OUTPUT ========== -->
