@@ -1,6 +1,7 @@
 'use strict';
 
 const bpmn = require('./bpmn');
+const { fetchCatalog } = require('./catalog');
 
 /**
  * API-Routen fuer die Atlas-Uebernahme.
@@ -535,6 +536,26 @@ module.exports = function registerAtlasRoutes(app, deps) {
             });
 
             res.json({ latest: rows[0] || null, history: rows.slice(1) });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Testet die Verbindung zum CuraFlow-Funktionskatalog. force umgeht den
+    // Kurzzeit-Cache, damit der Button immer die aktuelle Erreichbarkeit zeigt.
+    app.get('/api/projects/:projectId/curaflow-catalog-test', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const result = await fetchCatalog({ force: true });
+            if (!result.catalog) {
+                return res.json({ ok: false, reason: result.reason || 'Funktionskatalog nicht erreichbar.' });
+            }
+            res.json({
+                ok: true,
+                catalogVersion: result.catalog.catalogVersion ?? null,
+                capabilityCount: Array.isArray(result.catalog.capabilities)
+                    ? result.catalog.capabilities.length
+                    : 0
+            });
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
