@@ -236,6 +236,17 @@ AI_CODING_MAX_CORRECTION_PASSES=2
 # werden. Muss groesser als grosse Entry-Point-Dateien sein, sonst koennen
 # search/replace-Edits auf abgeschnittenem Inhalt arbeiten (Default: 2 MiB).
 AI_CODING_SOURCE_MAX_BYTES=2097152
+
+# --- CuraFlow-Funktionskatalog (SOLL-Workflow) ---
+# Liefert die Funktionen, aus denen ein kuenftiger Ablauf (SOLL) besteht.
+# Der IST-Workflow (Termine/Transkripte) nutzt den Katalog NICHT.
+# Ohne CURAFLOW_BASE_URL laeuft die Soll-Planung ohne Funktionszuordnung
+# weiter — das ist ein unterstuetzter Zustand, kein Fehler.
+# Auth: Authorization: Bearer <JWT>, kein X-DB-Token (Katalog ist mandantenunabhaengig).
+CURAFLOW_BASE_URL=                       # z.B. https://curaflow.opnwork.de
+CURAFLOW_CATALOG_TOKEN=                  # JWT; ohne Token wird kein Auth-Header gesendet
+CURAFLOW_CATALOG_TIMEOUT_MS=8000
+CURAFLOW_CATALOG_TTL_MS=600000           # Cache-Dauer der Katalog-Antwort
 ```
 
 #### Bot erneut auspruefen lassen
