@@ -106,6 +106,33 @@ check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Programm:'),
 check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
     'BPMN-User-Prompt enthaelt die Eingabe');
 
+// --- Ueberarbeitung eines vorhandenen Diagramms ---
+check(typeof flowSummary.BPMN_REFINE_SYSTEM_PROMPT === 'string'
+    && flowSummary.BPMN_REFINE_SYSTEM_PROMPT.includes('Anpassungswunsch'),
+    'Refine-System-Prompt vorhanden');
+check(flowSummary.BPMN_REFINE_SYSTEM_PROMPT.includes('flowNodeRef'),
+    'Refine-System-Prompt erklaert Swimlane-Zuordnung');
+check(flowSummary.BPMN_REFINE_SYSTEM_PROMPT.includes('BPMNDiagram'),
+    'Refine-System-Prompt verbietet eigene Koordinaten');
+
+const refinePrompt = flowSummary.buildBpmnRefineUserPrompt({
+    currentXml: '<bpmn:definitions><bpmn:process id="p"/></bpmn:definitions>',
+    instruction: 'Swimlanes klarer trennen',
+    workflowName: 'Entlassungsbrief',
+    workflowDescription: 'Arzt diktiert, Pflege prueft'
+});
+check(refinePrompt.includes('Swimlanes klarer trennen'), 'Refine-Prompt enthaelt den Wunsch');
+check(refinePrompt.includes('<bpmn:process id="p"/>'), 'Refine-Prompt enthaelt das aktuelle Diagramm');
+check(refinePrompt.includes('Entlassungsbrief'), 'Refine-Prompt nennt den Workflow');
+check(refinePrompt.includes('Pflege prueft'), 'Refine-Prompt enthaelt die Workflow-Beschreibung');
+
+const refinePromptMinimal = flowSummary.buildBpmnRefineUserPrompt({
+    currentXml: '<definitions/>',
+    instruction: 'Kuerzer'
+});
+check(!refinePromptMinimal.includes('undefined') && refinePromptMinimal.includes('Kuerzer'),
+    'Refine-Prompt funktioniert ohne Workflow-Angaben');
+
 const fencedXml = '```xml\n<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d"><bpmn:process id="p"/></bpmn:definitions>\n```';
 const extractedFenced = flowSummary.extractBpmnXml(fencedXml);
 check(extractedFenced && extractedFenced.startsWith('<bpmn:definitions'),

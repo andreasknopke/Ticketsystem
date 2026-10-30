@@ -213,6 +213,40 @@ const originLabel = (item) => item.meeting_title
                 <p class="mt-2 text-xs text-gray-500">
                     Automatisch aus der Bestandsaufnahme dieses Workflows generiert.
                 </p>
+
+                <% if (canManage) { %>
+                <% const refineList = latestSummary.refinements || []; %>
+                <form class="bpmn-refine-form mt-4 border-t border-gray-100 pt-4"
+                      data-summary-id="<%= latestSummary.id %>"
+                      data-orientation="<%= latestSummary.bpmn_xml.includes('isHorizontal="true"') ? 'landscape' : 'portrait' %>">
+                    <label for="bpmnRefine-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">
+                        Diagramm überarbeiten
+                    </label>
+                    <textarea id="bpmnRefine-<%= group.key %>" name="instruction" rows="2" required
+                              class="form-input text-sm"
+                              placeholder="z. B. Swimlanes klarer trennen oder einen Schritt genauer aufteilen"></textarea>
+                    <div class="mt-2 flex flex-wrap items-center gap-2">
+                        <button type="submit" class="btn-secondary text-sm">Überarbeiten</button>
+                        <span class="text-xs text-gray-400">Das Modell behält das Diagramm bei und ändert nur den genannten Punkt.</span>
+                    </div>
+                </form>
+
+                <% if (refineList.length > 0) { %>
+                <details class="mt-3">
+                    <summary class="cursor-pointer text-sm text-primary-700">Bisherige Anpassungen (<%= refineList.length %>)</summary>
+                    <ul class="mt-2 divide-y divide-gray-100">
+                        <% refineList.forEach(r => { %>
+                        <li class="py-2">
+                            <p class="whitespace-pre-wrap break-words text-sm text-gray-700"><%= r.instruction %></p>
+                            <p class="mt-0.5 text-xs text-gray-500">
+                                <%= formatDateTime(r.created_at) %><% if (r.created_by) { %> · <%= r.created_by %><% } %><% if (r.model) { %> · <%= r.model %><% } %>
+                            </p>
+                        </li>
+                        <% }); %>
+                    </ul>
+                </details>
+                <% } %>
+                <% } %>
                 <% } else { %>
                 <p class="mt-2 text-sm text-gray-600">Die letzte Zusammenfassung enthielt kein Diagramm.</p>
                 <% } %>

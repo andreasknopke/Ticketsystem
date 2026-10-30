@@ -522,6 +522,18 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 ORDER BY id DESC`, hasFilter && workflowId
                 ? [req.params.projectId, workflowId]
                 : [req.params.projectId]);
+
+            // Anpassungswuensche je Zusammenfassung mitliefern (Verlauf).
+            const refinements = rows.length
+                ? await allAsync(`SELECT id, summary_id, instruction, provider, model, created_by, created_at
+                    FROM flow_bpmn_refinements
+                    WHERE summary_id IN (${rows.map(() => '?').join(', ')})
+                    ORDER BY id ASC`, rows.map((row) => row.id))
+                : [];
+            rows.forEach((row) => {
+                row.refinements = refinements.filter((item) => item.summary_id === row.id);
+            });
+
             res.json({ latest: rows[0] || null, history: rows.slice(1) });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -628,6 +640,94 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 redaction_hits: redacted.hits.length,
                 prompt_tokens: result.prompt_tokens || null,
                 completion_tokens: result.completion_tokens || null
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Ueberarbeitet ein bestehendes Diagramm anhand eines Anpassungswunsches.
+    // Die Text-Zusammenfassung bleibt unveraendert; nur das Diagramm wird neu
+    // erzeugt und neu gesetzt. Der Wunsch wird protokolliert.
+    app.post('/api/projects/:projectId/flow-summary/:summaryId/bpmn-refine', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const projectId = toId(req.params.projectId);
+            const summaryId = toId(req.params.summaryId);
+            if (!projectId || !summaryId) return res.status(400).json({ error: 'Ungueltige IDs.' });
+
+            const instruction = normalizeText(req.body.instruction);
+            if (!instruction) return res.status(400).json({ error: 'Anpassungswunsch ist erforderlich.' });
+            if (instruction.length > 2000) {
+                return res.status(400).json({ error: 'Anpassungswunsch ist zu lang (max. 2000 Zeichen).' });
+            }
+
+            const existing = await getAsync(`SELECT s.id, s.workflow_id, s.bpmn_xml,
+                    w.name AS workflow_name, w.description AS workflow_description
+                FROM project_flow_summaries s
+                LEFT JOIN workflows w ON w.id = s.workflow_id
+                WHERE s.id = ? AND s.project_id = ?`, [summaryId, projectId]);
+            if (!existing) return res.status(404).json({ error: 'Zusammenfassung nicht gefunden.' });
+            if (!existing.bpmn_xml) {
+                return res.status(400).json({ error: 'Zu dieser Zusammenfassung gibt es kein Diagramm.' });
+            }
+
+            const picked = await pickSummaryStaff(toId(req.body.staff_id));
+            if (picked.error) return res.status(409).json({ error: picked.error });
+            const staff = picked.staff;
+
+            const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
+            let result;
+            try {
+                result = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
+                    system: flowSummary.BPMN_REFINE_SYSTEM_PROMPT,
+                    user: flowSummary.buildBpmnRefineUserPrompt({
+                        currentXml: existing.bpmn_xml,
+                        instruction,
+                        workflowName: existing.workflow_name,
+                        workflowDescription: existing.workflow_description
+                    }),
+                    json: false
+                });
+            } catch (err) {
+                return res.status(502).json({ error: 'KI-Aufruf fehlgeschlagen: ' + err.message });
+            }
+
+            const extracted = flowSummary.extractBpmnXml(result.text);
+            if (!extracted) {
+                return res.status(502).json({ error: 'KI hat kein gueltiges BPMN-XML geliefert.' });
+            }
+
+            // Ausrichtung: explizit gewuenscht, sonst wie im bestehenden Diagramm.
+            const orientation = req.body.orientation === 'landscape' || req.body.orientation === 'portrait'
+                ? req.body.orientation
+                : (existing.bpmn_xml.includes('isHorizontal="true"') ? 'landscape' : 'portrait');
+
+            let bpmnXml;
+            try {
+                bpmnXml = await bpmn.layoutBpmnXml(extracted, { orientation });
+            } catch (err) {
+                return res.status(502).json({ error: 'Diagramm konnte nicht gesetzt werden: ' + err.message });
+            }
+
+            await runAsync('UPDATE project_flow_summaries SET bpmn_xml = ? WHERE id = ?', [bpmnXml, summaryId]);
+            await runAsync(`INSERT INTO flow_bpmn_refinements (summary_id, instruction, provider, model, created_by)
+                VALUES (?, ?, ?, ?, ?)`,
+            [summaryId, instruction, result.provider || provider, result.model || staff.ai_model || null,
+                req.session.user || null]);
+
+            res.json({
+                id: summaryId,
+                workflow_id: existing.workflow_id,
+                bpmn_xml: bpmnXml,
+                instruction,
+                orientation,
+                provider: result.provider || provider,
+                model: result.model || staff.ai_model || null,
+                staff_name: staff.name
             });
         } catch (err) {
             res.status(500).json({ error: err.message });

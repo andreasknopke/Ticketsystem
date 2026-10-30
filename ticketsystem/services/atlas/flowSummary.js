@@ -84,6 +84,26 @@ Regeln:
 - Sind mehrere benannte Workflows erfasst, modelliere den umfangreichsten davon (den mit den meisten Schritten). Die uebrigen bleiben unberuecksichtigt.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 
+// Ueberarbeitet ein BESTEHENDES Diagramm. Nur der Anpassungswunsch soll sich
+// aendern; alles andere bleibt erhalten, damit der Nutzer nicht jedes Mal von
+// vorn beginnt.
+const BPMN_REFINE_SYSTEM_PROMPT = `Du ueberarbeitest ein bestehendes BPMN-2.0-Prozessdiagramm des heutigen (Ist-)Zustands eines Software-Einfuehrungsprojekts in einer Krankenhausabteilung.
+
+Deine Aufgabe: Setze den Anpassungswunsch des Nutzers um und gib das vollstaendige, korrigierte Prozessmodell zurueck.
+
+Regeln:
+- Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
+- Uebernimm das vorhandene Modell: gleiche Elemente, gleiche ids, gleiche Reihenfolge und gleiche Bedeutung. Aendere nur, was der Anpassungswunsch verlangt.
+- Entferne keine Schritte, es sei denn, der Anpassungswunsch verlangt es ausdruecklich. Erfinde keine neuen fachlichen Schritte.
+- Bleibe bei den vorhandenen Rollen und Programmen, solange der Anpassungswunsch nichts anderes verlangt.
+- Wenn der Anpassungswunsch nach klareren Swimlanes fragt: lege je Rolle/Abteilung genau eine <bpmn:lane> an, ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu, und achte darauf, dass jede Lane mindestens ein Element enthaelt. Loese Rollen nicht in mehrere Lanes derselben Rolle auf.
+- Behalte die Struktur bei: genau ein <bpmn:process>, genau ein Start-Ereignis, ein zusammenhaengender Ablauf ueber <bpmn:sequenceFlow>.
+- Behalte die <bpmn:documentation> je Aktivitaet bei ("Dauer:", "Rolle:", "Programm:").
+- Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
+- Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
+- Hoechstens 14 Aktivitaeten/Gateways.
+- Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
+
 function truncate(text, limit) {
     if (!text) return '';
     const value = String(text);
@@ -240,6 +260,25 @@ function buildBpmnUserPrompt(inputText) {
 }
 
 /**
+ * Prompt fuer die Ueberarbeitung eines vorhandenen Diagramms.
+ * Die Beschreibung des Workflows geht mit, damit das Modell beim Umsetzen des
+ * Wunsches die fachliche Bedeutung der Schritte nicht verliert.
+ */
+function buildBpmnRefineUserPrompt({ currentXml, instruction, workflowName, workflowDescription }) {
+    return [
+        'Hier ist das aktuelle BPMN-Diagramm.',
+        workflowName ? `Workflow: ${workflowName}` : null,
+        workflowDescription ? `Beschreibung des Workflows:\n${workflowDescription}` : null,
+        '',
+        'Aktuelles Diagramm:',
+        currentXml,
+        '',
+        'Anpassungswunsch:',
+        instruction
+    ].filter((line) => line !== null).join('\n');
+}
+
+/**
  * Holt aus der LLM-Antwort das BPMN-XML heraus: entfernt Markdown-Codebloecke
  * und schneidet auf das <...definitions>-Wurzelelement zu. Gibt null zurueck,
  * wenn kein XML gefunden wurde.
@@ -260,9 +299,11 @@ function extractBpmnXml(text) {
 module.exports = {
     SYSTEM_PROMPT,
     BPMN_SYSTEM_PROMPT,
+    BPMN_REFINE_SYSTEM_PROMPT,
     buildInput,
     buildUserPrompt,
     buildBpmnUserPrompt,
+    buildBpmnRefineUserPrompt,
     extractBpmnXml,
     isTextFile,
     MAX_TOTAL_CHARS,

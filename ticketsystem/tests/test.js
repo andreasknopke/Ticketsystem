@@ -531,6 +531,24 @@ async function main() {
     resp = await request('POST', '/api/projects/999999/flow-summary', { dry_run: true }, jar);
     assert(resp.status === 404, 'Zusammenfassung fuer unbekanntes Projekt -> 404');
 
+    // --- API: Diagramm ueberarbeiten (Validierung ohne Modellaufruf) ---
+    console.log('\n📌 API: Diagramm ueberarbeiten');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary/999999/bpmn-refine', {
+        instruction: 'Swimlanes klarer trennen'
+    }, jar);
+    assert(resp.status === 404, 'Ueberarbeiten einer unbekannten Zusammenfassung -> 404');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary/999999/bpmn-refine', {
+        instruction: '   '
+    }, jar);
+    assert(resp.status === 400, 'Ueberarbeiten ohne Anpassungswunsch -> 400');
+
+    resp = await request('POST', '/api/projects/' + testProjId + '/flow-summary/999999/bpmn-refine', {
+        instruction: 'x'.repeat(2001)
+    }, jar);
+    assert(resp.status === 400, 'Zu langer Anpassungswunsch -> 400');
+
     await request('DELETE', '/api/problems/' + summaryProblemId, null, jar);
     await request('DELETE', '/api/adoption-risks/' + directRiskId, null, jar);
 

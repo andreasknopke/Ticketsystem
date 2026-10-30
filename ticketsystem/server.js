@@ -6899,6 +6899,14 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE project_id = ?
                 ORDER BY id DESC`, [projectId]);
 
+            // Anpassungswuensche zum Diagramm (Verlauf) je Zusammenfassung.
+            const refinements = await dbAll(`SELECT r.id, r.summary_id, r.instruction, r.model,
+                    r.created_by, r.created_at
+                FROM flow_bpmn_refinements r
+                JOIN project_flow_summaries s ON s.id = r.summary_id
+                WHERE s.project_id = ?
+                ORDER BY r.id ASC`, [projectId]);
+
             // Verwaiste workflow_ids (z.B. nach dem Loeschen eines Workflows)
             // zaehlen als "Ohne Workflow", damit nichts unsichtbar wird.
             const workflowIds = new Set(workflows.map((row) => row.id));
@@ -6922,7 +6930,12 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                     adoptionRisks: adoptionRisks.filter((row) => sameWorkflow(row.workflow_id, workflowId)),
                     inputFiles: attachments.filter((row) => sameWorkflow(row.workflow_id, workflowId) && row.phase !== 'output'),
                     outputFiles: attachments.filter((row) => sameWorkflow(row.workflow_id, workflowId) && row.phase === 'output'),
-                    summaries: summaries.filter((row) => sameWorkflow(row.workflow_id, workflowId))
+                    summaries: summaries
+                        .filter((row) => sameWorkflow(row.workflow_id, workflowId))
+                        .map((row) => ({
+                            ...row,
+                            refinements: refinements.filter((item) => item.summary_id === row.id)
+                        }))
                 };
             };
 

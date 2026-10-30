@@ -187,6 +187,20 @@ async function migrate(db) {
         FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
     )`);
 
+    // Anpassungswuensche zum BPMN-Diagramm ("Swimlanes besser trennen").
+    // Die Anweisungen bleiben als Verlauf erhalten, auch wenn das Diagramm
+    // mehrfach ueberarbeitet wird.
+    await run(db, `CREATE TABLE IF NOT EXISTS flow_bpmn_refinements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        summary_id INTEGER NOT NULL,
+        instruction TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (summary_id) REFERENCES project_flow_summaries(id) ON DELETE CASCADE
+    )`);
+
     // 3. Wissenstabellen (Reihenfolge: Kinder vor Elterntabelle)
     await makeMeetingOptional(db, 'problems', PROBLEMS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
@@ -209,6 +223,7 @@ async function migrate(db) {
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_meeting ON adoption_risks(meeting_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_meeting_participants_meeting ON meeting_participants(meeting_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_flow_summaries_project ON project_flow_summaries(project_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_bpmn_refinements_summary ON flow_bpmn_refinements(summary_id)');
 
     // 4. Default-Datensatz
     await run(db, `INSERT INTO hospitals (name)

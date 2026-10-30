@@ -266,7 +266,7 @@ Gehoerende zusammenfasst:
 | Probleme | Maengel im heutigen Ablauf, optional einem Workflow zugeordnet | umgesetzt |
 | Adoptionsrisiken | Hindernisse fuer den Wechsel, optional einem Workflow zugeordnet | umgesetzt |
 | Dokumente | `project_attachments` mit `phase = 'input'` und `workflow_id` | umgesetzt |
-| Input-Visualisierung | KI-Zusammenfassung + BPMN-Diagramm des Ist-Zustands fuer diesen Workflow (Hoch-/Querformat), bearbeitbar und druckbar | umgesetzt |
+| Input-Visualisierung | KI-Zusammenfassung + BPMN-Diagramm des Ist-Zustands fuer diesen Workflow (Hoch-/Querformat), bearbeitbar, druckbar und per Anpassungswunsch ueberarbeitbar | umgesetzt |
 | Output | Ziel-Workflow als Text/Screenshots; Dateien mit `phase = 'output'` | Platzhalter |
 
 Alles, was zu einem Workflow gehoert, traegt `workflow_id`: `problems`,
@@ -296,10 +296,29 @@ fuer diesen Workflow; ohne Angabe bleibt sie projektweit.
 | Speicherung | `project_flow_summaries` inkl. `workflow_id`, versioniert; Anzeige = neueste Version je Workflow |
 | Kosten | Token-Verbrauch landet wie bei den Ticket-Stages in `ai_token_usage` |
 | `dry_run: true` | liefert die redigierte Eingabe + Statistik, ohne Modellaufruf |
+| `workflow_id` | schraenkt Eingabe und Anzeige auf einen Workflow ein |
 
 Nicht maschinell lesbare Dateien (PDF, Word, Excel) gehen **nur mit Dateinamen**
 in die Eingabe ein; das steht dann auch so im Prompt, damit das Modell die
 Luecke nicht mit Erfundenem fuellt.
+
+### Diagramm ueberarbeiten
+
+`POST /api/projects/:id/flow-summary/:summaryId/bpmn-refine` mit
+`{ instruction, staff_id?, orientation? }` ueberarbeitet ein **bestehendes**
+Diagramm:
+
+| Aspekt | Umsetzung |
+|---|---|
+| Eingabe | aktuelles `bpmn_xml`, Workflow-Name und -Beschreibung, Anpassungswunsch (max. 2000 Zeichen) |
+| Prompt | `BPMN_REFINE_SYSTEM_PROMPT` — Modell soll nur den Wunsch umsetzen, Elemente/ids/Rollen behalten und keine eigenen Koordinaten liefern |
+| Ausgabe | neu gesetztes `bpmn_xml`; Ausrichtung aus dem Body, sonst wie im bisherigen Diagramm |
+| Speicherung | ueberschreibt `bpmn_xml` der Zusammenfassung; der Wunsch landet in `flow_bpmn_refinements` (Verlauf) |
+| Unveraendert | die Text-Zusammenfassung |
+
+Fehlerfaelle: `404` unbekannte Zusammenfassung, `400` ohne/zu langen Wunsch
+oder ohne vorhandenes Diagramm, `502` wenn das Modell kein gueltiges XML
+liefert.
 
 **Teststand:** `npm test` — 18 Migrationspruefungen, 17 Eingabe-Checks und 165
 Assertions, gruen, wiederholbar.

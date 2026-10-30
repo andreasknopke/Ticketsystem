@@ -409,6 +409,40 @@
             });
         });
 
+        // --- Diagramm ueberarbeiten (Anpassungswunsch) ---
+
+        document.querySelectorAll('.bpmn-refine-form').forEach((form) => {
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const summaryId = Number(form.dataset.summaryId);
+                const instruction = (form.elements.instruction.value || '').trim();
+                if (!summaryId || !instruction) { form.elements.instruction.focus(); return; }
+
+                if (!confirm('Diagramm anhand des Wunsches überarbeiten? Das kann einige Sekunden dauern.')) return;
+
+                const root = form.closest('[data-flow-group]');
+                const staffSelect = root ? root.querySelector('[data-summary-staff]') : null;
+                const button = form.querySelector('button[type="submit"]');
+                if (button) { button.disabled = true; button.textContent = 'Überarbeite…'; }
+                try {
+                    const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary/' + summaryId + '/bpmn-refine', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                        body: JSON.stringify({
+                            instruction,
+                            staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
+                            orientation: form.dataset.orientation || undefined
+                        })
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+                    location.reload();
+                } finally {
+                    if (button) { button.disabled = false; button.textContent = 'Überarbeiten'; }
+                }
+            });
+        });
+
         async function deleteFile(id) {
             if (!confirm('Datei wirklich entfernen?')) return;
             const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments/' + id, {
