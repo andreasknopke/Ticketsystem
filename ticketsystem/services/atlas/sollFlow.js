@@ -74,6 +74,113 @@ const MISSING_HEADER = [
  *
  * Der Eingabetext erscheint wortgleich.
  */
+const SOLL_BPMN_SYSTEM_PROMPT = `Du erstellst ein BPMN-2.0-Prozessdiagramm des kuenftigen (Soll-)Zustands eines Software-Einfuehrungsprojekts in einer Krankenhausabteilung.
+
+Deine Aufgabe: Bilde den kuenftigen Ablauf mit den Funktionen aus dem mitgelieferten CuraFlow-Funktionskatalog als gueltiges BPMN-2.0-Prozessmodell ab.
+
+Regeln:
+- Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
+- Verwende als Root <bpmn:definitions> mit id, targetNamespace und xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL".
+- Lege genau einen <bpmn:process> an und genau ein Start-Ereignis (<bpmn:startEvent>).
+- Zerlege den kuenftigen Ablauf in einzelne, konkrete Schritte und modelliere jeden als <bpmn:userTask> mit eindeutiger id und kurzem, sprechendem name-Attribut (Deutsch). Fasse verwandte Taetigkeiten nicht zu einer zusammen.
+- Lege in jeder Aktivitaet ein <bpmn:documentation> mit drei Zeilen an:
+  - "Funktion:" die zugeordnete CuraFlow-Funktion. Genau eine id aus dem Katalog, oder "gap" (Katalog bildet den Schritt nicht ab), oder "manuell" (menschliche Arbeit bleibt). Keine erfundenen ids.
+  - "Rolle:" die ausfuehrende Rolle.
+  - "Programm:" das eingesetzte System, z. B. "CuraFlow". Bei "gap" oder "manuell" das heute genutzte Programm, falls es aus der Zusammenfassung hervorgeht.
+- Verwende <bpmn:exclusiveGateway> fuer Verzweigungen, <bpmn:parallelGateway> fuer parallele Taetigkeiten und <bpmn:endEvent> fuer das Ende. Bilde Verzweigungen und Zusammenfuehrungen ab, wie sie im Zielablauf vorkommen.
+- Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
+- Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
+- Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
+- Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
+- Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
+- Halte das Modell detailliert, aber kompakt: hoechstens 14 Aktivitaeten/Gateways.
+- Modelliere nur, was aus der Zusammenfassung belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
+- Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
+
+/**
+ * Baut den User-Prompt fuer das Soll-Diagramm: die (bereits erzeugte)
+ * Soll-Zusammenfassung plus die verfuegbaren Katalog-Funktionen.
+ */
+function buildSollBpmnUserPrompt(sollContent, catalog) {
+    const text = String(sollContent == null ? '' : sollContent);
+    const catalogText = formatCatalog(catalog);
+    const catalogBlock = catalogText
+        ? ['Verfuegbare CuraFlow-Funktionen (nur diese ids sind gueltig):', catalogText].join('\n')
+        : 'Es ist kein Funktionskatalog verfuegbar. Verwende ausschliesslich die ids aus der Zusammenfassung oder "gap"/"manuell".';
+    return [
+        'Hier ist der Zielzustand (Soll-Workflow).',
+        '',
+        text,
+        '',
+        catalogBlock,
+        '',
+        'Erstelle daraus das BPMN-2.0-Diagramm des kuenftigen Ablaufs.'
+    ].join('\n');
+}
+
+function describeFunktion(funktion) {
+    const value = typeof funktion === 'string' ? funktion.trim() : '';
+    if (!value) return '';
+    if (value === 'gap') return 'CuraFlow kann das aktuell nicht abbilden';
+    if (value === 'manuell') return 'bleibt manuelle Arbeit';
+    return `CuraFlow-Funktion \`${value}\``;
+}
+
+/**
+ * Wandelt die JSON-Antwort des Soll-Prompts in lesbaren Markdown-Text um.
+ * Liefert "" fuer unbrauchbare Eingaben; wirft nie.
+ */
+function formatSollContent(parsed) {
+    try {
+        let data = parsed;
+        if (typeof data === 'string') {
+            const trimmed = data.trim();
+            try { data = JSON.parse(trimmed); } catch (_) { return trimmed || ''; }
+        }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
+
+        const lines = [];
+        const zusammenfassung = typeof data.zusammenfassung === 'string' ? data.zusammenfassung.trim() : '';
+        if (zusammenfassung) lines.push(zusammenfassung);
+
+        const schritte = Array.isArray(data.schritte) ? data.schritte : [];
+        if (schritte.length) {
+            lines.push('');
+            lines.push('## Kuenftiger Ablauf');
+            schritte.forEach((step, index) => {
+                if (!step || typeof step !== 'object') return;
+                const ist = String(step.ist || '').trim();
+                const soll = String(step.soll || '').trim();
+                const funktion = describeFunktion(step.funktion);
+                const rolle = String(step.rolle || '').trim();
+                const begruendung = String(step.begruendung || '').trim();
+
+                const title = soll || ist || `Schritt ${index + 1}`;
+                lines.push(`### ${index + 1}. ${title}`);
+                if (ist && ist !== title) lines.push(`- Heute: ${ist}`);
+                if (soll && soll !== title) lines.push(`- Kuenftig: ${soll}`);
+                if (funktion) lines.push(`- Funktion: ${funktion}`);
+                if (rolle) lines.push(`- Rolle: ${rolle}`);
+                if (begruendung) lines.push(`- Begruendung: ${begruendung}`);
+            });
+        }
+
+        const offenePunkte = Array.isArray(data.offene_punkte) ? data.offene_punkte : [];
+        if (offenePunkte.length) {
+            lines.push('');
+            lines.push('## Offene Punkte');
+            offenePunkte.forEach((punkt) => {
+                const text = String(punkt == null ? '' : punkt).trim();
+                if (text) lines.push(`- ${text}`);
+            });
+        }
+
+        return lines.join('\n');
+    } catch (_) {
+        return '';
+    }
+}
+
 function buildSollUserPrompt(inputText, catalog) {
     const text = String(inputText == null ? '' : inputText);
     const catalogText = formatCatalog(catalog);
@@ -100,5 +207,8 @@ function buildSollUserPrompt(inputText, catalog) {
 
 module.exports = {
     SOLL_SYSTEM_PROMPT,
-    buildSollUserPrompt
+    buildSollUserPrompt,
+    SOLL_BPMN_SYSTEM_PROMPT,
+    buildSollBpmnUserPrompt,
+    formatSollContent
 };

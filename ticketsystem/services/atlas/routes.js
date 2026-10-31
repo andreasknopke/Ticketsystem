@@ -2,6 +2,13 @@
 
 const bpmn = require('./bpmn');
 const { fetchCatalog } = require('./catalog');
+const {
+    SOLL_SYSTEM_PROMPT,
+    buildSollUserPrompt,
+    SOLL_BPMN_SYSTEM_PROMPT,
+    buildSollBpmnUserPrompt,
+    formatSollContent
+} = require('./sollFlow');
 
 /**
  * API-Routen fuer die Atlas-Uebernahme.
@@ -555,6 +562,117 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 capabilityCount: Array.isArray(result.catalog.capabilities)
                     ? result.catalog.capabilities.length
                     : 0
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Leitet aus der Ist-Zusammenfassung und dem CuraFlow-Funktionskatalog den
+    // Soll-Workflow ab: eine Zusammenfassung (JSON-Vertrag, als Markdown
+    // gespeichert) und ein best-effort BPMN-Diagramm des Zielzustands.
+    app.post('/api/projects/:projectId/soll-flow', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const projectId = toId(req.params.projectId);
+            if (!projectId) return res.status(400).json({ error: 'Ungueltige Projekt-ID.' });
+
+            const rawWorkflowId = req.body.workflow_id;
+            const workflowId = rawWorkflowId === undefined || rawWorkflowId === null || rawWorkflowId === ''
+                ? null
+                : toId(rawWorkflowId);
+            if (rawWorkflowId !== undefined && rawWorkflowId !== null && rawWorkflowId !== '' && !workflowId) {
+                return res.status(400).json({ error: 'Ungueltige workflow_id.' });
+            }
+
+            const collected = await collectSummaryInput(projectId, workflowId);
+            if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+            if (collected.error) return res.status(404).json({ error: collected.error });
+
+            // Kontext ist die Ist-Zusammenfassung dieses Workflows.
+            const summaryId = toId(req.body.summary_id);
+            const istSummary = summaryId
+                ? await getAsync('SELECT id, content FROM project_flow_summaries WHERE id = ? AND project_id = ?',
+                    [summaryId, projectId])
+                : await getAsync(`SELECT id, content FROM project_flow_summaries
+                    WHERE project_id = ? ${workflowId ? 'AND workflow_id = ?' : 'AND workflow_id IS NULL'}
+                    ORDER BY id DESC LIMIT 1`,
+                workflowId ? [projectId, workflowId] : [projectId]);
+            if (!istSummary) return res.status(404).json({ error: 'Ist-Zusammenfassung nicht gefunden.' });
+            if (!String(istSummary.content || '').trim()) {
+                return res.status(409).json({ error: 'Die Ist-Zusammenfassung ist leer. Erstelle sie zuerst unter "Input-Visualisierung".' });
+            }
+
+            const catalogResult = await fetchCatalog();
+            const catalog = catalogResult.catalog;
+            const catalogVersion = catalog && catalog.catalogVersion !== undefined ? catalog.catalogVersion : null;
+            const capabilityCount = catalog && Array.isArray(catalog.capabilities) ? catalog.capabilities.length : 0;
+
+            const picked = await pickSummaryStaff(toId(req.body.staff_id));
+            if (picked.error) return res.status(409).json({ error: picked.error });
+            const staff = picked.staff;
+            const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
+
+            // 1) Soll-Zusammenfassung (strukturierter JSON-Vertrag).
+            let sollResult;
+            try {
+                sollResult = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    maxTokens: Math.min(staff.ai_max_tokens || 2000, 4000),
+                    system: SOLL_SYSTEM_PROMPT,
+                    user: buildSollUserPrompt(istSummary.content, catalog),
+                    json: true
+                });
+            } catch (err) {
+                return res.status(502).json({ error: 'KI-Aufruf (Soll-Zusammenfassung) fehlgeschlagen: ' + err.message });
+            }
+
+            const parsed = aiClient.tryParseJson(sollResult.text);
+            const sollContent = formatSollContent(parsed) || String(sollResult.text || '').trim();
+            if (!sollContent) return res.status(502).json({ error: 'KI hat keinen Soll-Workflow geliefert.' });
+
+            // 2) Soll-Diagramm als zweiter, best-effort Aufruf.
+            let bpmnXml = null;
+            let bpmnError = null;
+            try {
+                const bpmnResult = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
+                    system: SOLL_BPMN_SYSTEM_PROMPT,
+                    user: buildSollBpmnUserPrompt(sollContent, catalog),
+                    json: false
+                });
+                const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
+                const orientation = req.body.orientation === 'landscape' ? 'landscape' : 'portrait';
+                bpmnXml = extracted ? await bpmn.layoutBpmnXml(extracted, { orientation }) : null;
+            } catch (err) {
+                bpmnError = err.message;
+            }
+
+            const inserted = await runAsync(`INSERT INTO project_soll_flows
+                    (project_id, workflow_id, summary_id, content, bpmn_xml, catalog_version, capability_count,
+                     provider, model, prompt_tokens, completion_tokens, duration_ms, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [projectId, workflowId, istSummary.id, sollContent, bpmnXml, catalogVersion, capabilityCount,
+                sollResult.provider || provider, sollResult.model || staff.ai_model || null,
+                sollResult.prompt_tokens || null, sollResult.completion_tokens || null,
+                sollResult.duration_ms || null, req.session.user || null]);
+
+            res.status(201).json({
+                id: inserted.lastID,
+                workflow_id: workflowId,
+                summary_id: istSummary.id,
+                content: sollContent,
+                bpmn_xml: bpmnXml,
+                bpmn_error: bpmnError,
+                catalog_version: catalogVersion,
+                capability_count: capabilityCount,
+                provider: sollResult.provider || provider,
+                model: sollResult.model || staff.ai_model || null,
+                staff_name: staff.name
             });
         } catch (err) {
             res.status(500).json({ error: err.message });

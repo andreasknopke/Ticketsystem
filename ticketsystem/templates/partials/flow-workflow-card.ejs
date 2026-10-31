@@ -10,6 +10,7 @@
 const groupWorkflowId = group.workflow ? group.workflow.id : '';
 const groupCanCreate = Boolean(group.workflow) || !hasWorkflows;
 const latestSummary = group.summaries[0] || null;
+const latestSoll = (group.sollFlows || [])[0] || null;
 const originLabel = (item) => item.meeting_title
     ? `aus: ${item.meeting_title}`
     : 'direkt erfasst';
@@ -307,6 +308,79 @@ const originLabel = (item) => item.meeting_title
             </div>
         </details>
 
+        <!-- ===== Soll-Workflow (Zielzustand) ===== -->
+        <details class="rounded-lg border border-gray-200">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
+                Soll-Workflow (Zielzustand)
+                <% if (latestSoll) { %><span class="ml-1 text-xs font-normal text-gray-500">(abgeleitet)</span><% } %>
+            </summary>
+            <div class="border-t border-gray-100 px-3 py-3">
+                <% if (latestSoll) { %>
+                <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+                    <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSoll.content %></p>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    <%= latestSoll.model || latestSoll.provider || 'unbekannt' %> ·
+                    <%= formatDateTime(latestSoll.created_at) %>
+                    <% if (latestSoll.capability_count != null) { %>· <%= latestSoll.capability_count %> Katalog-Funktionen<% } %>
+                    <% if (latestSoll.catalog_version != null) { %>· Katalog-Version <%= latestSoll.catalog_version %><% } %>
+                </p>
+
+                <% if (latestSoll.bpmn_xml) { %>
+                <div class="mt-3 a4-page <%= latestSoll.bpmn_xml.includes('isHorizontal="true"') ? 'a4-page--landscape' : '' %>">
+                    <div class="bpmn-canvas" data-soll-bpmn-canvas></div>
+                </div>
+                <div class="mt-2 flex flex-wrap items-center gap-3">
+                    <button type="button" data-soll-bpmn-print class="text-xs text-primary-700 hover:underline">Drucken / PDF</button>
+                    <a href="#" data-soll-bpmn-download class="text-xs text-primary-700 hover:underline">BPMN-XML herunterladen</a>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    Automatisch aus der Ist-Zusammenfassung und dem Funktionskatalog abgeleitet.
+                </p>
+                <% } else { %>
+                <p class="mt-2 text-sm text-gray-600">Die Ableitung enthielt kein Diagramm.</p>
+                <% } %>
+                <% } else { %>
+                <p class="text-sm text-gray-600">
+                    Der Zielzustand: wie derselbe Ablauf künftig mit CuraFlow aussieht — abgeleitet aus der Ist-Zusammenfassung und dem Funktionskatalog.
+                </p>
+                <% if (!latestSummary) { %>
+                <p class="mt-2 text-xs text-amber-700">Erstelle zuerst die Ist-Zusammenfassung unter „Input-Visualisierung“.</p>
+                <% } %>
+                <% } %>
+
+                <% if (canManage && groupCanCreate && latestSummary) { %>
+                <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
+                    <div class="flex-1">
+                        <label for="sollStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
+                        <select id="sollStaff-<%= group.key %>" data-soll-staff class="form-select text-sm">
+                            <% aiStaff.forEach(bot => { %>
+                            <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
+                            <% }); %>
+                        </select>
+                        <% if (aiStaff.length === 0) { %>
+                        <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
+                        <% } %>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+                            <input type="checkbox" data-soll-landscape class="rounded border-gray-300">
+                            Querformat
+                        </label>
+                        <button type="button" data-soll-create class="btn-primary text-sm"
+                            <%= aiStaff.length === 0 ? 'disabled' : '' %>
+                            onclick="createSollFlow('<%= group.key %>')">Soll-Workflow erstellen</button>
+                    </div>
+                </div>
+                <% if (latestSoll) { %>
+                <p class="mt-2 text-xs text-gray-400">
+                    Ein erneutes Erstellen ersetzt die bisherige Anzeige; ältere Ableitungen bleiben gespeichert.
+                </p>
+                <% } %>
+                <% } %>
+            </div>
+        </details>
+
         <!-- ===== Output ===== -->
         <details class="rounded-lg border border-gray-200">
             <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-900">
@@ -320,7 +394,7 @@ const originLabel = (item) => item.meeting_title
                     Der Zielzustand: ein Workflow, der mit der neuen Software möglich ist — als Vorschlag aus den erfassten Problemen.
                 </p>
                 <p class="mt-1 text-xs text-gray-500">
-                    Screenshots und Beschreibungen der fertigen Integration können hier abgelegt werden. Die Ableitung per KI ist noch geplant.
+                    Screenshots und Beschreibungen der fertigen Integration können hier abgelegt werden. Die KI-Ableitung findest du unter „Soll-Workflow (Zielzustand)“.
                 </p>
 
                 <% if (group.outputFiles.length > 0) { %>

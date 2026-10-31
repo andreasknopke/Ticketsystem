@@ -6907,6 +6907,13 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE s.project_id = ?
                 ORDER BY r.id ASC`, [projectId]);
 
+            // KI-abgeleitete Soll-Workflows (Zielzustand) je Workflow.
+            const sollFlows = await dbAll(`SELECT id, summary_id, workflow_id, content, bpmn_xml,
+                    catalog_version, capability_count, provider, model, created_by, created_at
+                FROM project_soll_flows
+                WHERE project_id = ?
+                ORDER BY id DESC`, [projectId]);
+
             // Verwaiste workflow_ids (z.B. nach dem Loeschen eines Workflows)
             // zaehlen als "Ohne Workflow", damit nichts unsichtbar wird.
             const workflowIds = new Set(workflows.map((row) => row.id));
@@ -6935,7 +6942,8 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                         .map((row) => ({
                             ...row,
                             refinements: refinements.filter((item) => item.summary_id === row.id)
-                        }))
+                        })),
+                    sollFlows: sollFlows.filter((row) => sameWorkflow(row.workflow_id, workflowId))
                 };
             };
 
@@ -6948,15 +6956,20 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
             const unassigned = buildGroup(null);
             unassigned.hasData = (unassigned.problems.length + unassigned.adoptionRisks.length
                 + unassigned.inputFiles.length + unassigned.outputFiles.length
-                + unassigned.summaries.length) > 0;
+                + unassigned.summaries.length + unassigned.sollFlows.length) > 0;
             unassigned.hasWorkflows = workflows.length > 0;
 
             const bpmnDiagrams = [];
+            const sollBpmnDiagrams = [];
             const groupsWithData = workflowGroups.concat(unassigned.hasData ? [unassigned] : []);
             for (const group of groupsWithData) {
                 const latest = group.summaries[0];
                 if (latest && latest.bpmn_xml) {
                     bpmnDiagrams.push({ key: group.key, summaryId: latest.id, xml: latest.bpmn_xml });
+                }
+                const latestSoll = group.sollFlows[0];
+                if (latestSoll && latestSoll.bpmn_xml) {
+                    sollBpmnDiagrams.push({ key: group.key, xml: latestSoll.bpmn_xml });
                 }
             }
 
@@ -6967,6 +6980,7 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 unassigned,
                 hasWorkflows: workflows.length > 0,
                 bpmnDiagrams,
+                sollBpmnDiagrams,
                 aiStaff: await dbAll(`SELECT id, name, ai_model FROM staff
                     WHERE kind = 'ai' AND active = 1 ORDER BY name`, []),
                 user: req.session.user,

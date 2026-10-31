@@ -47,6 +47,7 @@ const workflowGroup = {
     inputFiles: [{ id: 3, filename: 'a.pdf', original_name: 'Ablauf.pdf', size: 2048, created_by: 'admin' }],
     outputFiles: [{ id: 4, filename: 'b.png', original_name: 'Ziel.png', size: 4096, created_by: 'admin' }],
     summaries: [summary],
+    sollFlows: [],
     isFirst: true
 };
 
@@ -59,6 +60,7 @@ const unassignedGroup = {
     inputFiles: [],
     outputFiles: [],
     summaries: [],
+    sollFlows: [],
     hasData: true,
     hasWorkflows: true
 };
@@ -77,6 +79,7 @@ const baseLocals = {
     unassigned: unassignedGroup,
     hasWorkflows: true,
     bpmnDiagrams: [{ key: 'wf-1', summaryId: 9, xml: summary.bpmn_xml }],
+    sollBpmnDiagrams: [],
     aiStaff: [{ id: 1, name: 'Planer', ai_model: 'test-model' }],
     formatDateTime: (value) => String(value),
     toTitle: (value) => String(value),

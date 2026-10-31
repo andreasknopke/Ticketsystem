@@ -210,7 +210,7 @@
     </div>
     <% } %>
 
-    <% if (bpmnDiagrams.length > 0) { %>
+    <% if (bpmnDiagrams.length > 0 || (sollBpmnDiagrams || []).length > 0) { %>
     <script src="/bpmn-js/bpmn-modeler.production.min.js"></script>
     <% } %>
     <script>
@@ -567,6 +567,36 @@
             }
         }
 
+        // --- Soll-Workflow (Zielzustand) aus dem CuraFlow-Katalog ---
+
+        async function createSollFlow(key) {
+            const root = groupRoot(key);
+            const button = root ? root.querySelector('[data-soll-create]') : null;
+            if (!confirm('Soll-Workflow aus dem CuraFlow-Funktionskatalog ableiten? Das kann einige Sekunden dauern.')) return;
+
+            const workflowId = workflowIdOf(key);
+            const staffSelect = root ? root.querySelector('[data-soll-staff]') : null;
+            const landscape = root ? root.querySelector('[data-soll-landscape]') : null;
+
+            if (button) { button.disabled = true; button.textContent = 'Erstelle…'; }
+            try {
+                const resp = await fetch('/api/projects/' + PROJECT_ID + '/soll-flow', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                    body: JSON.stringify({
+                        staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
+                        orientation: landscape && landscape.checked ? 'landscape' : 'portrait',
+                        workflow_id: workflowId || undefined
+                    })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+                location.reload();
+            } finally {
+                if (button) { button.disabled = false; button.textContent = 'Soll-Workflow erstellen'; }
+            }
+        }
+
         // --- BPMN-Diagramme (Ist-Zustand, je Workflow) ---
 
         const BPMN_DIAGRAMS = <%- JSON.stringify(bpmnDiagrams).replace(/</g, '\\u003c') %>;
@@ -677,6 +707,94 @@
                             win.onload = () => win.print();
                         }).catch((err) => {
                             console.warn('[bpmn] saveSVG fehlgeschlagen:', err);
+                            alert('Drucken nicht möglich.');
+                        });
+                    });
+                }
+            });
+        })();
+
+        // --- BPMN-Diagramme (Soll-Zustand, je Workflow) ---
+
+        const SOLL_BPMN_DIAGRAMS = <%- JSON.stringify(sollBpmnDiagrams).replace(/</g, '\\u003c') %>;
+
+        (function initSollBpmnDiagrams() {
+            if (!SOLL_BPMN_DIAGRAMS.length) return;
+
+            const Viewer = window.BpmnJS || window.BpmnNavigatedViewer || window.BpmnViewer;
+            if (!Viewer) {
+                console.warn('[bpmn] bpmn-js nicht geladen');
+                return;
+            }
+
+            SOLL_BPMN_DIAGRAMS.forEach((diagram) => {
+                const root = groupRoot(diagram.key);
+                const canvas = root ? root.querySelector('[data-soll-bpmn-canvas]') : null;
+                if (!canvas) return;
+
+                const viewer = new Viewer({ container: canvas });
+                viewer.importXML(diagram.xml)
+                    .then(() => viewer.get('canvas').zoom('fit-viewport', 20))
+                    .catch((err) => {
+                        console.warn('[bpmn] Soll-Import fehlgeschlagen:', err);
+                        canvas.textContent = 'Diagramm konnte nicht gerendert werden.';
+                    });
+
+                const refreshSize = () => {
+                    if (!canvas.offsetParent) return;
+                    try {
+                        viewer.get('canvas').resized();
+                        viewer.get('canvas').zoom('fit-viewport', 20);
+                    } catch (err) {
+                        console.warn('[bpmn] Soll-resize fehlgeschlagen:', err);
+                    }
+                };
+                [canvas.closest('[data-flow-group]'), canvas.closest('details')]
+                    .filter((el) => el && el.tagName === 'DETAILS')
+                    .forEach((el) => el.addEventListener('toggle', () => setTimeout(refreshSize, 0)));
+
+                const downloadLink = root.querySelector('[data-soll-bpmn-download]');
+                if (downloadLink) {
+                    downloadLink.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        viewer.saveXML().then(({ xml }) => {
+                            const blob = new Blob([xml], { type: 'application/xml' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'flow-soll-zustand.bpmn';
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            URL.revokeObjectURL(url);
+                        }).catch(() => alert('XML-Export nicht möglich.'));
+                    });
+                }
+
+                const printButton = root.querySelector('[data-soll-bpmn-print]');
+                if (printButton) {
+                    printButton.addEventListener('click', () => {
+                        if (typeof viewer.saveSVG !== 'function') {
+                            alert('Drucken wird von dieser bpmn-js-Variante nicht unterstützt.');
+                            return;
+                        }
+                        viewer.saveSVG().then(({ svg }) => {
+                            const win = window.open('', '_blank');
+                            if (!win) { alert('Pop-up blockiert — bitte erlauben.'); return; }
+                            const pageSize = diagram.xml.includes('isHorizontal="true"')
+                                ? 'A4 landscape' : 'A4 portrait';
+                            win.document.write(
+                                '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flow-Diagramm (Soll)</title>' +
+                                '<style>@page { size: ' + pageSize + '; margin: 10mm; }' +
+                                'html, body { margin: 0; padding: 0; }' +
+                                'svg { width: 100%; height: 100%; }</style></head><body>' +
+                                svg + '</body></html>'
+                            );
+                            win.document.close();
+                            win.focus();
+                            win.onload = () => win.print();
+                        }).catch((err) => {
+                            console.warn('[bpmn] Soll saveSVG fehlgeschlagen:', err);
                             alert('Drucken nicht möglich.');
                         });
                     });

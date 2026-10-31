@@ -201,6 +201,30 @@ async function migrate(db) {
         FOREIGN KEY (summary_id) REFERENCES project_flow_summaries(id) ON DELETE CASCADE
     )`);
 
+    // KI-abgeleiteter Soll-Workflow (Zielzustand) aus dem CuraFlow-
+    // Funktionskatalog. summary_id verweist auf die Ist-Zusammenfassung, aus
+    // der der Zielzustand abgeleitet wurde (bewusst ohne ON DELETE CASCADE,
+    // damit das Ergebnis beim Loeschen einer Ist-Version erhalten bleibt).
+    await run(db, `CREATE TABLE IF NOT EXISTS project_soll_flows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        workflow_id INTEGER,
+        summary_id INTEGER,
+        content TEXT NOT NULL,
+        bpmn_xml TEXT,
+        catalog_version INTEGER,
+        capability_count INTEGER,
+        provider TEXT,
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        duration_ms INTEGER,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
+    )`);
+
     // 3. Wissenstabellen (Reihenfolge: Kinder vor Elterntabelle)
     await makeMeetingOptional(db, 'problems', PROBLEMS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
@@ -224,6 +248,8 @@ async function migrate(db) {
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_meeting_participants_meeting ON meeting_participants(meeting_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_flow_summaries_project ON project_flow_summaries(project_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_bpmn_refinements_summary ON flow_bpmn_refinements(summary_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_soll_flows_project ON project_soll_flows(project_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_soll_flows_workflow ON project_soll_flows(workflow_id)');
 
     // 4. Default-Datensatz
     await run(db, `INSERT INTO hospitals (name)

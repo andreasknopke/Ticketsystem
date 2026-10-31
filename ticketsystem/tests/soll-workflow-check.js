@@ -7,7 +7,13 @@
 'use strict';
 
 const { fetchCatalog, formatCatalog, clearCatalogCache } = require('../services/atlas/catalog');
-const { SOLL_SYSTEM_PROMPT, buildSollUserPrompt } = require('../services/atlas/sollFlow');
+const {
+    SOLL_SYSTEM_PROMPT,
+    buildSollUserPrompt,
+    SOLL_BPMN_SYSTEM_PROMPT,
+    buildSollBpmnUserPrompt,
+    formatSollContent
+} = require('../services/atlas/sollFlow');
 
 let failures = 0;
 let passed = 0;
@@ -364,6 +370,41 @@ async function main() {
             await fetchCatalog();
             check(calls.length === 2, 'abgelaufener Cache (TTL 0) geht wieder ins Netz');
         }));
+
+    // -------------------------------------------------------------------------
+    console.log('\n🧪  Soll-Workflow: BPMN-Prompt\n');
+    check(SOLL_BPMN_SYSTEM_PROMPT.includes('bpmn:definitions'), 'Soll-Diagramm-Prompt verlangt BPMN-Wurzel');
+    check(/Funktion:/.test(SOLL_BPMN_SYSTEM_PROMPT), 'Soll-Diagramm-Prompt verlangt die Funktions-Zeile');
+    check(/gap/.test(SOLL_BPMN_SYSTEM_PROMPT) && /manuell/.test(SOLL_BPMN_SYSTEM_PROMPT),
+        'Soll-Diagramm-Prompt kennt gap und manuell');
+    check(/Keine erfundenen ids/.test(SOLL_BPMN_SYSTEM_PROMPT),
+        'Soll-Diagramm-Prompt verbietet erfundene ids');
+
+    const sollBpmnPrompt = buildSollBpmnUserPrompt('## Kuenftiger Ablauf', CATALOG);
+    check(sollBpmnPrompt.includes('## Kuenftiger Ablauf'), 'Soll-Diagramm-Prompt enthaelt die Zusammenfassung');
+    check(sollBpmnPrompt.includes('shift.assign'), 'Soll-Diagramm-Prompt enthaelt die Katalog-ids');
+    check(sollBpmnPrompt.includes('billing.case'), 'Soll-Diagramm-Prompt enthaelt die gap-Funktion als id');
+
+    console.log('\n🧪  Soll-Workflow: Formatierung\n');
+    const sollFormatted = formatSollContent({
+        zusammenfassung: 'Der Ablauf wird digital.',
+        schritte: [
+            { ist: 'Dienst manuell eintragen', soll: 'Dienst in CuraFlow eintragen', funktion: 'shift.assign', rolle: 'Pflege', begruendung: 'Ersetzt die Tabelle' },
+            { ist: 'Abrechnung per Formular', soll: 'Abrechnung bleibt offen', funktion: 'gap', rolle: 'Verwaltung', begruendung: 'Katalog deckt das nicht ab' },
+            { ist: 'Freigabe', soll: 'Freigabe bleibt menschlich', funktion: 'manuell', rolle: 'Arzt', begruendung: 'Facharzt entscheidet' }
+        ],
+        offene_punkte: ['Abrechnung fehlt im Katalog']
+    });
+    check(sollFormatted.includes('Der Ablauf wird digital.'), 'Zusammenfassung erscheint');
+    check(sollFormatted.includes('## Kuenftiger Ablauf'), 'Ueberschrift Kuenftiger Ablauf vorhanden');
+    check(sollFormatted.includes('Dienst in CuraFlow eintragen'), 'Soll-Schritt erscheint');
+    check(sollFormatted.includes('CuraFlow-Funktion `shift.assign`'), 'Katalog-Funktion wird benannt');
+    check(sollFormatted.includes('CuraFlow kann das aktuell nicht abbilden'), 'gap wird verstaendlich benannt');
+    check(sollFormatted.includes('bleibt manuelle Arbeit'), 'manuell wird verstaendlich benannt');
+    check(sollFormatted.includes('## Offene Punkte') && sollFormatted.includes('Abrechnung fehlt im Katalog'),
+        'Offene Punkte erscheinen');
+    check(formatSollContent(null) === '', 'null → ""');
+    check(formatSollContent('') === '', 'leere Zeichenkette → ""');
 
     // -------------------------------------------------------------------------
     console.log(`\n${failures === 0 ? '✅' : '❌'}  ${passed} bestanden, ${failures} fehlgeschlagen\n`);
