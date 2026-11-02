@@ -12,6 +12,8 @@ const {
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+    buildSollBpmnRefineUserPrompt,
     normalizeBenefits,
     formatSollContent
 } = require('../services/atlas/sollFlow');
@@ -417,6 +419,43 @@ async function main() {
     check(sollBpmnPrompt.includes('billing.case'), 'Soll-Diagramm-Prompt enthaelt die gap-Funktion als id');
     check(buildSollBpmnUserPrompt('x', CATALOG, 'grob').includes('Detailgrad: Grob'),
         'Soll-Diagramm-Prompt nennt den Detailgrad');
+
+    console.log('\n🧪  Soll-Workflow: Diagramm ueberarbeiten\n');
+    check(typeof SOLL_BPMN_REFINE_SYSTEM_PROMPT === 'string'
+        && SOLL_BPMN_REFINE_SYSTEM_PROMPT.includes('Soll'),
+        'Soll-Refine-System-Prompt vorhanden');
+    check(/Uebernimm das vorhandene Modell/.test(SOLL_BPMN_REFINE_SYSTEM_PROMPT),
+        'Soll-Refine behaelt das vorhandene Modell');
+    check(/Erfinde keine ids/.test(SOLL_BPMN_REFINE_SYSTEM_PROMPT),
+        'Soll-Refine verbietet erfundene Funktions-ids');
+    check(/Lanes \(beteiligte Rollen\) und Schritte ausserhalb von CuraFlow bleiben immer erhalten/.test(SOLL_BPMN_REFINE_SYSTEM_PROMPT),
+        'Soll-Refine behaelt Lanes und Arbeit ausserhalb von CuraFlow');
+    check(SOLL_BPMN_REFINE_SYSTEM_PROMPT.includes('BPMNDiagram'),
+        'Soll-Refine verbietet eigene Koordinaten');
+
+    const sollRefinePrompt = buildSollBpmnRefineUserPrompt({
+        currentXml: '<bpmn:definitions><bpmn:process id="p"/></bpmn:definitions>',
+        instruction: 'Pflege als eigene Lane ergaenzen',
+        workflowName: 'Entlassungsbrief',
+        workflowDescription: 'Arzt diktiert, Pflege prueft',
+        catalog: CATALOG
+    });
+    check(sollRefinePrompt.includes('Pflege als eigene Lane ergaenzen'),
+        'Soll-Refine-Prompt enthaelt den Wunsch');
+    check(sollRefinePrompt.includes('<bpmn:process id="p"/>'),
+        'Soll-Refine-Prompt enthaelt das aktuelle Diagramm');
+    check(sollRefinePrompt.includes('Entlassungsbrief') && sollRefinePrompt.includes('Pflege prueft'),
+        'Soll-Refine-Prompt nennt Workflow und Beschreibung');
+    check(sollRefinePrompt.includes('shift.assign') && sollRefinePrompt.includes('billing.case'),
+        'Soll-Refine-Prompt enthaelt die Katalog-ids');
+
+    const sollRefineNoCatalog = buildSollBpmnRefineUserPrompt({
+        currentXml: '<definitions/>',
+        instruction: 'Kuerzer'
+    });
+    check(sollRefineNoCatalog.includes('Kuerzer') && sollRefineNoCatalog.includes('kein Funktionskatalog'),
+        'Soll-Refine-Prompt funktioniert ohne Katalog');
+    check(!sollRefineNoCatalog.includes('undefined'), 'Soll-Refine-Prompt enthaelt kein "undefined"');
 
     console.log('\n🧪  Soll-Workflow: Formatierung\n');
     const sollFormatted = formatSollContent({

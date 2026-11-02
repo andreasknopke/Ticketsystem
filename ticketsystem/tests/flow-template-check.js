@@ -191,6 +191,42 @@ async function main() {
     html = await render(withoutBenefits);
     check(!html.includes('Vorteile gegenüber heute'), 'ohne Vorteile kein leerer Abschnitt');
 
+    // Das Soll-Diagramm bekommt dasselbe Bearbeiten-Feld wie die Ist-Visualisierung.
+    const sollBpmnXml = '<bpmn:definitions isHorizontal="true"><bpmn:process id="p"/></bpmn:definitions>';
+    const withSollDiagram = {
+        ...baseLocals,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{
+                ...withSoll.workflowGroups[0].sollFlows[0],
+                bpmn_xml: sollBpmnXml,
+                refinements: [
+                    {
+                        id: 4, soll_id: 11, instruction: 'Pflege als eigene Lane',
+                        created_at: '2026-10-04 09:30', created_by: 'admin', model: 'test-model'
+                    }
+                ]
+            }]
+        }],
+        sollBpmnDiagrams: [{ key: 'wf-1', xml: sollBpmnXml }]
+    };
+    html = await render(withSollDiagram);
+    check(html.includes('data-soll-id="11"'), 'Soll-Formular kennt den Soll-Workflow');
+    check(html.includes('Diagramm bearbeiten'), 'Soll-Formular ist beschriftet');
+    check(html.includes('sollBpmnRefine-wf-1'), 'Soll-Formular hat ein eigenes Eingabefeld');
+    check(html.includes('Bisherige Anpassungen (1)'), 'Soll-Anpassungsverlauf wird angezeigt');
+    check(html.includes('Pflege als eigene Lane'), 'Soll-Anpassungswunsch erscheint im Verlauf');
+
+    const sollWithoutDiagram = {
+        ...withSoll,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{ ...withSoll.workflowGroups[0].sollFlows[0], bpmn_xml: null, refinements: [] }]
+        }]
+    };
+    html = await render(sollWithoutDiagram);
+    check(!html.includes('data-soll-id='), 'ohne Soll-Diagramm kein Soll-Formular');
+
     // BPMN-XML darf nicht literal in das Inline-Skript geraten.
     html = await render(baseLocals);
     check(!html.includes('BPMN_DIAGRAMS = [{"key":"wf-1","summaryId":9,"xml":"<'),

@@ -6914,6 +6914,14 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE project_id = ?
                 ORDER BY id DESC`, [projectId]);
 
+            // Anpassungswuensche zum Soll-Diagramm (Verlauf) je Soll-Workflow.
+            const sollRefinements = await dbAll(`SELECT r.id, r.soll_id, r.instruction, r.model,
+                    r.created_by, r.created_at
+                FROM soll_bpmn_refinements r
+                JOIN project_soll_flows s ON s.id = r.soll_id
+                WHERE s.project_id = ?
+                ORDER BY r.id ASC`, [projectId]);
+
             // Verwaiste workflow_ids (z.B. nach dem Loeschen eines Workflows)
             // zaehlen als "Ohne Workflow", damit nichts unsichtbar wird.
             const workflowIds = new Set(workflows.map((row) => row.id));
@@ -6957,7 +6965,11 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                             refinements: refinements.filter((item) => item.summary_id === row.id)
                         })),
                     sollFlows: sollFlows.filter((row) => sameWorkflow(row.workflow_id, workflowId))
-                        .map((row) => ({ ...row, benefits: parseBenefits(row.benefits_json) }))
+                        .map((row) => ({
+                            ...row,
+                            benefits: parseBenefits(row.benefits_json),
+                            refinements: sollRefinements.filter((item) => item.soll_id === row.id)
+                        }))
                 };
             };
 

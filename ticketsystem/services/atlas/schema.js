@@ -228,6 +228,19 @@ async function migrate(db) {
         FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
     )`);
 
+    // Anpassungswuensche zum Soll-Diagramm ("Pflege mit aufnehmen"). Wie beim
+    // Ist-Diagramm bleibt jeder Wunsch als Verlauf erhalten.
+    await run(db, `CREATE TABLE IF NOT EXISTS soll_bpmn_refinements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        soll_id INTEGER NOT NULL,
+        instruction TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (soll_id) REFERENCES project_soll_flows(id) ON DELETE CASCADE
+    )`);
+
     // 3. Wissenstabellen (Reihenfolge: Kinder vor Elterntabelle)
     await makeMeetingOptional(db, 'problems', PROBLEMS_DDL,
         ['id', 'project_id', 'meeting_id', 'department_id', 'workflow_id', 'title', 'description', 'created_at']);
@@ -253,6 +266,7 @@ async function migrate(db) {
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_bpmn_refinements_summary ON flow_bpmn_refinements(summary_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_soll_flows_project ON project_soll_flows(project_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_soll_flows_workflow ON project_soll_flows(workflow_id)');
+    await run(db, 'CREATE INDEX IF NOT EXISTS idx_soll_refinements_soll ON soll_bpmn_refinements(soll_id)');
 
     // 4. Default-Datensatz
     await run(db, `INSERT INTO hospitals (name)

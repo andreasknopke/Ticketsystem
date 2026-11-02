@@ -155,6 +155,11 @@ async function main() {
         check(sollCols.some((c) => c.name === 'benefits_json'),
             'project_soll_flows: benefits_json existiert');
 
+        const sollRefineCols = await all(db, 'PRAGMA table_info(soll_bpmn_refinements)');
+        check(sollRefineCols.some((c) => c.name === 'soll_id')
+            && sollRefineCols.some((c) => c.name === 'instruction'),
+            'soll_bpmn_refinements: Tabelle fuer Anpassungswuensche existiert');
+
         check((await all(db, 'PRAGMA foreign_keys'))[0].foreign_keys === 1, 'foreign_keys wieder aktiv');
         check((await all(db, 'PRAGMA legacy_alter_table'))[0].legacy_alter_table === 0, 'legacy_alter_table zurueckgesetzt');
 

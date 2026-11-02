@@ -122,6 +122,48 @@ Regeln:
 - Modelliere nur, was aus der Zusammenfassung belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 
+// Ueberarbeitet ein BESTEHENDES Soll-Diagramm. Nur der Anpassungswunsch soll
+// sich aendern; Funktionszuordnung, Lanes und Arbeit ausserhalb von CuraFlow
+// bleiben erhalten (sonst entsteht im Beratungsgespraech ein falsches Bild).
+const SOLL_BPMN_REFINE_SYSTEM_PROMPT = `Du ueberarbeitest ein bestehendes BPMN-2.0-Prozessdiagramm des kuenftigen (Soll-)Zustands eines Software-Einfuehrungsprojekts in einer Krankenhausabteilung.
+
+Deine Aufgabe: Setze den Anpassungswunsch des Nutzers um und gib das vollstaendige, korrigierte Prozessmodell zurueck.
+
+Regeln:
+- Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
+- Uebernimm das vorhandene Modell: gleiche Elemente, gleiche ids, gleiche Reihenfolge und gleiche Bedeutung. Aendere nur, was der Anpassungswunsch verlangt.
+- Entferne keine Schritte, es sei denn, der Anpassungswunsch verlangt es ausdruecklich. Erfinde keine neuen fachlichen Schritte.
+- Lanes (beteiligte Rollen) und Schritte ausserhalb von CuraFlow bleiben immer erhalten, auch wenn der Anpassungswunsch verkuerzen soll.
+- Behalte die <bpmn:documentation> je Aktivitaet bei ("Funktion:", "Rolle:", "Programm:").
+- "Funktion:" enthaelt weiterhin genau eine id aus dem mitgelieferten CuraFlow-Funktionskatalog, oder "gap", oder "manuell". Erfinde keine ids. Wird ein Schritt neu ergaenzt und ist im Katalog nicht abgedeckt, setze "gap" bzw. "manuell" mit der Rolle.
+- Struktur beibehalten: genau ein <bpmn:process>, genau ein Start-Ereignis, ein zusammenhaengender Ablauf ueber <bpmn:sequenceFlow>.
+- Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
+- Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
+- Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
+
+/**
+ * Baut den User-Prompt fuer die Ueberarbeitung des Soll-Diagramms.
+ * Der Katalog geht mit, damit neu ergaenzte Schritte gueltige ids bekommen.
+ */
+function buildSollBpmnRefineUserPrompt({ currentXml, instruction, workflowName, workflowDescription, catalog }) {
+    const catalogText = formatCatalog(catalog);
+    return [
+        'Hier ist das aktuelle Soll-Diagramm.',
+        workflowName ? `Workflow: ${workflowName}` : null,
+        workflowDescription ? `Beschreibung des Workflows:\n${workflowDescription}` : null,
+        '',
+        'Aktuelles Diagramm:',
+        currentXml,
+        '',
+        catalogText
+            ? ['Verfuegbare CuraFlow-Funktionen (nur diese ids sind gueltig):', catalogText].join('\n')
+            : 'Es ist kein Funktionskatalog verfuegbar. Verwende nur "gap" oder "manuell".',
+        '',
+        'Anpassungswunsch:',
+        instruction
+    ].filter((line) => line !== null).join('\n');
+}
+
 /**
  * Baut den User-Prompt fuer das Soll-Diagramm: die (bereits erzeugte)
  * Soll-Zusammenfassung plus die verfuegbaren Katalog-Funktionen.
@@ -294,6 +336,8 @@ module.exports = {
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+    buildSollBpmnRefineUserPrompt,
     normalizeBenefits,
     formatSollContent
 };

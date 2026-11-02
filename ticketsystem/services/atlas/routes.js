@@ -8,6 +8,8 @@ const {
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+    buildSollBpmnRefineUserPrompt,
     normalizeBenefits,
     formatSollContent
 } = require('./sollFlow');
@@ -881,6 +883,99 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
             res.json({
                 id: summaryId,
+                workflow_id: existing.workflow_id,
+                bpmn_xml: bpmnXml,
+                instruction,
+                orientation,
+                provider: result.provider || provider,
+                model: result.model || staff.ai_model || null,
+                staff_name: staff.name
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Ueberarbeitet ein bestehendes Soll-Diagramm anhand eines Wunsches.
+    // Die Text-Zusammenfassung und die Vorteile bleiben unveraendert; nur das
+    // Diagramm wird neu erzeugt. Der Wunsch wird protokolliert.
+    app.post('/api/projects/:projectId/soll-flow/:sollId/bpmn-refine', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const projectId = toId(req.params.projectId);
+            const sollId = toId(req.params.sollId);
+            if (!projectId || !sollId) return res.status(400).json({ error: 'Ungueltige IDs.' });
+
+            const instruction = normalizeText(req.body.instruction);
+            if (!instruction) return res.status(400).json({ error: 'Anpassungswunsch ist erforderlich.' });
+            if (instruction.length > 2000) {
+                return res.status(400).json({ error: 'Anpassungswunsch ist zu lang (max. 2000 Zeichen).' });
+            }
+
+            const existing = await getAsync(`SELECT s.id, s.workflow_id, s.bpmn_xml,
+                    w.name AS workflow_name, w.description AS workflow_description
+                FROM project_soll_flows s
+                LEFT JOIN workflows w ON w.id = s.workflow_id
+                WHERE s.id = ? AND s.project_id = ?`, [sollId, projectId]);
+            if (!existing) return res.status(404).json({ error: 'Soll-Workflow nicht gefunden.' });
+            if (!existing.bpmn_xml) {
+                return res.status(400).json({ error: 'Zu diesem Soll-Workflow gibt es kein Diagramm.' });
+            }
+
+            const picked = await pickSummaryStaff(toId(req.body.staff_id));
+            if (picked.error) return res.status(409).json({ error: picked.error });
+            const staff = picked.staff;
+
+            // Der Katalog geht mit, damit neu ergaenzte Schritte gueltige ids
+            // bekommen und nicht erfunden werden.
+            const catalogResult = await fetchCatalog();
+            const catalog = catalogResult.catalog;
+
+            const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
+            let result;
+            try {
+                result = await aiClient.chat({
+                    provider,
+                    model: staff.ai_model || undefined,
+                    temperature: staff.ai_temperature ?? 0.2,
+                    maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
+                    system: SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+                    user: buildSollBpmnRefineUserPrompt({
+                        currentXml: existing.bpmn_xml,
+                        instruction,
+                        workflowName: existing.workflow_name,
+                        workflowDescription: existing.workflow_description,
+                        catalog
+                    }),
+                    json: false
+                });
+            } catch (err) {
+                return res.status(502).json({ error: 'KI-Aufruf fehlgeschlagen: ' + err.message });
+            }
+
+            const extracted = flowSummary.extractBpmnXml(result.text);
+            if (!extracted) {
+                return res.status(502).json({ error: 'KI hat kein gueltiges BPMN-XML geliefert.' });
+            }
+
+            const orientation = req.body.orientation === 'landscape' || req.body.orientation === 'portrait'
+                ? req.body.orientation
+                : (existing.bpmn_xml.includes('isHorizontal="true"') ? 'landscape' : 'portrait');
+
+            let bpmnXml;
+            try {
+                bpmnXml = await bpmn.layoutBpmnXml(extracted, { orientation });
+            } catch (err) {
+                return res.status(502).json({ error: 'Diagramm konnte nicht gesetzt werden: ' + err.message });
+            }
+
+            await runAsync('UPDATE project_soll_flows SET bpmn_xml = ? WHERE id = ?', [bpmnXml, sollId]);
+            await runAsync(`INSERT INTO soll_bpmn_refinements (soll_id, instruction, provider, model, created_by)
+                VALUES (?, ?, ?, ?, ?)`,
+            [sollId, instruction, result.provider || provider, result.model || staff.ai_model || null,
+                req.session.user || null]);
+
+            res.json({
+                id: sollId,
                 workflow_id: existing.workflow_id,
                 bpmn_xml: bpmnXml,
                 instruction,

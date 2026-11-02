@@ -465,22 +465,32 @@
         });
 
         // --- Diagramm ueberarbeiten (Anpassungswunsch) ---
+        // Ein Formular fuer das Ist-Diagramm (data-summary-id) und eines fuer
+        // das Soll-Diagramm (data-soll-id). Beide nutzen denselben Ablauf,
+        // nur der Endpunkt und die Modell-Auswahl unterscheiden sich.
 
         document.querySelectorAll('.bpmn-refine-form').forEach((form) => {
             form.addEventListener('submit', async (event) => {
                 event.preventDefault();
-                const summaryId = Number(form.dataset.summaryId);
+                const summaryId = Number(form.dataset.summaryId || 0);
+                const sollId = Number(form.dataset.sollId || 0);
+                const isSoll = Boolean(sollId);
                 const instruction = (form.elements.instruction.value || '').trim();
-                if (!summaryId || !instruction) { form.elements.instruction.focus(); return; }
+                if ((!summaryId && !sollId) || !instruction) { form.elements.instruction.focus(); return; }
 
                 if (!confirm('Diagramm anhand des Wunsches überarbeiten? Das kann einige Sekunden dauern.')) return;
 
                 const root = form.closest('[data-flow-group]');
-                const staffSelect = root ? root.querySelector('[data-summary-staff]') : null;
+                const staffSelect = root
+                    ? root.querySelector(isSoll ? '[data-soll-staff]' : '[data-summary-staff]')
+                    : null;
+                const url = '/api/projects/' + PROJECT_ID + (isSoll
+                    ? '/soll-flow/' + sollId + '/bpmn-refine'
+                    : '/flow-summary/' + summaryId + '/bpmn-refine');
                 const button = form.querySelector('button[type="submit"]');
                 if (button) { button.disabled = true; button.textContent = 'Überarbeite…'; }
                 try {
-                    const resp = await fetch('/api/projects/' + PROJECT_ID + '/flow-summary/' + summaryId + '/bpmn-refine', {
+                    const resp = await fetch(url, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                         body: JSON.stringify({
