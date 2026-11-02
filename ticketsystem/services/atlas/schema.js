@@ -175,6 +175,7 @@ async function migrate(db) {
         workflow_id INTEGER,
         content TEXT NOT NULL,
         bpmn_xml TEXT,
+        detail_level TEXT,
         provider TEXT,
         model TEXT,
         prompt_tokens INTEGER,
@@ -211,9 +212,11 @@ async function migrate(db) {
         workflow_id INTEGER,
         summary_id INTEGER,
         content TEXT NOT NULL,
+        benefits_json TEXT,
         bpmn_xml TEXT,
         catalog_version INTEGER,
         capability_count INTEGER,
+        detail_level TEXT,
         provider TEXT,
         model TEXT,
         prompt_tokens INTEGER,
@@ -287,6 +290,17 @@ async function migrate(db) {
         'ALTER TABLE project_attachments ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL');
     await addColumnIfMissing(db, 'project_flow_summaries', 'workflow_id',
         'ALTER TABLE project_flow_summaries ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL');
+    // Detailgrad der KI-Ableitung ("grob", "mittel", "fein"). Alte Zeilen
+    // bleiben NULL und werden wie der Standard behandelt.
+    await addColumnIfMissing(db, 'project_flow_summaries', 'detail_level',
+        'ALTER TABLE project_flow_summaries ADD COLUMN detail_level TEXT');
+    await addColumnIfMissing(db, 'project_soll_flows', 'detail_level',
+        'ALTER TABLE project_soll_flows ADD COLUMN detail_level TEXT');
+    // Vorteile/Problemloesungen des Soll-Zustands als JSON-Liste
+    // ({problem, vorher, jetzt, funktion}), damit die UI sie als
+    // Vorher/Nachher-Liste zeigen kann.
+    await addColumnIfMissing(db, 'project_soll_flows', 'benefits_json',
+        'ALTER TABLE project_soll_flows ADD COLUMN benefits_json TEXT');
 
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_workflow ON adoption_risks(workflow_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_attachments_workflow ON project_attachments(workflow_id)');

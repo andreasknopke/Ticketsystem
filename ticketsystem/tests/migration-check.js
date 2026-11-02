@@ -146,6 +146,14 @@ async function main() {
 
         const summaryCols = await all(db, 'PRAGMA table_info(project_flow_summaries)');
         check(summaryCols.some((c) => c.name === 'workflow_id'), 'project_flow_summaries: workflow_id existiert');
+        check(summaryCols.some((c) => c.name === 'detail_level'),
+            'project_flow_summaries: detail_level existiert');
+
+        const sollCols = await all(db, 'PRAGMA table_info(project_soll_flows)');
+        check(sollCols.some((c) => c.name === 'detail_level'),
+            'project_soll_flows: detail_level existiert');
+        check(sollCols.some((c) => c.name === 'benefits_json'),
+            'project_soll_flows: benefits_json existiert');
 
         check((await all(db, 'PRAGMA foreign_keys'))[0].foreign_keys === 1, 'foreign_keys wieder aktiv');
         check((await all(db, 'PRAGMA legacy_alter_table'))[0].legacy_alter_table === 0, 'legacy_alter_table zurueckgesetzt');

@@ -13,6 +13,7 @@
 // Beratungsgespraech wie eine Zusage.
 
 const { formatCatalog } = require('./catalog');
+const { buildDetailInstruction } = require('./detailLevel');
 
 const SOLL_SYSTEM_PROMPT = `Du beschreibst den SOLL-Zustand eines Ablaufs in einer Krankenhausabteilung.
 Der Ist-Zustand ist bekannt. Deine Aufgabe ist, denselben Ablauf kuenftig zu
@@ -28,6 +29,14 @@ Antworte ausschliesslich als JSON, ohne Markdown und ohne Codeblock:
       "funktion": "eine id aus dem Katalog | gap | manuell",
       "rolle": "wer den Schritt ausfuehrt (Berufsgruppe / Rolle)",
       "begruendung": "warum genau diese Funktion bzw. warum keine"
+    }
+  ],
+  "vorteile": [
+    {
+      "problem": "das heutige Problem in einem Satz",
+      "vorher": "wie es heute ablaeuft, mit dem konkreten Hindernis",
+      "jetzt": "wie es mit CuraFlow ablaeuft",
+      "funktion": "eine id aus dem Katalog | gap | manuell"
     }
   ],
   "offene_punkte": ["was geklaert oder gebaut werden muss"]
@@ -49,6 +58,13 @@ Regeln:
   Zulaessigkeit, Voraussetzungen oder technische Endpunkte sind nicht deine
   Aufgabe — beantworte "welche Funktion ersetzt diesen Schritt".
 - "ist" beschreibt weiterhin den heutigen Ablauf. Erfinde dort nichts dazu.
+- "vorteile" beantwortet: welches heutige Problem loest CuraFlow, und was
+  aendert sich dadurch fuer die Nutzer. Leite jeden Vorteil aus einem im
+  Ist-Zustand genannten Problem ab; nenne kein Problem, das dort nicht steht.
+  "vorher" und "jetzt" beschreiben denselben Ausschnitt: erst das heutige
+  Hindernis, dann der kuenftige Ablauf. Keine erfundenen Zahlen
+  (Zeitersparnis, Prozentwerte). Ist ein Problem im Katalog nicht abgedeckt,
+  bleibt "funktion": "gap" — "jetzt" sagt dann ehrlich, dass es offen bleibt.
 - Formuliere knapp. Keine Wiederholung der Eingabe, keine Einleitung.`;
 
 const ANNOUNCED_HEADER = [
@@ -93,7 +109,7 @@ Regeln:
 - Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
 - Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
 - Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
-- Halte das Modell detailliert, aber kompakt: hoechstens 14 Aktivitaeten/Gateways.
+- Halte dich an den Detailgrad aus der Aufgabe; er begrenzt die Zahl der Aktivitaeten/Gateways. Fasse eng zusammengehoerende Schritte zu einem Schritt zusammen, wenn du das Limit sonst ueberschreitest.
 - Modelliere nur, was aus der Zusammenfassung belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 
@@ -101,7 +117,7 @@ Regeln:
  * Baut den User-Prompt fuer das Soll-Diagramm: die (bereits erzeugte)
  * Soll-Zusammenfassung plus die verfuegbaren Katalog-Funktionen.
  */
-function buildSollBpmnUserPrompt(sollContent, catalog) {
+function buildSollBpmnUserPrompt(sollContent, catalog, detailLevel) {
     const text = String(sollContent == null ? '' : sollContent);
     const catalogText = formatCatalog(catalog);
     const catalogBlock = catalogText
@@ -114,6 +130,8 @@ function buildSollBpmnUserPrompt(sollContent, catalog) {
         '',
         catalogBlock,
         '',
+        buildDetailInstruction(detailLevel, 'bpmn'),
+        '',
         'Erstelle daraus das BPMN-2.0-Diagramm des kuenftigen Ablaufs.'
     ].join('\n');
 }
@@ -124,6 +142,45 @@ function describeFunktion(funktion) {
     if (value === 'gap') return 'CuraFlow kann das aktuell nicht abbilden';
     if (value === 'manuell') return 'bleibt manuelle Arbeit';
     return `CuraFlow-Funktion \`${value}\``;
+}
+
+const MAX_BENEFITS = 12;
+
+/**
+ * Liest die Vorteilsliste aus der Modellantwort und raeumt sie auf.
+ * Liefert [] fuer unbrauchbare Eingaben; wirft nie.
+ */
+function normalizeBenefits(parsed) {
+    try {
+        let data = parsed;
+        if (typeof data === 'string') {
+            const trimmed = data.trim();
+            if (!trimmed) return [];
+            try { data = JSON.parse(trimmed); } catch (_) { return []; }
+        }
+        let list = [];
+        if (Array.isArray(data)) list = data;
+        else if (data && typeof data === 'object' && Array.isArray(data.vorteile)) list = data.vorteile;
+
+        const benefits = [];
+        list.slice(0, MAX_BENEFITS).forEach((item) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+            const problem = String(item.problem || '').trim();
+            const vorher = String(item.vorher || '').trim();
+            const jetzt = String(item.jetzt || '').trim();
+            const funktion = typeof item.funktion === 'string' ? item.funktion.trim() : '';
+            if (!problem && !vorher && !jetzt) return;
+            benefits.push({
+                problem: problem || vorher || jetzt,
+                vorher,
+                jetzt,
+                funktion
+            });
+        });
+        return benefits;
+    } catch (_) {
+        return [];
+    }
 }
 
 /**
@@ -165,6 +222,19 @@ function formatSollContent(parsed) {
             });
         }
 
+        const benefits = normalizeBenefits(data);
+        if (benefits.length) {
+            lines.push('');
+            lines.push('## Vorteile gegenueber heute');
+            benefits.forEach((item, index) => {
+                lines.push(`### ${index + 1}. ${item.problem}`);
+                if (item.vorher) lines.push(`- Vorher: ${item.vorher}`);
+                if (item.jetzt) lines.push(`- Mit CuraFlow: ${item.jetzt}`);
+                const funktion = describeFunktion(item.funktion);
+                if (funktion) lines.push(`- Funktion: ${funktion}`);
+            });
+        }
+
         const offenePunkte = Array.isArray(data.offene_punkte) ? data.offene_punkte : [];
         if (offenePunkte.length) {
             lines.push('');
@@ -181,13 +251,16 @@ function formatSollContent(parsed) {
     }
 }
 
-function buildSollUserPrompt(inputText, catalog) {
+function buildSollUserPrompt(inputText, catalog, detailLevel) {
     const text = String(inputText == null ? '' : inputText);
     const catalogText = formatCatalog(catalog);
+    const detail = buildDetailInstruction(detailLevel, ['steps', 'vorteile']);
 
     if (!catalogText) {
         return [
             MISSING_HEADER,
+            '',
+            detail,
             '',
             'Bestandsaufnahme des heutigen Ablaufs:',
             text
@@ -196,6 +269,8 @@ function buildSollUserPrompt(inputText, catalog) {
 
     return [
         ANNOUNCED_HEADER,
+        '',
+        detail,
         '',
         'Funktionen:',
         catalogText,
@@ -210,5 +285,6 @@ module.exports = {
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    normalizeBenefits,
     formatSollContent
 };

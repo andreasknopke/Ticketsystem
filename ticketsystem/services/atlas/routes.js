@@ -2,11 +2,13 @@
 
 const bpmn = require('./bpmn');
 const { fetchCatalog } = require('./catalog');
+const { resolveDetailLevel } = require('./detailLevel');
 const {
     SOLL_SYSTEM_PROMPT,
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    normalizeBenefits,
     formatSollContent
 } = require('./sollFlow');
 
@@ -523,7 +525,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
             // Mit gesetzter id zaehlt nur dieser Workflow.
             const hasFilter = req.query.workflow_id !== undefined;
             const workflowId = hasFilter ? toId(req.query.workflow_id) : null;
-            const rows = await allAsync(`SELECT id, project_id, workflow_id, content, bpmn_xml, provider, model,
+            const rows = await allAsync(`SELECT id, project_id, workflow_id, content, bpmn_xml, detail_level, provider, model,
                     prompt_tokens, completion_tokens, duration_ms, input_chars, created_by, created_at
                 FROM project_flow_summaries
                 WHERE project_id = ? ${hasFilter ? (workflowId ? 'AND workflow_id = ?' : 'AND workflow_id IS NULL') : ''}
@@ -584,6 +586,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 return res.status(400).json({ error: 'Ungueltige workflow_id.' });
             }
 
+            const detail = resolveDetailLevel(req.body.detail_level);
+            if (detail.error) return res.status(400).json({ error: detail.error });
+            const detailLevel = detail.level;
+
             const collected = await collectSummaryInput(projectId, workflowId);
             if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
             if (collected.error) return res.status(404).json({ error: collected.error });
@@ -619,9 +625,11 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     provider,
                     model: staff.ai_model || undefined,
                     temperature: staff.ai_temperature ?? 0.2,
-                    maxTokens: Math.min(staff.ai_max_tokens || 2000, 4000),
+                    // Schritte und Vorteile zusammen brauchen mehr Platz als
+                    // eine reine Prosa-Zusammenfassung.
+                    maxTokens: Math.min(staff.ai_max_tokens || 3000, 5000),
                     system: SOLL_SYSTEM_PROMPT,
-                    user: buildSollUserPrompt(istSummary.content, catalog),
+                    user: buildSollUserPrompt(istSummary.content, catalog, detailLevel),
                     json: true
                 });
             } catch (err) {
@@ -631,6 +639,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
             const parsed = aiClient.tryParseJson(sollResult.text);
             const sollContent = formatSollContent(parsed) || String(sollResult.text || '').trim();
             if (!sollContent) return res.status(502).json({ error: 'KI hat keinen Soll-Workflow geliefert.' });
+            // Vorteile (Vorher/Jetzt) strukturiert mitspeichern, damit die
+            // Flow-Seite sie als Liste zeigen kann. Der Text oben enthaelt sie
+            // zusaetzlich als Abschnitt.
+            const benefits = normalizeBenefits(parsed);
 
             // 2) Soll-Diagramm als zweiter, best-effort Aufruf.
             let bpmnXml = null;
@@ -642,7 +654,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     temperature: staff.ai_temperature ?? 0.2,
                     maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
                     system: SOLL_BPMN_SYSTEM_PROMPT,
-                    user: buildSollBpmnUserPrompt(sollContent, catalog),
+                    user: buildSollBpmnUserPrompt(sollContent, catalog, detailLevel),
                     json: false
                 });
                 const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
@@ -653,11 +665,13 @@ module.exports = function registerAtlasRoutes(app, deps) {
             }
 
             const inserted = await runAsync(`INSERT INTO project_soll_flows
-                    (project_id, workflow_id, summary_id, content, bpmn_xml, catalog_version, capability_count,
-                     provider, model, prompt_tokens, completion_tokens, duration_ms, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [projectId, workflowId, istSummary.id, sollContent, bpmnXml, catalogVersion, capabilityCount,
-                sollResult.provider || provider, sollResult.model || staff.ai_model || null,
+                    (project_id, workflow_id, summary_id, content, benefits_json, bpmn_xml, catalog_version, capability_count,
+                     detail_level, provider, model, prompt_tokens, completion_tokens, duration_ms, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [projectId, workflowId, istSummary.id, sollContent,
+                benefits.length ? JSON.stringify(benefits) : null,
+                bpmnXml, catalogVersion, capabilityCount,
+                detailLevel, sollResult.provider || provider, sollResult.model || staff.ai_model || null,
                 sollResult.prompt_tokens || null, sollResult.completion_tokens || null,
                 sollResult.duration_ms || null, req.session.user || null]);
 
@@ -666,10 +680,12 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 workflow_id: workflowId,
                 summary_id: istSummary.id,
                 content: sollContent,
+                benefits,
                 bpmn_xml: bpmnXml,
                 bpmn_error: bpmnError,
                 catalog_version: catalogVersion,
                 capability_count: capabilityCount,
+                detail_level: detailLevel,
                 provider: sollResult.provider || provider,
                 model: sollResult.model || staff.ai_model || null,
                 staff_name: staff.name
@@ -688,6 +704,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
             if (rawWorkflowId !== undefined && rawWorkflowId !== null && rawWorkflowId !== '' && !workflowId) {
                 return res.status(400).json({ error: 'Ungueltige workflow_id.' });
             }
+
+            const detail = resolveDetailLevel(req.body.detail_level);
+            if (detail.error) return res.status(400).json({ error: detail.error });
+            const detailLevel = detail.level;
 
             const collected = await collectSummaryInput(req.params.projectId, workflowId);
             if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
@@ -725,7 +745,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     // nur teuer und langsam.
                     maxTokens: Math.min(staff.ai_max_tokens || 2000, 4000),
                     system: flowSummary.SYSTEM_PROMPT,
-                    user: flowSummary.buildUserPrompt(redacted.redacted),
+                    user: flowSummary.buildUserPrompt(redacted.redacted, detailLevel),
                     json: false
                 });
             } catch (err) {
@@ -747,7 +767,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     // XML ist ausfuehrlicher als Prosa; etwas mehr Platz einraeumen.
                     maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
                     system: flowSummary.BPMN_SYSTEM_PROMPT,
-                    user: flowSummary.buildBpmnUserPrompt(redacted.redacted),
+                    user: flowSummary.buildBpmnUserPrompt(redacted.redacted, detailLevel),
                     json: false
                 });
                 const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
@@ -758,10 +778,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
             }
 
             const inserted = await runAsync(`INSERT INTO project_flow_summaries
-                    (project_id, workflow_id, content, bpmn_xml, provider, model, prompt_tokens, completion_tokens,
-                     duration_ms, input_chars, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [req.params.projectId, workflowId, content, bpmnXml, result.provider || provider, result.model || staff.ai_model || null,
+                    (project_id, workflow_id, content, bpmn_xml, detail_level, provider, model, prompt_tokens,
+                     completion_tokens, duration_ms, input_chars, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.params.projectId, workflowId, content, bpmnXml, detailLevel, result.provider || provider, result.model || staff.ai_model || null,
                 result.prompt_tokens || null, result.completion_tokens || null,
                 result.duration_ms || null, built.text.length, req.session.user || null]);
 
@@ -771,6 +791,7 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 content,
                 bpmn_xml: bpmnXml,
                 bpmn_error: bpmnError,
+                detail_level: detailLevel,
                 provider: result.provider || provider,
                 model: result.model || staff.ai_model || null,
                 staff_name: staff.name,

@@ -14,6 +14,42 @@ const latestSoll = (group.sollFlows || [])[0] || null;
 const originLabel = (item) => item.meeting_title
     ? `aus: ${item.meeting_title}`
     : 'direkt erfasst';
+const detailLevelKey = (value) => {
+    const key = String(value == null ? '' : value).trim().toLowerCase();
+    return (key === 'grob' || key === 'mittel' || key === 'fein') ? key : '';
+};
+const detailLevelLabel = (value) => {
+    const key = detailLevelKey(value);
+    if (key === 'grob') return 'Grob';
+    if (key === 'mittel') return 'Mittel';
+    if (key === 'fein') return 'Fein';
+    return '';
+};
+const summaryDetailLevel = detailLevelKey(latestSummary && latestSummary.detail_level) || 'mittel';
+const sollDetailLevel = detailLevelKey(latestSoll && latestSoll.detail_level) || 'mittel';
+
+// Vorteile/Problemloesungen des Soll-Zustands (strukturiert gespeichert).
+const sollBenefits = latestSoll && Array.isArray(latestSoll.benefits) ? latestSoll.benefits : [];
+const benefitFunctionLabel = (value) => {
+    const key = String(value == null ? '' : value).trim();
+    if (!key) return '';
+    if (key === 'gap') return 'kein Katalog-Abgleich (Luecke)';
+    if (key === 'manuell') return 'bleibt manuelle Arbeit';
+    return key;
+};
+// Der Vorteils-Abschnitt steht als Liste unter dem Text. Damit er nicht
+// doppelt erscheint, wird er aus dem Klartext-Block entfernt (alte Zeilen ohne
+// strukturierte Vorteile behalten ihn).
+const sollContentText = (() => {
+    const raw = latestSoll ? String(latestSoll.content || '') : '';
+    if (!sollBenefits.length) return raw;
+    const start = raw.search(/^##\s+Vorteile/im);
+    if (start === -1) return raw;
+    const tail = raw.slice(start + 1);
+    const next = tail.search(/^##\s+\S/m);
+    const end = next === -1 ? raw.length : start + 1 + next;
+    return (raw.slice(0, start) + raw.slice(end)).replace(/\n{3,}/g, '\n\n').trim();
+})();
 %>
 <details class="card mb-4" data-flow-group="<%= group.key %>" data-workflow-id="<%= groupWorkflowId %>" <%= group.isFirst ? 'open' : '' %>>
     <summary class="px-4 py-3 cursor-pointer">
@@ -21,7 +57,7 @@ const originLabel = (item) => item.meeting_title
         <span class="ml-2 text-xs text-gray-500">
             <%= group.problems.length %> Probleme ·
             <%= group.adoptionRisks.length %> Adoptionsrisiken ·
-            <%= group.inputFiles.length %> Dokumente<% if (latestSummary) { %> · Zusammenfassung<% } %>
+            <%= group.inputFiles.length %> Dokumente<% if (latestSummary) { %> · Zusammenfassung<% } %><% if (sollBenefits.length > 0) { %> · <%= sollBenefits.length %> Vorteile<% } %>
         </span>
     </summary>
 
@@ -199,6 +235,7 @@ const originLabel = (item) => item.meeting_title
                     <% if (latestSummary.input_chars) { %>· <%= latestSummary.input_chars %> Zeichen Eingabe<% } %>
                     <% if (latestSummary.prompt_tokens) { %>· <%= latestSummary.prompt_tokens %> Prompt-Token<% } %>
                     <% if (latestSummary.completion_tokens) { %>· <%= latestSummary.completion_tokens %> Antwort-Token<% } %>
+                    <% if (detailLevelLabel(latestSummary.detail_level)) { %>· Detailgrad: <%= detailLevelLabel(latestSummary.detail_level) %><% } %>
                 </p>
 
                 <% if (latestSummary.bpmn_xml) { %>
@@ -258,19 +295,30 @@ const originLabel = (item) => item.meeting_title
                 <% } %>
 
                 <% if (canManage && groupCanCreate) { %>
-                <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
-                    <div class="flex-1">
-                        <label for="summaryStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
-                        <select id="summaryStaff-<%= group.key %>" data-summary-staff class="form-select text-sm">
-                            <% aiStaff.forEach(bot => { %>
-                            <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
-                            <% }); %>
-                        </select>
-                        <% if (aiStaff.length === 0) { %>
-                        <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
-                        <% } %>
+                <div class="mt-4 border-t border-gray-100 pt-4">
+                    <div class="grid gap-3 sm:grid-cols-2">
+                        <div>
+                            <label for="summaryStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
+                            <select id="summaryStaff-<%= group.key %>" data-summary-staff class="form-select text-sm">
+                                <% aiStaff.forEach(bot => { %>
+                                <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
+                                <% }); %>
+                            </select>
+                            <% if (aiStaff.length === 0) { %>
+                            <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
+                            <% } %>
+                        </div>
+                        <div>
+                            <label for="summaryDetail-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Detailgrad</label>
+                            <select id="summaryDetail-<%= group.key %>" data-summary-detail class="form-select text-sm">
+                                <option value="grob" <%= summaryDetailLevel === 'grob' ? 'selected' : '' %>>Grob (weniger Schritte)</option>
+                                <option value="mittel" <%= summaryDetailLevel === 'mittel' ? 'selected' : '' %>>Mittel (Standard)</option>
+                                <option value="fein" <%= summaryDetailLevel === 'fein' ? 'selected' : '' %>>Fein (mehr Schritte)</option>
+                            </select>
+                            <p class="mt-1 text-xs text-gray-500">Grob ist kürzer und leichter lesbar.</p>
+                        </div>
                     </div>
-                    <div class="flex flex-wrap items-center gap-2">
+                    <div class="mt-3 flex flex-wrap items-center gap-2">
                         <label class="flex items-center gap-1.5 text-xs text-gray-600">
                             <input type="checkbox" data-summary-landscape class="rounded border-gray-300">
                             Querformat
@@ -317,13 +365,45 @@ const originLabel = (item) => item.meeting_title
             <div class="border-t border-gray-100 px-3 py-3">
                 <% if (latestSoll) { %>
                 <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
-                    <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= latestSoll.content %></p>
+                    <p class="whitespace-pre-wrap break-words text-sm text-gray-800"><%= sollContentText %></p>
                 </div>
+                <% if (sollBenefits.length > 0) { %>
+                <div class="mt-3">
+                    <h4 class="text-sm font-semibold text-gray-900">
+                        Vorteile gegenüber heute
+                        <span class="ml-1 text-xs font-normal text-gray-500">(<%= sollBenefits.length %>)</span>
+                    </h4>
+                    <p class="mt-1 text-xs text-gray-500">
+                        Je Eintrag: das heutige Problem, der bisherige Weg und der Weg mit CuraFlow.
+                    </p>
+                    <ul class="mt-2 space-y-2">
+                        <% sollBenefits.forEach((benefit, index) => { %>
+                        <li class="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p class="text-sm font-medium text-gray-900"><%= index + 1 %>. <%= benefit.problem %></p>
+                            <% if (benefit.vorher) { %>
+                            <p class="mt-1 text-xs text-gray-600">
+                                <span class="font-semibold text-gray-700">Vorher:</span> <%= benefit.vorher %>
+                            </p>
+                            <% } %>
+                            <% if (benefit.jetzt) { %>
+                            <p class="mt-1 text-xs text-green-800">
+                                <span class="font-semibold">Mit CuraFlow:</span> <%= benefit.jetzt %>
+                            </p>
+                            <% } %>
+                            <% if (benefit.funktion) { %>
+                            <p class="mt-1 text-xs text-gray-500">Funktion: <%= benefitFunctionLabel(benefit.funktion) %></p>
+                            <% } %>
+                        </li>
+                        <% }); %>
+                    </ul>
+                </div>
+                <% } %>
                 <p class="mt-2 text-xs text-gray-500">
                     <%= latestSoll.model || latestSoll.provider || 'unbekannt' %> ·
                     <%= formatDateTime(latestSoll.created_at) %>
                     <% if (latestSoll.capability_count != null) { %>· <%= latestSoll.capability_count %> Katalog-Funktionen<% } %>
                     <% if (latestSoll.catalog_version != null) { %>· Katalog-Version <%= latestSoll.catalog_version %><% } %>
+                    <% if (detailLevelLabel(latestSoll.detail_level)) { %>· Detailgrad: <%= detailLevelLabel(latestSoll.detail_level) %><% } %>
                 </p>
 
                 <% if (latestSoll.bpmn_xml) { %>
@@ -350,19 +430,30 @@ const originLabel = (item) => item.meeting_title
                 <% } %>
 
                 <% if (canManage && groupCanCreate && latestSummary) { %>
-                <div class="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:items-end">
-                    <div class="flex-1">
-                        <label for="sollStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
-                        <select id="sollStaff-<%= group.key %>" data-soll-staff class="form-select text-sm">
-                            <% aiStaff.forEach(bot => { %>
-                            <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
-                            <% }); %>
-                        </select>
-                        <% if (aiStaff.length === 0) { %>
-                        <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
-                        <% } %>
+                <div class="mt-4 border-t border-gray-100 pt-4">
+                    <div class="grid gap-3 sm:grid-cols-2">
+                        <div>
+                            <label for="sollStaff-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Modell</label>
+                            <select id="sollStaff-<%= group.key %>" data-soll-staff class="form-select text-sm">
+                                <% aiStaff.forEach(bot => { %>
+                                <option value="<%= bot.id %>"><%= bot.name %><% if (bot.ai_model) { %> (<%= bot.ai_model %>)<% } %></option>
+                                <% }); %>
+                            </select>
+                            <% if (aiStaff.length === 0) { %>
+                            <p class="mt-1 text-xs text-amber-700">Kein KI-Mitarbeiter konfiguriert.</p>
+                            <% } %>
+                        </div>
+                        <div>
+                            <label for="sollDetail-<%= group.key %>" class="mb-1 block text-xs font-medium text-gray-500">Detailgrad</label>
+                            <select id="sollDetail-<%= group.key %>" data-soll-detail class="form-select text-sm">
+                                <option value="grob" <%= sollDetailLevel === 'grob' ? 'selected' : '' %>>Grob (weniger Schritte)</option>
+                                <option value="mittel" <%= sollDetailLevel === 'mittel' ? 'selected' : '' %>>Mittel (Standard)</option>
+                                <option value="fein" <%= sollDetailLevel === 'fein' ? 'selected' : '' %>>Fein (mehr Schritte)</option>
+                            </select>
+                            <p class="mt-1 text-xs text-gray-500">Grob ist kürzer und leichter lesbar.</p>
+                        </div>
                     </div>
-                    <div class="flex flex-wrap items-center gap-2">
+                    <div class="mt-3 flex flex-wrap items-center gap-2">
                         <label class="flex items-center gap-1.5 text-xs text-gray-600">
                             <input type="checkbox" data-soll-landscape class="rounded border-gray-300">
                             Querformat

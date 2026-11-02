@@ -6893,7 +6893,7 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE project_id = ?
                 ORDER BY created_at DESC`, [projectId]);
 
-            const summaries = await dbAll(`SELECT id, content, bpmn_xml, provider, model, created_by,
+            const summaries = await dbAll(`SELECT id, content, bpmn_xml, detail_level, provider, model, created_by,
                     created_at, input_chars, prompt_tokens, completion_tokens, workflow_id
                 FROM project_flow_summaries
                 WHERE project_id = ?
@@ -6908,8 +6908,8 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 ORDER BY r.id ASC`, [projectId]);
 
             // KI-abgeleitete Soll-Workflows (Zielzustand) je Workflow.
-            const sollFlows = await dbAll(`SELECT id, summary_id, workflow_id, content, bpmn_xml,
-                    catalog_version, capability_count, provider, model, created_by, created_at
+            const sollFlows = await dbAll(`SELECT id, summary_id, workflow_id, content, benefits_json, bpmn_xml,
+                    catalog_version, capability_count, detail_level, provider, model, created_by, created_at
                 FROM project_soll_flows
                 WHERE project_id = ?
                 ORDER BY id DESC`, [projectId]);
@@ -6922,6 +6922,19 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 return Number.isInteger(numeric) && workflowIds.has(numeric) ? numeric : null;
             };
             const sameWorkflow = (value, workflowId) => normalizeWorkflowId(value) === normalizeWorkflowId(workflowId);
+            // Vorteile liegen als JSON am Soll-Workflow. Unlesbare oder fehlende
+            // Werte duerfen die Seite nicht stoeren (alte Zeilen haben NULL).
+            const parseBenefits = (value) => {
+                if (!value) return [];
+                try {
+                    const parsed = JSON.parse(value);
+                    return Array.isArray(parsed)
+                        ? parsed.filter((item) => item && typeof item === 'object')
+                        : [];
+                } catch (_) {
+                    return [];
+                }
+            };
             const buildGroup = (workflow) => {
                 const workflowId = workflow ? workflow.id : null;
                 const derivedName = workflow
@@ -6944,6 +6957,7 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                             refinements: refinements.filter((item) => item.summary_id === row.id)
                         })),
                     sollFlows: sollFlows.filter((row) => sameWorkflow(row.workflow_id, workflowId))
+                        .map((row) => ({ ...row, benefits: parseBenefits(row.benefits_json) }))
                 };
             };
 

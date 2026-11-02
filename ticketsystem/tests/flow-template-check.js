@@ -111,6 +111,10 @@ async function main() {
     check(html.includes('Ablauf.pdf'), 'Input-Dokument erscheint');
     check(html.includes('Ziel.png'), 'Output-Dokument erscheint');
     check(html.includes('data-bpmn-canvas'), 'Diagramm-Container vorhanden');
+    check(html.includes('data-summary-detail'), 'Detailgrad-Auswahl fuer den Ist-Workflow vorhanden');
+    check(html.includes('data-soll-detail'), 'Detailgrad-Auswahl fuer den Soll-Workflow vorhanden');
+    check(html.includes('Grob (weniger Schritte)') && html.includes('Fein (mehr Schritte)'),
+        'Detailgrad-Optionen sind benannt');
     check(html.includes('data-flow-group="unassigned"'), 'Karte "Ohne Workflow" erscheint');
     check(html.includes('Nicht zugeordnet'), 'Nicht zugeordnetes Problem bleibt sichtbar');
 
@@ -135,6 +139,57 @@ async function main() {
     check(!html.includes('<form class="bpmn-refine-form'), 'ohne Diagramm kein Ueberarbeiten-Formular');
     check(html.includes('Die letzte Zusammenfassung enthielt kein Diagramm.'),
         'Hinweis auf fehlendes Diagramm');
+
+    // Vorteile des Soll-Workflows werden als Vorher/Nachher-Liste gezeigt.
+    const withSoll = {
+        ...baseLocals,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{
+                id: 11,
+                summary_id: 9,
+                workflow_id: 1,
+                content: 'Der Ablauf wird digital.\n\n## Vorteile gegenueber heute\n\n'
+                    + '### 1. Plan lag nur im Intranet\n- Vorher: Fileserver\n\n## Offene Punkte\n- Abrechnung',
+                bpmn_xml: null,
+                capability_count: 3,
+                detail_level: 'mittel',
+                model: 'test-model',
+                created_at: '2026-10-03 08:00',
+                benefits: [
+                    {
+                        problem: 'Plan lag nur im Intranet',
+                        vorher: 'Der Nutzer musste sich durch den Fileserver suchen.',
+                        jetzt: 'Der Plan ist auf dem Handy sofort sichtbar.',
+                        funktion: 'plan.view'
+                    }
+                ]
+            }]
+        }]
+    };
+    html = await render(withSoll);
+    check(html.includes('Vorteile gegenüber heute'), 'Vorteils-Abschnitt erscheint');
+    check(html.includes('Plan lag nur im Intranet'), 'Problem des Vorteils erscheint');
+    check(html.includes('Vorher:') && html.includes('Der Nutzer musste sich durch den Fileserver suchen.'),
+        'Vorher-Zeile erscheint');
+    check(html.includes('Mit CuraFlow:') && html.includes('Der Plan ist auf dem Handy sofort sichtbar.'),
+        'Mit-CuraFlow-Zeile erscheint');
+    check(html.includes('plan.view'), 'zugeordnete Funktion erscheint');
+    check(html.includes('Der Ablauf wird digital.'), 'Text des Soll-Workflows bleibt sichtbar');
+    check(!html.includes('## Vorteile gegenueber heute'),
+        'Vorteils-Abschnitt erscheint nicht doppelt als Klartext');
+    check(html.includes('## Offene Punkte'), 'folgende Abschnitte bleiben im Klartext erhalten');
+
+    // Alte Zeilen ohne benefits_json duerfen nicht brechen.
+    const withoutBenefits = {
+        ...withSoll,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{ ...withSoll.workflowGroups[0].sollFlows[0], benefits: [] }]
+        }]
+    };
+    html = await render(withoutBenefits);
+    check(!html.includes('Vorteile gegenüber heute'), 'ohne Vorteile kein leerer Abschnitt');
 
     // BPMN-XML darf nicht literal in das Inline-Skript geraten.
     html = await render(baseLocals);

@@ -105,6 +105,14 @@ check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Programm:'),
     'BPMN-System-Prompt fordert Programm-Angabe');
 check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
     'BPMN-User-Prompt enthaelt die Eingabe');
+check(flowSummary.buildUserPrompt('Eingabe', 'grob').includes('Detailgrad: Grob'),
+    'Summary-Prompt nennt den groben Detailgrad');
+check(flowSummary.buildUserPrompt('Eingabe', 'grob').includes('hoechstens 5'),
+    'grobe Summary begrenzt die Schritte');
+check(flowSummary.buildBpmnUserPrompt('Eingabe', 'fein').includes('Detailgrad: Fein'),
+    'BPMN-Prompt nennt den feinen Detailgrad');
+check(flowSummary.buildUserPrompt('Eingabe').includes('Detailgrad: Mittel'),
+    'ohne Angabe gilt der Standard-Detailgrad');
 
 // --- Ueberarbeitung eines vorhandenen Diagramms ---
 check(typeof flowSummary.BPMN_REFINE_SYSTEM_PROMPT === 'string'

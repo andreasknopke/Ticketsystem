@@ -12,6 +12,7 @@ const {
     buildSollUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
     buildSollBpmnUserPrompt,
+    normalizeBenefits,
     formatSollContent
 } = require('../services/atlas/sollFlow');
 
@@ -189,6 +190,15 @@ async function main() {
     check(buildSollUserPrompt(inputText, { capabilities: [] }).includes('KEIN Funktionskatalog'),
         'leerer Katalog nennt die Abwesenheit');
 
+    check(buildSollUserPrompt(inputText, CATALOG, 'grob').includes('Detailgrad: Grob'),
+        'Soll-Prompt nennt den groben Detailgrad');
+    check(buildSollUserPrompt(inputText, CATALOG, 'grob').includes('hoechstens 5 Schritte'),
+        'grobe Soll-Ableitung begrenzt die Schritte');
+    check(buildSollUserPrompt(inputText, CATALOG).includes('Detailgrad: Mittel'),
+        'ohne Angabe gilt der Standard-Detailgrad');
+    check(buildSollUserPrompt(inputText, null, 'fein').includes('Detailgrad: Fein'),
+        'Detailgrad wirkt auch ohne Katalog');
+
     check(SOLL_SYSTEM_PROMPT.includes('"gap"') && SOLL_SYSTEM_PROMPT.includes('"manuell"'),
         'Systemprompt definiert "gap" und "manuell"');
     check(/Erfinde niemals eine Funktion/.test(SOLL_SYSTEM_PROMPT), 'Systemprompt verbietet erfundene Funktionen');
@@ -199,6 +209,15 @@ async function main() {
         && /"begruendung"/.test(SOLL_SYSTEM_PROMPT), 'Systemprompt nennt alle Schrittfelder');
     check(/ohne Markdown/i.test(SOLL_SYSTEM_PROMPT) && /ausschliesslich als JSON/i.test(SOLL_SYSTEM_PROMPT),
         'Systemprompt verlangt JSON ohne Markdown');
+    check(SOLL_SYSTEM_PROMPT.includes('"vorteile"'), 'Systemprompt nennt das Feld "vorteile"');
+    check(/"vorher"/.test(SOLL_SYSTEM_PROMPT) && /"jetzt"/.test(SOLL_SYSTEM_PROMPT)
+        && /"problem"/.test(SOLL_SYSTEM_PROMPT), 'Systemprompt nennt problem/vorher/jetzt');
+    check(/Leite jeden Vorteil aus einem im\s+Ist-Zustand genannten Problem ab/.test(SOLL_SYSTEM_PROMPT),
+        'Vorteile muessen aus einem genannten Problem folgen');
+    check(/Keine erfundenen Zahlen/.test(SOLL_SYSTEM_PROMPT),
+        'erfundene Zahlen (Zeitersparnis) sind verboten');
+    check(/Nenne 2 bis 3 Vorteile/.test(buildSollUserPrompt(inputText, CATALOG, 'grob')),
+        'grober Detailgrad begrenzt die Zahl der Vorteile');
 
     // -------------------------------------------------------------------------
     console.log('\n🧪  Funktionskatalog: Client\n');
@@ -384,6 +403,8 @@ async function main() {
     check(sollBpmnPrompt.includes('## Kuenftiger Ablauf'), 'Soll-Diagramm-Prompt enthaelt die Zusammenfassung');
     check(sollBpmnPrompt.includes('shift.assign'), 'Soll-Diagramm-Prompt enthaelt die Katalog-ids');
     check(sollBpmnPrompt.includes('billing.case'), 'Soll-Diagramm-Prompt enthaelt die gap-Funktion als id');
+    check(buildSollBpmnUserPrompt('x', CATALOG, 'grob').includes('Detailgrad: Grob'),
+        'Soll-Diagramm-Prompt nennt den Detailgrad');
 
     console.log('\n🧪  Soll-Workflow: Formatierung\n');
     const sollFormatted = formatSollContent({
@@ -405,6 +426,69 @@ async function main() {
         'Offene Punkte erscheinen');
     check(formatSollContent(null) === '', 'null → ""');
     check(formatSollContent('') === '', 'leere Zeichenkette → ""');
+
+    console.log('\n🧪  Soll-Workflow: Vorteile\n');
+    const benefitModel = {
+        zusammenfassung: 'Der Ablauf wird digital.',
+        schritte: [
+            {
+                ist: 'Plan im Intranet suchen',
+                soll: 'Plan in CuraFlow oeffnen',
+                funktion: 'plan.view',
+                rolle: 'Pflege',
+                begruendung: 'Ersetzt das Suchen im Fileserver'
+            }
+        ],
+        vorteile: [
+            {
+                problem: 'Plan lag nur im Intranet',
+                vorher: 'Der Nutzer musste sich durch den Fileserver suchen.',
+                jetzt: 'Der Plan ist auf dem Handy sofort sichtbar.',
+                funktion: 'plan.view'
+            },
+            {
+                problem: 'Excel sperrte das Dokument',
+                vorher: 'Zwei Planer konnten nicht gleichzeitig arbeiten.',
+                jetzt: 'Aenderungen sind live sichtbar.',
+                funktion: 'gap'
+            },
+            {
+                problem: 'Freigabe ohne Funktion',
+                vorher: 'Freigabe per Unterschrift',
+                jetzt: 'bleibt manuell',
+                funktion: 'manuell'
+            }
+        ],
+        offene_punkte: ['Abrechnung fehlt im Katalog']
+    };
+
+    const benefits = normalizeBenefits(benefitModel);
+    check(benefits.length === 3, 'normalizeBenefits liest alle Vorteile');
+    check(benefits[0].problem === 'Plan lag nur im Intranet', 'Problem bleibt erhalten');
+    check(benefits[0].vorher.includes('Fileserver') && benefits[0].jetzt.includes('Handy'),
+        'vorher und jetzt bleiben getrennt');
+    check(normalizeBenefits(JSON.stringify(benefitModel)).length === 3,
+        'normalizeBenefits akzeptiert JSON-Text');
+    check(JSON.stringify(normalizeBenefits({ vorteile: [benefitModel.vorteile[0], null, 'x', {}] }))
+        .includes('Plan lag nur im Intranet'), 'unbrauchbare Eintraege werden verworfen');
+    check(normalizeBenefits({ vorteile: [{ vorher: 'nur vorher' }] })[0].problem === 'nur vorher',
+        'fehlendes Problem wird aus vorher ergaenzt');
+    check(normalizeBenefits({}).length === 0, 'fehlendes Feld vorteile → []');
+    check(normalizeBenefits(null).length === 0, 'null → []');
+    check(normalizeBenefits('kein json').length === 0, 'Text ohne JSON → []');
+    check(normalizeBenefits([{ problem: 'a' }]).length === 1, 'reine Liste wird akzeptiert');
+
+    const withBenefits = formatSollContent(benefitModel);
+    check(withBenefits.includes('## Vorteile gegenueber heute'), 'Abschnitt Vorteile erscheint');
+    check(withBenefits.includes('- Vorher: Der Nutzer musste sich durch den Fileserver suchen.'),
+        'Vorher-Zeile erscheint');
+    check(withBenefits.includes('- Mit CuraFlow: Der Plan ist auf dem Handy sofort sichtbar.'),
+        'Mit-CuraFlow-Zeile erscheint');
+    check(withBenefits.includes('CuraFlow-Funktion `plan.view`'), 'Funktion wird benannt');
+    check(withBenefits.includes('CuraFlow kann das aktuell nicht abbilden'), 'gap wird verstaendlich benannt');
+    check(withBenefits.indexOf('## Kuenftiger Ablauf') < withBenefits.indexOf('## Vorteile gegenueber heute')
+        && withBenefits.indexOf('## Vorteile gegenueber heute') < withBenefits.indexOf('## Offene Punkte'),
+        'Reihenfolge: Ablauf, Vorteile, Offene Punkte');
 
     // -------------------------------------------------------------------------
     console.log(`\n${failures === 0 ? '✅' : '❌'}  ${passed} bestanden, ${failures} fehlgeschlagen\n`);

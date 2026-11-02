@@ -546,6 +546,7 @@
 
             const workflowId = workflowIdOf(key);
             const staffSelect = root ? root.querySelector('[data-summary-staff]') : null;
+            const detailSelect = root ? root.querySelector('[data-summary-detail]') : null;
             const landscape = root ? root.querySelector('[data-summary-landscape]') : null;
 
             if (button) { button.disabled = true; button.textContent = 'Erstelle…'; }
@@ -555,6 +556,7 @@
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                     body: JSON.stringify({
                         staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
+                        detail_level: detailSelect && detailSelect.value ? detailSelect.value : undefined,
                         orientation: landscape && landscape.checked ? 'landscape' : 'portrait',
                         workflow_id: workflowId || undefined
                     })
@@ -576,6 +578,7 @@
 
             const workflowId = workflowIdOf(key);
             const staffSelect = root ? root.querySelector('[data-soll-staff]') : null;
+            const detailSelect = root ? root.querySelector('[data-soll-detail]') : null;
             const landscape = root ? root.querySelector('[data-soll-landscape]') : null;
 
             if (button) { button.disabled = true; button.textContent = 'Erstelle…'; }
@@ -585,6 +588,7 @@
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
                     body: JSON.stringify({
                         staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
+                        detail_level: detailSelect && detailSelect.value ? detailSelect.value : undefined,
                         orientation: landscape && landscape.checked ? 'landscape' : 'portrait',
                         workflow_id: workflowId || undefined
                     })
