@@ -58,6 +58,13 @@ Regeln:
   Zulaessigkeit, Voraussetzungen oder technische Endpunkte sind nicht deine
   Aufgabe — beantworte "welche Funktion ersetzt diesen Schritt".
 - "ist" beschreibt weiterhin den heutigen Ablauf. Erfinde dort nichts dazu.
+- HARTE REGEL: Arbeit ausserhalb von CuraFlow verschwindet nie. Jeder Schritt,
+  der auch kuenftig nicht in CuraFlow stattfindet (Unterschrift, Papier,
+  Telefon, Excel, Fremdsystem, Sichtkontrolle), bleibt ein eigener Schritt mit
+  "funktion": "gap" oder "manuell" und einer Rolle. Das gilt auch bei grobem
+  Detailgrad: dort werden nur Schritte INNERHALB von CuraFlow zusammengefasst.
+- Nenne alle beteiligten Rollen bzw. Abteilungen. Eine Rolle, die im Ablauf
+  vorkommt, faellt nie weg — auch wenn sie nur einen Schritt beisteuert.
 - "vorteile" beantwortet: welches heutige Problem loest CuraFlow, und was
   aendert sich dadurch fuer die Nutzer. Leite jeden Vorteil aus einem im
   Ist-Zustand genannten Problem ab; nenne kein Problem, das dort nicht steht.
@@ -107,9 +114,11 @@ Regeln:
 - Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
 - Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
 - Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
+- Lanes werden nie weggelassen, auch bei grobem Detailgrad nicht: jede im Ablauf vorkommende Rolle behaelt ihre Lane, auch wenn sie nur eine Aktivitaet beisteuert.
+- Arbeit ausserhalb von CuraFlow wird immer als eigene Aktivitaet modelliert (Unterschrift, Papier, Telefon, Excel, Fremdsystem, Sichtkontrolle) — mit "Funktion: gap" oder "Funktion: manuell" und dem heute genutzten Programm. Nur Aktivitaeten INNERHALB von CuraFlow duerfen zusammengefasst werden.
 - Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
 - Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
-- Halte dich an den Detailgrad aus der Aufgabe; er begrenzt die Zahl der Aktivitaeten/Gateways. Fasse eng zusammengehoerende Schritte zu einem Schritt zusammen, wenn du das Limit sonst ueberschreitest.
+- Halte dich an den Detailgrad aus der Aufgabe; er begrenzt die Zahl der Aktivitaeten/Gateways. Fasse eng zusammengehoerende Schritte innerhalb von CuraFlow zu einem Schritt zusammen, wenn du das Limit sonst ueberschreitest. Aufgaben ausserhalb von CuraFlow bleiben dabei erhalten, notfalls indem du innerhalb von CuraFlow staerker zusammenfasst.
 - Modelliere nur, was aus der Zusammenfassung belegt ist. Wenn ein Schritt unklar ist, lasse ihn weg statt ihn zu erfinden.
 - Achte auf wohlgeformtes XML: korrekt verschachtelte Elemente und geschlossene Tags.`;
 

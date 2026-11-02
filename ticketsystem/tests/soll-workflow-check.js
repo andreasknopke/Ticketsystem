@@ -216,6 +216,18 @@ async function main() {
         'Vorteile muessen aus einem genannten Problem folgen');
     check(/Keine erfundenen Zahlen/.test(SOLL_SYSTEM_PROMPT),
         'erfundene Zahlen (Zeitersparnis) sind verboten');
+    check(/Arbeit ausserhalb von CuraFlow verschwindet nie/.test(SOLL_SYSTEM_PROMPT),
+        'Systemprompt verbietet das Weglassen von Arbeit ausserhalb von CuraFlow');
+    check(/"funktion": "gap" oder "manuell"/.test(SOLL_SYSTEM_PROMPT),
+        'Schritte ausserhalb von CuraFlow behalten gap/manuell');
+    check(/Eine Rolle, die im Ablauf\s+vorkommt, faellt nie weg/.test(SOLL_SYSTEM_PROMPT),
+        'beteiligte Rollen duerfen nicht verschwinden');
+    check(SOLL_BPMN_SYSTEM_PROMPT.includes('Lanes werden nie weggelassen'),
+        'Soll-Diagramm behaelt Lanes auch bei grobem Detailgrad');
+    check(/Arbeit ausserhalb von CuraFlow wird immer als eigene Aktivitaet modelliert/.test(SOLL_BPMN_SYSTEM_PROMPT),
+        'Soll-Diagramm modelliert Arbeit ausserhalb von CuraFlow immer');
+    check(/Aufgaben ausserhalb von CuraFlow bleiben dabei erhalten/.test(SOLL_BPMN_SYSTEM_PROMPT),
+        'Detailgrad-Limit darf nicht zu Lasten der Arbeit ausserhalb gehen');
     check(/Nenne 2 bis 3 Vorteile/.test(buildSollUserPrompt(inputText, CATALOG, 'grob')),
         'grober Detailgrad begrenzt die Zahl der Vorteile');
 

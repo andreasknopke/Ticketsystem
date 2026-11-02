@@ -51,6 +51,24 @@ check(detailLevel.buildDetailInstruction('fein', 'bpmn').includes('bis zu 20'),
 check(detailLevel.buildDetailInstruction(undefined, 'summary').includes('Detailgrad: Mittel'),
     'fehlender Grad nutzt den Standard');
 
+// Die Kernregel gilt in JEDEM Detailgrad und fuer jede Ableitung.
+check(detailLevel.NEVER_OMIT.includes('Lanes/Swimlanes'), 'Regel nennt die Lanes');
+check(detailLevel.NEVER_OMIT.includes('NICHT in CuraFlow'),
+    'Regel nennt Aufgaben ausserhalb von CuraFlow');
+for (const level of detailLevel.DETAIL_LEVELS) {
+    for (const kind of ['summary', 'steps', 'bpmn', 'vorteile']) {
+        const text = detailLevel.buildDetailInstruction(level, kind);
+        check(text.includes('Lanes/Swimlanes') && text.includes('NICHT in CuraFlow'),
+            `${level}/${kind}: Lanes und Arbeit ausserhalb von CuraFlow bleiben Pflicht`);
+    }
+}
+check(detailLevel.buildDetailInstruction('grob', ['steps', 'vorteile']).includes('Lanes/Swimlanes'),
+    'kombinierte Bausteine tragen die Regel ebenfalls');
+check(!/lasse Nebenschritte weg/.test(detailLevel.getDetailLevelSpec('grob').steps),
+    'grobe Anweisung sagt nicht mehr pauschal "Nebenschritte weglassen"');
+check(/ausserhalb von CuraFlow bleiben erhalten/.test(detailLevel.getDetailLevelSpec('grob').steps),
+    'grobe Anweisung haelt Aufgaben ausserhalb von CuraFlow ausdruecklich');
+
 check(detailLevel.detailLevelLabel('grob') === 'Grob', 'Label grob');
 check(detailLevel.detailLevelLabel('fein') === 'Fein', 'Label fein');
 check(detailLevel.detailLevelLabel(null) === '', 'alte Zeilen ohne Wert haben kein Label');

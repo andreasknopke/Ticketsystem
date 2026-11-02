@@ -101,6 +101,10 @@ check(flowSummary.BPMN_SYSTEM_PROMPT.includes('parallelGateway'),
     'BPMN-System-Prompt erlaubt parallele Ablaeufe');
 check(flowSummary.BPMN_SYSTEM_PROMPT.includes('laneSet') && flowSummary.BPMN_SYSTEM_PROMPT.includes('flowNodeRef'),
     'BPMN-System-Prompt fordert Swimlanes');
+check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Lanes werden nie weggelassen'),
+    'Ist-Diagramm behaelt Lanes auch bei grobem Detailgrad');
+check(/ausserhalb der betrachteten Software/.test(flowSummary.BPMN_SYSTEM_PROMPT),
+    'Ist-Diagramm nennt Taetigkeiten ausserhalb der Software');
 check(flowSummary.BPMN_SYSTEM_PROMPT.includes('Programm:'),
     'BPMN-System-Prompt fordert Programm-Angabe');
 check(flowSummary.buildBpmnUserPrompt('Eingabe').includes('Eingabe'),
@@ -122,6 +126,8 @@ check(flowSummary.BPMN_REFINE_SYSTEM_PROMPT.includes('flowNodeRef'),
     'Refine-System-Prompt erklaert Swimlane-Zuordnung');
 check(flowSummary.BPMN_REFINE_SYSTEM_PROMPT.includes('BPMNDiagram'),
     'Refine-System-Prompt verbietet eigene Koordinaten');
+check(/Lanes \(beteiligte Rollen\) und Schritte ausserhalb/.test(flowSummary.BPMN_REFINE_SYSTEM_PROMPT),
+    'Refine-System-Prompt behaelt Lanes und Arbeit ausserhalb');
 
 const refinePrompt = flowSummary.buildBpmnRefineUserPrompt({
     currentXml: '<bpmn:definitions><bpmn:process id="p"/></bpmn:definitions>',

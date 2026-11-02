@@ -50,9 +50,28 @@ Die aktuelle (Ist-)Arbeitsweise einer Abteilung für einen Prozess, vor der
 Einführung. Ein Projekt beschreibt **mehrere** Workflows, jeder mit eigenem
 Namen (z. B. „Entlassungsbrief“, „Wochenplan erstellen“). Zu einem Workflow
 gehören seine Beschreibung, Probleme, Adoptionsrisiken, Dokumente, die
-Input-Visualisierung und der Output. Zielzustand wird nur in Empfehlungen und
-Konfigurationen beschrieben, nie als zweiter Soll-Workflow.
+Input-Visualisierung und der Output.
 _Avoid_: Prozess, Ablauf, Current State
+
+**Ist-Zusammenfassung**:
+Die KI-Zusammenfassung der Bestandsaufnahme eines Workflows. Beschreibt den
+heutigen Ablauf, die Probleme und die Adoptionsrisiken. Grundlage für alles
+Weitere.
+_Avoid_: Analyse, Report, Summary
+
+**Soll-Workflow**:
+Der Zielzustand desselben Workflows mit den Funktionen aus dem
+CuraFlow-Funktionskatalog. Wird aus der Ist-Zusammenfassung abgeleitet und
+nennt je Schritt die Funktion (`gap` = Kataloglücke, `manuell` = menschliche
+Arbeit bleibt). Rollen und Arbeit außerhalb von CuraFlow werden nie
+weggelassen (siehe [ADR 0005](docs/adr/0005-soll-workflow-zeigt-arbeit-ausserhalb-der-software.md)).
+_Avoid_: Zielbild, Future State, Prozessmodell
+
+**Vorteil**:
+Ein belegter Nutzen des Soll-Workflows: welches **Problem** von heute durch
+welche Funktion wegfällt — als Paar „Vorher“ / „Mit CuraFlow“. Ohne
+zugehöriges Problem kein Vorteil.
+_Avoid_: Benefit, Mehrwert, Nutzenversprechen
 
 **Problem**:
 Ein Mangel im **aktuellen (alten) Workflow** einer Abteilung, den die Einführung

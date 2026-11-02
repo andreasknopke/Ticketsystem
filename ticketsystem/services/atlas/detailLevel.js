@@ -11,21 +11,41 @@
 const DETAIL_LEVELS = ['grob', 'mittel', 'fein'];
 const DETAIL_LEVEL_DEFAULT = 'mittel';
 
+/**
+ * Gilt in jedem Detailgrad und fuer jede Ableitung.
+ *
+ * Der Detailgrad darf die Darstellung verkuerzen, aber nicht das Bild
+ * verfaelschen: Rollen (Lanes) und Arbeit ausserhalb von CuraFlow sind Teil
+ * des Ablaufs. Wer sie weglaesst, zeigt einen Ablauf, den es so nicht gibt —
+ * und im Beratungsgespraech entsteht der Eindruck, die Software erledige
+ * alles.
+ */
+const NEVER_OMIT = [
+    'Unabhaengig vom Detailgrad gilt:',
+    '- Lanes/Swimlanes (alle beteiligten Rollen bzw. Abteilungen) werden nie weggelassen.',
+    '- Aufgaben, die NICHT in CuraFlow stattfinden (z. B. Unterschrift, Papier, Telefon, Excel, Fremdsystem, Sichtkontrolle), werden immer genannt — mit "funktion": "gap" oder "manuell" und ihrer Rolle.',
+    '- Der Detailgrad entscheidet nur, wie stark Taetigkeiten INNERHALB von CuraFlow zusammengefasst werden.'
+].join('\n');
+
 const DETAIL_LEVEL_SPECS = {
     grob: {
         label: 'Grob',
         maxActivities: 6,
         maxSteps: 5,
         summary: 'Fasse den Ablauf in hoechstens 5 groben Schritten zusammen. '
-            + 'Fasse eng verwandte Taetigkeiten zusammen und lasse Nebenschritte weg; '
-            + 'weniger Schritte sind hier besser als Vollstaendigkeit.',
-        steps: 'Liefere hoechstens 5 Schritte. Fasse eng verwandte Taetigkeiten zusammen '
-            + 'und lasse Nebenschritte weg; weniger Schritte sind hier besser als Vollstaendigkeit.',
+            + 'Fasse eng verwandte Taetigkeiten innerhalb von CuraFlow zusammen und '
+            + 'lasse kleinteilige Nebenschritte weg; weniger Schritte sind hier besser '
+            + 'als Vollstaendigkeit. Schritte ausserhalb von CuraFlow bleiben erhalten.',
+        steps: 'Liefere hoechstens 5 Schritte. Fasse eng verwandte Taetigkeiten innerhalb '
+            + 'von CuraFlow zusammen und lasse kleinteilige Nebenschritte weg; weniger '
+            + 'Schritte sind hier besser als Vollstaendigkeit. Schritte ausserhalb von '
+            + 'CuraFlow bleiben erhalten.',
         vorteile: 'Nenne 2 bis 3 Vorteile. Nur Vorteile, die direkt aus einem genannten '
             + 'Problem folgen — lieber wenige belegte als viele allgemeine.',
         bpmn: 'Modelliere hoechstens 6 Aktivitaeten/Gateways. Fasse eng verwandte '
-            + 'Taetigkeiten zu einem Schritt zusammen und modelliere nur Verzweigungen, '
-            + 'die fuer das Verstaendnis des Ablaufs noetig sind.'
+            + 'Taetigkeiten innerhalb von CuraFlow zusammen und modelliere nur '
+            + 'Verzweigungen, die fuer das Verstaendnis des Ablaufs noetig sind. '
+            + 'Aufgaben ausserhalb von CuraFlow und ihre Lanes bleiben erhalten.'
     },
     mittel: {
         label: 'Mittel',
@@ -95,13 +115,14 @@ function buildDetailInstruction(value, kind) {
     const spec = getDetailLevelSpec(value);
     const kinds = Array.isArray(kind) ? kind : [kind];
     const blocks = kinds.map((key) => spec[key]).filter(Boolean);
-    return `Detailgrad: ${spec.label}.\n${blocks.join('\n')}`;
+    return `Detailgrad: ${spec.label}.\n${blocks.join('\n')}\n\n${NEVER_OMIT}`;
 }
 
 module.exports = {
     DETAIL_LEVELS,
     DETAIL_LEVEL_DEFAULT,
     DETAIL_LEVEL_SPECS,
+    NEVER_OMIT,
     normalizeDetailLevel,
     resolveDetailLevel,
     getDetailLevelSpec,

@@ -78,6 +78,8 @@ Regeln:
 - Verbinde alle Elemente mit <bpmn:sequenceFlow> (sourceRef/targetRef) zu einem zusammenhaengenden Ablauf.
 - Erstelle KEINE Diagramm-Koordinaten (kein <bpmndi:BPMNDiagram>); die Platzierung uebernimmt der Server automatisch.
 - Modelliere Swimlanes: Lege im <bpmn:process> ein <bpmn:laneSet> an und darin je beteiligter Rolle/Abteilung ein <bpmn:lane> mit eindeutiger id und sprechendem name (z. B. "Arzt", "Pflege", "Verwaltung"). Ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu. Ist nur eine Rolle beteiligt, reicht eine einzelne Lane.
+- Lanes werden nie weggelassen, auch bei grobem Detailgrad nicht: jede beteiligte Rolle behaelt ihre Lane, auch wenn sie nur eine Aktivitaet beisteuert.
+- Taetigkeiten ausserhalb der betrachteten Software (Papier, Telefon, Excel, Fremdsystem, Sichtkontrolle) werden immer als eigene Aktivitaet modelliert — nur Taetigkeiten innerhalb desselben Programms duerfen zusammengefasst werden.
 - Fasse die Lanes optional in einen Pool: eine <bpmn:collaboration> mit genau einem <bpmn:participant>, dessen processRef auf den Prozess zeigt.
 - Keine Datenobjekte/-speicher, keine Message-Flows, keine Event-Sub-Prozesse.
 - Halte dich an den Detailgrad aus der Aufgabe; er begrenzt die Zahl der Aktivitaeten/Gateways. Fasse eng zusammengehoerende Schritte zu einem Schritt zusammen, wenn du das Limit sonst ueberschreitest.
@@ -96,6 +98,7 @@ Regeln:
 - Antworte NUR mit dem XML. Kein Markdown, keine Codebloecke (keine \`\`\`), kein Text davor oder danach.
 - Uebernimm das vorhandene Modell: gleiche Elemente, gleiche ids, gleiche Reihenfolge und gleiche Bedeutung. Aendere nur, was der Anpassungswunsch verlangt.
 - Entferne keine Schritte, es sei denn, der Anpassungswunsch verlangt es ausdruecklich. Erfinde keine neuen fachlichen Schritte.
+- Lanes (beteiligte Rollen) und Schritte ausserhalb des betrachteten Programms bleiben immer erhalten, auch wenn der Anpassungswunsch verkuerzen soll.
 - Bleibe bei den vorhandenen Rollen und Programmen, solange der Anpassungswunsch nichts anderes verlangt.
 - Wenn der Anpassungswunsch nach klareren Swimlanes fragt: lege je Rolle/Abteilung genau eine <bpmn:lane> an, ordne jede Aktivitaet und jedes Ereignis ueber <bpmn:flowNodeRef> genau einer Lane zu, und achte darauf, dass jede Lane mindestens ein Element enthaelt. Loese Rollen nicht in mehrere Lanes derselben Rolle auf.
 - Behalte die Struktur bei: genau ein <bpmn:process>, genau ein Start-Ereignis, ein zusammenhaengender Ablauf ueber <bpmn:sequenceFlow>.
