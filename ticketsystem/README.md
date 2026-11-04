@@ -237,16 +237,25 @@ AI_CODING_MAX_CORRECTION_PASSES=2
 # search/replace-Edits auf abgeschnittenem Inhalt arbeiten (Default: 2 MiB).
 AI_CODING_SOURCE_MAX_BYTES=2097152
 
-# --- CuraFlow-Funktionskatalog (SOLL-Workflow) ---
+# --- Funktionskataloge fuer den SOLL-Workflow ---
 # Liefert die Funktionen, aus denen ein kuenftiger Ablauf (SOLL) besteht.
-# Der IST-Workflow (Termine/Transkripte) nutzt den Katalog NICHT.
-# Ohne CURAFLOW_BASE_URL laeuft die Soll-Planung ohne Funktionszuordnung
-# weiter — das ist ein unterstuetzter Zustand, kein Fehler.
+# Der IST-Workflow (Termine/Transkripte) nutzt die Kataloge NICHT.
+# Es gibt JE SYSTEM einen Katalog: Env-Prefix ist der Systemname in
+# Grossbuchstaben (CURAFLOW, SCHREIBDIENST). Die Projektion im Flow-Reiter
+# laesst die Quelle waehlen: CuraFlow, Schreibdienst oder Freitext (dort
+# beschreibt der Nutzer den Zielzustand selbst, ohne Katalog).
+# Ohne <PREFIX>_BASE_URL ist die jeweilige Katalogquelle nicht verfuegbar;
+# die Ableitung meldet das und bietet Freitext als Alternative an.
 # Auth: Authorization: Bearer <JWT>, kein X-DB-Token (Katalog ist mandantenunabhaengig).
 CURAFLOW_BASE_URL=                       # z.B. https://curaflow.opnwork.de
 CURAFLOW_CATALOG_TOKEN=                  # JWT; ohne Token wird kein Auth-Header gesendet
 CURAFLOW_CATALOG_TIMEOUT_MS=8000
 CURAFLOW_CATALOG_TTL_MS=600000           # Cache-Dauer der Katalog-Antwort
+
+SCHREIBDIENST_BASE_URL=                  # z.B. https://schreibdienst.example
+SCHREIBDIENST_CATALOG_TOKEN=             # optional, gleiches Schema
+SCHREIBDIENST_CATALOG_TIMEOUT_MS=8000
+SCHREIBDIENST_CATALOG_TTL_MS=600000
 ```
 
 #### Bot erneut auspruefen lassen

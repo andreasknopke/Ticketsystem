@@ -1,14 +1,15 @@
 'use strict';
 
 const bpmn = require('./bpmn');
-const { fetchCatalog } = require('./catalog');
+const { fetchCatalog, resolveProjectionSource } = require('./catalog');
 const { resolveDetailLevel } = require('./detailLevel');
 const {
-    SOLL_SYSTEM_PROMPT,
+    buildSollSystemPrompt,
     buildSollUserPrompt,
-    SOLL_BPMN_SYSTEM_PROMPT,
+    buildSollFreitextUserPrompt,
+    buildSollBpmnSystemPrompt,
     buildSollBpmnUserPrompt,
-    SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+    buildSollBpmnRefineSystemPrompt,
     buildSollBpmnRefineUserPrompt,
     normalizeBenefits,
     formatSollContent
@@ -552,16 +553,28 @@ module.exports = function registerAtlasRoutes(app, deps) {
         }
     });
 
-    // Testet die Verbindung zum CuraFlow-Funktionskatalog. force umgeht den
+    // Testet die Verbindung zu einem Funktionskatalog. force umgeht den
     // Kurzzeit-Cache, damit der Button immer die aktuelle Erreichbarkeit zeigt.
     app.get('/api/projects/:projectId/curaflow-catalog-test', requireAuth, requireAdmin, async (req, res) => {
         try {
-            const result = await fetchCatalog({ force: true });
+            const projection = resolveProjectionSource(req.query.source);
+            if (projection.error) return res.status(400).json({ error: projection.error });
+            if (projection.mode !== 'catalog') {
+                return res.status(400).json({ error: 'Freitext hat keinen Funktionskatalog.' });
+            }
+            const result = await fetchCatalog({ force: true, source: projection.source });
             if (!result.catalog) {
-                return res.json({ ok: false, reason: result.reason || 'Funktionskatalog nicht erreichbar.' });
+                return res.json({
+                    ok: false,
+                    source: projection.source,
+                    source_label: projection.label,
+                    reason: result.reason || 'Funktionskatalog nicht erreichbar.'
+                });
             }
             res.json({
                 ok: true,
+                source: projection.source,
+                source_label: projection.label,
                 catalogVersion: result.catalog.catalogVersion ?? null,
                 capabilityCount: Array.isArray(result.catalog.capabilities)
                     ? result.catalog.capabilities.length
@@ -592,6 +605,22 @@ module.exports = function registerAtlasRoutes(app, deps) {
             if (detail.error) return res.status(400).json({ error: detail.error });
             const detailLevel = detail.level;
 
+            // Woran orientiert sich die Projektion: Katalog eines Systems oder
+            // die Beschreibung des Nutzers (Freitext)?
+            const projection = resolveProjectionSource(req.body.source);
+            if (projection.error) return res.status(400).json({ error: projection.error });
+            const sourceText = normalizeText(req.body.source_text);
+            if (projection.mode === 'freitext') {
+                if (!sourceText) {
+                    return res.status(400).json({
+                        error: 'Bei der Quelle "Freitext" ist eine Beschreibung des Zielzustands erforderlich.'
+                    });
+                }
+                if (sourceText.length > 4000) {
+                    return res.status(400).json({ error: 'Die Beschreibung des Zielzustands ist zu lang (max. 4000 Zeichen).' });
+                }
+            }
+
             const collected = await collectSummaryInput(projectId, workflowId);
             if (!collected) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
             if (collected.error) return res.status(404).json({ error: collected.error });
@@ -610,15 +639,43 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 return res.status(409).json({ error: 'Die Ist-Zusammenfassung ist leer. Erstelle sie zuerst unter "Input-Visualisierung".' });
             }
 
-            const catalogResult = await fetchCatalog();
-            const catalog = catalogResult.catalog;
-            const catalogVersion = catalog && catalog.catalogVersion !== undefined ? catalog.catalogVersion : null;
-            const capabilityCount = catalog && Array.isArray(catalog.capabilities) ? catalog.capabilities.length : 0;
+            // Zielsystem benennen: bei Katalogquellen der Systemname, im
+            // Freitext das System des Projekts (dort beschreibt der Nutzer den
+            // Zielzustand ohne Funktionsliste).
+            const systemName = projection.mode === 'freitext'
+                ? (collected.project.system_name || 'die neue Software')
+                : projection.label;
+
+            let catalog = null;
+            let catalogVersion = null;
+            let capabilityCount = 0;
+            if (projection.mode === 'catalog') {
+                const catalogResult = await fetchCatalog({ source: projection.source });
+                catalog = catalogResult.catalog;
+                // Ohne Katalog kann die Projektion keine einzige Funktion
+                // benennen — dann ist Freitext die ehrliche Alternative.
+                if (!catalog) {
+                    return res.status(409).json({
+                        error: `Funktionskatalog von ${projection.label} nicht verfuegbar: ${catalogResult.reason}`,
+                        hint: 'Waehle als Quelle "Freitext" und beschreibe den Zielzustand selbst, oder pruefe die Katalog-Konfiguration.',
+                        source: projection.source
+                    });
+                }
+                catalogVersion = catalog.catalogVersion !== undefined ? catalog.catalogVersion : null;
+                capabilityCount = Array.isArray(catalog.capabilities) ? catalog.capabilities.length : 0;
+            }
 
             const picked = await pickSummaryStaff(toId(req.body.staff_id));
             if (picked.error) return res.status(409).json({ error: picked.error });
             const staff = picked.staff;
             const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
+
+            const sollSystemPrompt = projection.mode === 'freitext'
+                ? buildSollSystemPrompt({ systemName, hasCatalog: false })
+                : buildSollSystemPrompt({ systemName });
+            const sollUserPrompt = projection.mode === 'freitext'
+                ? buildSollFreitextUserPrompt(istSummary.content, sourceText, detailLevel, { systemName })
+                : buildSollUserPrompt(istSummary.content, catalog, detailLevel, { systemName });
 
             // 1) Soll-Zusammenfassung (strukturierter JSON-Vertrag).
             let sollResult;
@@ -630,8 +687,8 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     // Schritte und Vorteile zusammen brauchen mehr Platz als
                     // eine reine Prosa-Zusammenfassung.
                     maxTokens: Math.min(staff.ai_max_tokens || 3000, 5000),
-                    system: SOLL_SYSTEM_PROMPT,
-                    user: buildSollUserPrompt(istSummary.content, catalog, detailLevel),
+                    system: sollSystemPrompt,
+                    user: sollUserPrompt,
                     json: true
                 });
             } catch (err) {
@@ -655,8 +712,10 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     model: staff.ai_model || undefined,
                     temperature: staff.ai_temperature ?? 0.2,
                     maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
-                    system: SOLL_BPMN_SYSTEM_PROMPT,
-                    user: buildSollBpmnUserPrompt(sollContent, catalog, detailLevel),
+                    system: projection.mode === 'freitext'
+                        ? buildSollBpmnSystemPrompt({ systemName, hasCatalog: false })
+                        : buildSollBpmnSystemPrompt({ systemName }),
+                    user: buildSollBpmnUserPrompt(sollContent, catalog, detailLevel, { systemName }),
                     json: false
                 });
                 const extracted = flowSummary.extractBpmnXml(bpmnResult.text);
@@ -668,12 +727,13 @@ module.exports = function registerAtlasRoutes(app, deps) {
 
             const inserted = await runAsync(`INSERT INTO project_soll_flows
                     (project_id, workflow_id, summary_id, content, benefits_json, bpmn_xml, catalog_version, capability_count,
-                     detail_level, provider, model, prompt_tokens, completion_tokens, duration_ms, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                     detail_level, source, source_text, provider, model, prompt_tokens, completion_tokens, duration_ms, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [projectId, workflowId, istSummary.id, sollContent,
                 benefits.length ? JSON.stringify(benefits) : null,
                 bpmnXml, catalogVersion, capabilityCount,
-                detailLevel, sollResult.provider || provider, sollResult.model || staff.ai_model || null,
+                detailLevel, projection.source, projection.mode === 'freitext' ? sourceText : null,
+                sollResult.provider || provider, sollResult.model || staff.ai_model || null,
                 sollResult.prompt_tokens || null, sollResult.completion_tokens || null,
                 sollResult.duration_ms || null, req.session.user || null]);
 
@@ -688,6 +748,8 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 catalog_version: catalogVersion,
                 capability_count: capabilityCount,
                 detail_level: detailLevel,
+                source: projection.source,
+                source_label: projection.label,
                 provider: sollResult.provider || provider,
                 model: sollResult.model || staff.ai_model || null,
                 staff_name: staff.name
@@ -911,10 +973,13 @@ module.exports = function registerAtlasRoutes(app, deps) {
                 return res.status(400).json({ error: 'Anpassungswunsch ist zu lang (max. 2000 Zeichen).' });
             }
 
-            const existing = await getAsync(`SELECT s.id, s.workflow_id, s.bpmn_xml,
-                    w.name AS workflow_name, w.description AS workflow_description
+            const existing = await getAsync(`SELECT s.id, s.workflow_id, s.bpmn_xml, s.source,
+                    w.name AS workflow_name, w.description AS workflow_description,
+                    sy.name AS project_system_name
                 FROM project_soll_flows s
                 LEFT JOIN workflows w ON w.id = s.workflow_id
+                LEFT JOIN projects p ON p.id = s.project_id
+                LEFT JOIN systems sy ON sy.id = p.system_id
                 WHERE s.id = ? AND s.project_id = ?`, [sollId, projectId]);
             if (!existing) return res.status(404).json({ error: 'Soll-Workflow nicht gefunden.' });
             if (!existing.bpmn_xml) {
@@ -925,10 +990,16 @@ module.exports = function registerAtlasRoutes(app, deps) {
             if (picked.error) return res.status(409).json({ error: picked.error });
             const staff = picked.staff;
 
-            // Der Katalog geht mit, damit neu ergaenzte Schritte gueltige ids
-            // bekommen und nicht erfunden werden.
-            const catalogResult = await fetchCatalog();
-            const catalog = catalogResult.catalog;
+            // Die Projektion kennt ihre Quelle. Ohne Katalogquelle (Freitext
+            // oder alter Datensatz) laeuft die Ueberarbeitung ohne ids.
+            const projection = resolveProjectionSource(existing.source);
+            if (projection.error) return res.status(400).json({ error: projection.error });
+            const systemName = projection.mode === 'freitext'
+                ? (existing.project_system_name || 'die neue Software')
+                : projection.label;
+            const catalog = projection.mode === 'catalog'
+                ? (await fetchCatalog({ source: projection.source })).catalog
+                : null;
 
             const provider = staff.ai_provider || aiClient.DEFAULT_PROVIDER;
             let result;
@@ -938,13 +1009,17 @@ module.exports = function registerAtlasRoutes(app, deps) {
                     model: staff.ai_model || undefined,
                     temperature: staff.ai_temperature ?? 0.2,
                     maxTokens: Math.min(staff.ai_max_tokens || 6000, 8000),
-                    system: SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+                    system: buildSollBpmnRefineSystemPrompt({
+                        systemName,
+                        hasCatalog: projection.mode !== 'freitext'
+                    }),
                     user: buildSollBpmnRefineUserPrompt({
                         currentXml: existing.bpmn_xml,
                         instruction,
                         workflowName: existing.workflow_name,
                         workflowDescription: existing.workflow_description,
-                        catalog
+                        catalog,
+                        systemName
                     }),
                     json: false
                 });

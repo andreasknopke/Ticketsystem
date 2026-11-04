@@ -80,6 +80,11 @@ const baseLocals = {
     hasWorkflows: true,
     bpmnDiagrams: [{ key: 'wf-1', summaryId: 9, xml: summary.bpmn_xml }],
     sollBpmnDiagrams: [],
+    projectionSources: [
+        { id: 'curaflow', label: 'CuraFlow', mode: 'catalog' },
+        { id: 'schreibdienst', label: 'Schreibdienst', mode: 'catalog' },
+        { id: 'freitext', label: 'Freitext', mode: 'freitext' }
+    ],
     aiStaff: [{ id: 1, name: 'Planer', ai_model: 'test-model' }],
     formatDateTime: (value) => String(value),
     toTitle: (value) => String(value),
@@ -115,6 +120,13 @@ async function main() {
     check(html.includes('data-soll-detail'), 'Detailgrad-Auswahl fuer den Soll-Workflow vorhanden');
     check(html.includes('Grob (weniger Schritte)') && html.includes('Fein (mehr Schritte)'),
         'Detailgrad-Optionen sind benannt');
+    check(html.includes('data-soll-source'), 'Quellen-Auswahl fuer den Soll-Workflow vorhanden');
+    check(html.includes('>Schreibdienst<') && html.includes('Freitext (eigene Beschreibung)'),
+        'Quellen-Auswahl bietet CuraFlow, Schreibdienst und Freitext');
+    check(html.includes('data-soll-source-text-row'), 'Freitext-Feld vorhanden');
+    check(/data-soll-source-text-row[^>]*class="[^"]*hidden/.test(html)
+        || /class="[^"]*hidden[^"]*"[^>]*data-soll-source-text-row/.test(html),
+        'Freitext-Feld startet verborgen (Standardquelle CuraFlow)');
     check(html.includes('data-flow-group="unassigned"'), 'Karte "Ohne Workflow" erscheint');
     check(html.includes('Nicht zugeordnet'), 'Nicht zugeordnetes Problem bleibt sichtbar');
 
@@ -226,6 +238,39 @@ async function main() {
     };
     html = await render(sollWithoutDiagram);
     check(!html.includes('data-soll-id='), 'ohne Soll-Diagramm kein Soll-Formular');
+
+    // Quelle: Freitext zeigt die eigene Beschreibung und das Eingabefeld.
+    const freeTextSoll = {
+        ...baseLocals,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{
+                ...withSoll.workflowGroups[0].sollFlows[0],
+                source: 'freitext',
+                source_label: 'Freitext',
+                source_text: 'Kuenftig planen zwei Personen gleichzeitig im Browser.'
+            }]
+        }]
+    };
+    html = await render(freeTextSoll);
+    check(html.includes('Quelle: Freitext'), 'Quelle wird in der Metazeile angezeigt');
+    check(html.includes('Eigene Beschreibung des Zielzustands'), ' eigene Beschreibung ist abrufbar');
+    check(html.includes('Kuenftig planen zwei Personen gleichzeitig im Browser.'),
+        'eigene Beschreibung wird angezeigt');
+    check(/<option value="freitext" selected/.test(html), 'Freitext ist vorausgewaehlt');
+    check(!/data-soll-source-text-row[^>]*class="mt-3 hidden"/.test(html),
+        'Freitext-Feld ist bei Quelle Freitext sichtbar');
+
+    const catalogSoll = {
+        ...baseLocals,
+        workflowGroups: [{
+            ...workflowGroup,
+            sollFlows: [{ ...withSoll.workflowGroups[0].sollFlows[0], source: 'schreibdienst', source_label: 'Schreibdienst' }]
+        }]
+    };
+    html = await render(catalogSoll);
+    check(html.includes('Quelle: Schreibdienst'), 'Katalogquelle wird angezeigt');
+    check(/<option value="schreibdienst" selected/.test(html), 'Schreibdienst ist vorausgewaehlt');
 
     // BPMN-XML darf nicht literal in das Inline-Skript geraten.
     html = await render(baseLocals);

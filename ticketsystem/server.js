@@ -46,6 +46,7 @@ const dossierExport = require('./services/workflow/dossierExport');
 const atlasSchema = require('./services/atlas/schema');
 const registerAtlasRoutes = require('./services/atlas/routes');
 const flowSummary = require('./services/atlas/flowSummary');
+const { PROJECTION_SOURCES, sourceLabel: catalogSourceLabel } = require('./services/atlas/catalog');
 const {
     EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
     EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
@@ -6864,6 +6865,9 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 WHERE p.id = ?`, [projectId]);
             if (!project.id) return res.status(404).send('Projekt nicht gefunden');
 
+            // Auswahl der Soll-Projektion: Katalogquellen plus Freitext.
+            const projectionSources = PROJECTION_SOURCES;
+
             // workflows traegt den Text in `description`, die uebrigen in `title`.
             // Ein einheitliches `text` erspart dem Template die Fallunterscheidung.
             const workflows = await dbAll(`SELECT x.*, x.description AS text,
@@ -6909,7 +6913,8 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
 
             // KI-abgeleitete Soll-Workflows (Zielzustand) je Workflow.
             const sollFlows = await dbAll(`SELECT id, summary_id, workflow_id, content, benefits_json, bpmn_xml,
-                    catalog_version, capability_count, detail_level, provider, model, created_by, created_at
+                    catalog_version, capability_count, detail_level, source, source_text,
+                    provider, model, created_by, created_at
                 FROM project_soll_flows
                 WHERE project_id = ?
                 ORDER BY id DESC`, [projectId]);
@@ -6967,6 +6972,11 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                     sollFlows: sollFlows.filter((row) => sameWorkflow(row.workflow_id, workflowId))
                         .map((row) => ({
                             ...row,
+                            // Alte Zeilen (NULL) entstanden aus dem CuraFlow-Katalog.
+                            source: row.source || 'curaflow',
+                            source_label: row.source === 'freitext'
+                                ? 'Freitext'
+                                : (catalogSourceLabel(row.source) || 'CuraFlow'),
                             benefits: parseBenefits(row.benefits_json),
                             refinements: sollRefinements.filter((item) => item.soll_id === row.id)
                         }))
@@ -7007,6 +7017,7 @@ app.get('/project/:id/flow', requireAuth, (req, res) => {
                 hasWorkflows: workflows.length > 0,
                 bpmnDiagrams,
                 sollBpmnDiagrams,
+                projectionSources,
                 aiStaff: await dbAll(`SELECT id, name, ai_model FROM staff
                     WHERE kind = 'ai' AND active = 1 ORDER BY name`, []),
                 user: req.session.user,

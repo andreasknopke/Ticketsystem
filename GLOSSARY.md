@@ -67,6 +67,18 @@ Arbeit bleibt). Rollen und Arbeit außerhalb von CuraFlow werden nie
 weggelassen (siehe [ADR 0005](docs/adr/0005-soll-workflow-zeigt-arbeit-ausserhalb-der-software.md)).
 _Avoid_: Zielbild, Future State, Prozessmodell
 
+**Funktionskatalog**:
+Die maschinenlesbare Liste der Funktionen eines Systems (id, Bezeichnung,
+Aliase, Modul), bezogen über `<Basis>/api/catalog/flow`. Grundlage der
+Soll-Projektion. Je System eine Quelle (`CURAFLOW_*`, `SCHREIBDIENST_*`).
+_Avoid_: Feature-Liste, Capability-Dump
+
+**Freitext-Projektion**:
+Soll-Projektion ohne Funktionskatalog: der Nutzer beschreibt selbst, wie der
+Ablauf künftig aussehen soll. Die Beschreibung ersetzt den Katalog und wird am
+Soll-Workflow gespeichert (siehe [ADR 0006](docs/adr/0006-soll-projektion-waehlt-ihre-quelle.md)).
+_Avoid_: Wunschzettel, manuelle Planung
+
 **Vorteil**:
 Ein belegter Nutzen des Soll-Workflows: welches **Problem** von heute durch
 welche Funktion wegfällt — als Paar „Vorher“ / „Mit CuraFlow“. Ohne

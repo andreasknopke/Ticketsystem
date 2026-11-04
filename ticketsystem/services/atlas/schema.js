@@ -217,6 +217,8 @@ async function migrate(db) {
         catalog_version INTEGER,
         capability_count INTEGER,
         detail_level TEXT,
+        source TEXT,
+        source_text TEXT,
         provider TEXT,
         model TEXT,
         prompt_tokens INTEGER,
@@ -315,6 +317,12 @@ async function migrate(db) {
     // Vorher/Nachher-Liste zeigen kann.
     await addColumnIfMissing(db, 'project_soll_flows', 'benefits_json',
         'ALTER TABLE project_soll_flows ADD COLUMN benefits_json TEXT');
+    // Woran orientiert sich die Projektion: 'curaflow', 'schreibdienst' oder
+    // 'freitext'. Alte Zeilen bleiben NULL und gelten als CuraFlow.
+    await addColumnIfMissing(db, 'project_soll_flows', 'source',
+        'ALTER TABLE project_soll_flows ADD COLUMN source TEXT');
+    await addColumnIfMissing(db, 'project_soll_flows', 'source_text',
+        'ALTER TABLE project_soll_flows ADD COLUMN source_text TEXT');
 
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_adoption_risks_workflow ON adoption_risks(workflow_id)');
     await run(db, 'CREATE INDEX IF NOT EXISTS idx_attachments_workflow ON project_attachments(workflow_id)');

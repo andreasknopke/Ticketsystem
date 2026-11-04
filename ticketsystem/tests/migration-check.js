@@ -154,6 +154,8 @@ async function main() {
             'project_soll_flows: detail_level existiert');
         check(sollCols.some((c) => c.name === 'benefits_json'),
             'project_soll_flows: benefits_json existiert');
+        check(sollCols.some((c) => c.name === 'source') && sollCols.some((c) => c.name === 'source_text'),
+            'project_soll_flows: source und source_text existieren');
 
         const sollRefineCols = await all(db, 'PRAGMA table_info(soll_bpmn_refinements)');
         check(sollRefineCols.some((c) => c.name === 'soll_id')

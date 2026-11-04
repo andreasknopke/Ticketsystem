@@ -6,13 +6,17 @@
 
 'use strict';
 
-const { fetchCatalog, formatCatalog, clearCatalogCache } = require('../services/atlas/catalog');
+const { fetchCatalog, formatCatalog, clearCatalogCache, resolveProjectionSource, PROJECTION_SOURCES } = require('../services/atlas/catalog');
 const {
     SOLL_SYSTEM_PROMPT,
+    buildSollSystemPrompt,
     buildSollUserPrompt,
+    buildSollFreitextUserPrompt,
     SOLL_BPMN_SYSTEM_PROMPT,
+    buildSollBpmnSystemPrompt,
     buildSollBpmnUserPrompt,
     SOLL_BPMN_REFINE_SYSTEM_PROMPT,
+    buildSollBpmnRefineSystemPrompt,
     buildSollBpmnRefineUserPrompt,
     normalizeBenefits,
     formatSollContent
@@ -432,6 +436,73 @@ async function main() {
         'Soll-Refine behaelt Lanes und Arbeit ausserhalb von CuraFlow');
     check(SOLL_BPMN_REFINE_SYSTEM_PROMPT.includes('BPMNDiagram'),
         'Soll-Refine verbietet eigene Koordinaten');
+
+    console.log('\n🧪  Soll-Workflow: Quellen und Freitext\n');
+
+    check(PROJECTION_SOURCES.map((s) => s.id).join(',') === 'curaflow,schreibdienst,freitext',
+        'drei Projektionsquellen sind definiert');
+    check(resolveProjectionSource(undefined).source === 'curaflow', 'leere Quelle → CuraFlow');
+    check(resolveProjectionSource('schreibdienst').label === 'Schreibdienst', 'Schreibdienst wird aufgeloest');
+    check(resolveProjectionSource('schreibdienst').mode === 'catalog', 'Schreibdienst ist eine Katalogquelle');
+    check(resolveProjectionSource('freitext').mode === 'freitext', 'Freitext ist keine Katalogquelle');
+    check(Boolean(resolveProjectionSource('quatsch').error), 'unbekannte Quelle meldet einen Fehler');
+
+    // Schreibdienst: eigener Env-Prefix und eigener Systemname im Prompt.
+    clearCatalogCache();
+    await withCatalogEnv({
+        SCHREIBDIENST_BASE_URL: 'https://schreibdienst.example',
+        SCHREIBDIENST_CATALOG_TOKEN: 'sd-token'
+    }, () => withFetch(() => jsonResponse(CATALOG), async (calls) => {
+        const result = await fetchCatalog({ source: 'schreibdienst' });
+        check(Boolean(result.catalog), 'Schreibdienst-Katalog wird geladen');
+        check(calls[0].url === 'https://schreibdienst.example/api/catalog/flow',
+            'Schreibdienst nutzt SCHREIBDIENST_BASE_URL');
+        check(calls[0].init.headers.Authorization === 'Bearer sd-token',
+            'Schreibdienst nutzt SCHREIBDIENST_CATALOG_TOKEN');
+        check(calls[0].init.headers.Authorization && !calls[0].init.headers.Authorization.includes('test-token'),
+            'CuraFlow-Token wird nicht fuer Schreibdienst verwendet');
+    }));
+
+    // Ohne Konfiguration nennt der Grund den richtigen Variablennamen.
+    clearCatalogCache();
+    await withCatalogEnv({}, async () => {
+        const result = await fetchCatalog({ source: 'schreibdienst' });
+        check(result.catalog === null && /SCHREIBDIENST_BASE_URL/.test(result.reason),
+            'fehlende Konfiguration nennt SCHREIBDIENST_BASE_URL');
+    });
+    check((await fetchCatalog({ source: 'quatsch' })).reason.includes('Unbekannte Katalogquelle'),
+        'unbekannte Katalogquelle liefert einen Grund statt zu werfen');
+
+    const schreibPrompt = buildSollUserPrompt(inputText, CATALOG, 'grob', { systemName: 'Schreibdienst' });
+    check(schreibPrompt.includes('Funktionskatalog von Schreibdienst'), 'Prompt nennt das gewaehlte System');
+    check(!schreibPrompt.includes('CuraFlow'), 'Prompt nennt nicht mehr CuraFlow');
+    check(buildSollSystemPrompt({ systemName: 'Schreibdienst' }).includes('Arbeit ausserhalb von Schreibdienst'),
+        'Systemprompt nutzt den Systemnamen');
+
+    const freitextPrompt = buildSollFreitextUserPrompt(
+        'Heute Excel-Liste.',
+        'Kuenftig planen zwei Personen gleichzeitig im Browser.',
+        'mittel',
+        { systemName: 'Schreibdienst' });
+    check(freitextPrompt.includes('Kuenftig planen zwei Personen gleichzeitig im Browser.'),
+        'Freitext-Beschreibung steht wortgleich im Prompt');
+    check(freitextPrompt.includes('Heute Excel-Liste.'), 'Ist-Zustand steht auch im Freitext-Prompt');
+    check(/KEIN Funktionskatalog/.test(freitextPrompt), 'Freitext-Prompt nennt die fehlende Katalogbindung');
+    check(!freitextPrompt.includes('shift.assign'), 'Freitext-Prompt enthaelt keine Katalog-ids');
+    check(freitextPrompt.includes('Detailgrad: Mittel'), 'Freitext-Prompt enthaelt den Detailgrad');
+
+    const freitextSystem = buildSollSystemPrompt({ hasCatalog: false });
+    check(!/eine id aus dem Katalog \| gap \| manuell/.test(freitextSystem),
+        'Freitext-Systemprompt verlangt keine Katalog-id');
+    check(freitextSystem.includes('Erfinde keine Funktionen'), 'Freitext-Systemprompt verbietet erfundene Funktionen');
+    check(freitextSystem.includes('"manuell"') && freitextSystem.includes('"gap"'),
+        'Freitext-Systemprompt kennt weiterhin manuell und gap');
+    check(buildSollBpmnSystemPrompt({ hasCatalog: false }).includes('Erfinde keine Funktionen'),
+        'Freitext-Diagrammprompt verbietet erfundene Funktionen');
+    check(buildSollBpmnRefineSystemPrompt({ hasCatalog: false }).includes('nur "manuell" oder "gap"'),
+        'Freitext-Refine-Prompt nennt nur manuell/gap');
+    check(buildSollBpmnUserPrompt('x', CATALOG, 'mittel', { systemName: 'Schreibdienst' })
+        .includes('Funktionen von Schreibdienst'), 'Diagrammprompt nennt das System');
 
     const sollRefinePrompt = buildSollBpmnRefineUserPrompt({
         currentXml: '<bpmn:definitions><bpmn:process id="p"/></bpmn:definitions>',

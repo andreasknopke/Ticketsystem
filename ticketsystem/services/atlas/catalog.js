@@ -1,14 +1,19 @@
 'use strict';
 
-// Client fuer den maschinenlesbaren Funktionskatalog von CuraFlow.
+// Client fuer maschinenlesbare Funktionskataloge.
 //
-// Der Katalog beschreibt, WELCHE Funktionen eine Abteilung kuenftig nutzen
+// Ein Katalog beschreibt, WELCHE Funktionen eine Abteilung kuenftig nutzen
 // kann. Er ist damit die Grundlage fuer den SOLL-Workflow ("wie koennte der
 // Ablauf kuenftig aussehen"). Fuer den IST-Workflow ist er irrelevant — der
 // kommt aus Terminen und Transkripten.
 //
-// Bezogen wird bewusst nur die Projektion /api/catalog/flow. Sie enthaelt
-// catalogVersion + capabilities (id, label, aliases, module, status,
+// Es gibt mehrere Quellen (siehe CAPABILITY_SOURCES): je eingefuehrtem System
+// einer. Konfiguriert werden sie ueber den jeweiligen Env-Prefix, z. B.
+// CURAFLOW_BASE_URL und SCHREIBDIENST_BASE_URL. Eine Quelle ohne
+// Konfiguration ist ein unterstuetzter Zustand (siehe Grund in reason).
+//
+// Bezogen wird bewusst nur die Projektion <basis>/api/catalog/flow. Sie
+// enthaelt catalogVersion + capabilities (id, label, aliases, module, status,
 // tenantScope, summary) und BEWUSST keine preconditions/effects/endpoints:
 // der Soll-Workflow fragt "welche Funktion ersetzt diesen Schritt", nicht
 // "darf ich sie ausfuehren".
@@ -20,10 +25,68 @@
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_TTL_MS = 600000;
 const FLOW_PATH = '/api/catalog/flow';
+const DEFAULT_SOURCE = 'curaflow';
 
-// Kurzzeit-Cache. Der Katalog aendert sich selten, ein Ausfall der Gegenseite
-// darf keine Projekt-Zusammenfassung blockieren.
-const cache = { baseUrl: null, catalog: null, at: 0 };
+/**
+ * Die waehlbaren Katalogquellen. `envPrefix` bestimmt die Variablennamen:
+ * <PREFIX>_BASE_URL, <PREFIX>_CATALOG_TOKEN, <PREFIX>_CATALOG_TIMEOUT_MS,
+ * <PREFIX>_CATALOG_TTL_MS.
+ */
+const SOURCE_DEFINITIONS = {
+    curaflow: { id: 'curaflow', label: 'CuraFlow', envPrefix: 'CURAFLOW' },
+    schreibdienst: { id: 'schreibdienst', label: 'Schreibdienst', envPrefix: 'SCHREIBDIENST' }
+};
+
+const CAPABILITY_SOURCES = Object.keys(SOURCE_DEFINITIONS);
+
+// Freitext ist keine Katalogquelle: der Nutzer beschreibt den Zielzustand
+// selbst. Er steht trotzdem in derselben Auswahl, weil er dieselbe Aufgabe
+// loest ("woran orientiert sich die Soll-Projektion?").
+const FREITEXT_SOURCE = 'freitext';
+const FREITEXT_LABEL = 'Freitext';
+
+const PROJECTION_SOURCES = CAPABILITY_SOURCES
+    .map((id) => ({ id, label: SOURCE_DEFINITIONS[id].label, mode: 'catalog' }))
+    .concat([{ id: FREITEXT_SOURCE, label: FREITEXT_LABEL, mode: 'freitext' }]);
+
+/**
+ * Loest die im Request gewaehlte Projektionsquelle auf.
+ *
+ * Leer bedeutet CuraFlow (bisheriges Verhalten). Unbekannte Werte sind ein
+ * Fehler, damit ein Tippfehler nicht stillschweigend eine andere Quelle nutzt.
+ *
+ * @returns {{ source: string, mode: 'catalog'|'freitext', label: string } | { error: string }}
+ */
+function resolveProjectionSource(value) {
+    const key = String(value == null ? '' : value).trim().toLowerCase();
+    if (!key || key === DEFAULT_SOURCE) {
+        return { source: DEFAULT_SOURCE, mode: 'catalog', label: SOURCE_DEFINITIONS[DEFAULT_SOURCE].label };
+    }
+    if (key === FREITEXT_SOURCE) {
+        return { source: FREITEXT_SOURCE, mode: 'freitext', label: FREITEXT_LABEL };
+    }
+    if (SOURCE_DEFINITIONS[key]) {
+        return { source: key, mode: 'catalog', label: SOURCE_DEFINITIONS[key].label };
+    }
+    return { error: `Unbekannte Quelle fuer die Soll-Projektion. Erlaubt: ${PROJECTION_SOURCES.map((item) => item.id).join(', ')}.` };
+}
+
+/** Leer/null bedeutet CuraFlow (bisheriges Verhalten); unbekannt -> null. */
+function normalizeSource(value) {
+    const key = String(value == null ? '' : value).trim().toLowerCase();
+    if (!key) return DEFAULT_SOURCE;
+    return SOURCE_DEFINITIONS[key] ? key : null;
+}
+
+function sourceLabel(value) {
+    const source = normalizeSource(value);
+    return source ? SOURCE_DEFINITIONS[source].label : '';
+}
+
+// Kurzzeit-Cache je Quelle (Key: "<source>|<baseUrl>"). Der Katalog aendert
+// sich selten, ein Ausfall der Gegenseite darf keine Projekt-Zusammenfassung
+// blockieren.
+const cache = new Map();
 
 function readPositiveInt(raw, fallback) {
     const value = parseInt(String(raw == null ? '' : raw).trim(), 10);
@@ -32,12 +95,17 @@ function readPositiveInt(raw, fallback) {
 
 // Env wird bei jedem Aufruf gelesen (nicht beim Laden des Moduls), damit
 // Konfiguration und Tests nicht auseinanderlaufen.
-function readConfig() {
+function readConfig(source) {
+    const definition = SOURCE_DEFINITIONS[source] || SOURCE_DEFINITIONS[DEFAULT_SOURCE];
+    const prefix = definition.envPrefix;
     return {
-        baseUrl: String(process.env.CURAFLOW_BASE_URL || '').trim().replace(/\/+$/, ''),
-        token: String(process.env.CURAFLOW_CATALOG_TOKEN || '').trim(),
-        timeoutMs: readPositiveInt(process.env.CURAFLOW_CATALOG_TIMEOUT_MS, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-        ttlMs: readPositiveInt(process.env.CURAFLOW_CATALOG_TTL_MS, DEFAULT_TTL_MS)
+        source: definition.id,
+        label: definition.label,
+        envPrefix: prefix,
+        baseUrl: String(process.env[`${prefix}_BASE_URL`] || '').trim().replace(/\/+$/, ''),
+        token: String(process.env[`${prefix}_CATALOG_TOKEN`] || '').trim(),
+        timeoutMs: readPositiveInt(process.env[`${prefix}_CATALOG_TIMEOUT_MS`], DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+        ttlMs: readPositiveInt(process.env[`${prefix}_CATALOG_TTL_MS`], DEFAULT_TTL_MS)
     };
 }
 
@@ -121,14 +189,21 @@ function formatCatalog(catalog) {
 
 async function loadCatalog(options) {
     const force = options && options.force === true;
-    const config = readConfig();
+    const source = normalizeSource(options && options.source);
+    if (!source) {
+        return {
+            catalog: null,
+            reason: `Unbekannte Katalogquelle. Erlaubt: ${CAPABILITY_SOURCES.join(', ')}.`
+        };
+    }
+    const config = readConfig(source);
 
     // Fehlende Basis-URL ist ein unterstuetzter Zustand: die Soll-Planung
     // laeuft ohne Zuordnung weiter.
     if (!config.baseUrl) {
         return {
             catalog: null,
-            reason: 'CURAFLOW_BASE_URL ist nicht gesetzt — der Funktionskatalog ist nicht konfiguriert.'
+            reason: `${config.envPrefix}_BASE_URL ist nicht gesetzt — der Funktionskatalog von ${config.label} ist nicht konfiguriert.`
         };
     }
 
@@ -140,13 +215,15 @@ async function loadCatalog(options) {
     } catch (err) {
         return {
             catalog: null,
-            reason: `CURAFLOW_BASE_URL ist keine gueltige URL (${config.baseUrl}): ${describeError(err)}`
+            reason: `${config.envPrefix}_BASE_URL ist keine gueltige URL (${config.baseUrl}): ${describeError(err)}`
         };
     }
 
-    const cached = !force && cache.baseUrl === config.baseUrl && cache.catalog
-        && (Date.now() - cache.at) < config.ttlMs;
-    if (cached) return { catalog: cache.catalog, reason: null };
+    const cacheKey = `${source}|${config.baseUrl}`;
+    const cached = cache.get(cacheKey);
+    if (!force && cached && (Date.now() - cached.at) < config.ttlMs) {
+        return { catalog: cached.catalog, reason: null };
+    }
 
     const headers = { Accept: 'application/json' };
     // Der Katalog ist mandantenunabhaengig: Bearer-JWT, kein X-DB-Token.
@@ -168,26 +245,26 @@ async function loadCatalog(options) {
             if (isAbortError(err)) {
                 return {
                     catalog: null,
-                    reason: `Zeitueberschreitung: CuraFlow antwortete nicht innerhalb von ${config.timeoutMs} ms (${url}).`
+                    reason: `Zeitueberschreitung: ${config.label} antwortete nicht innerhalb von ${config.timeoutMs} ms (${url}).`
                 };
             }
             return {
                 catalog: null,
-                reason: `CuraFlow ist nicht erreichbar (${url}): ${describeError(err)}`
+                reason: `${config.label} ist nicht erreichbar (${url}): ${describeError(err)}`
             };
         }
 
         if (response.status === 401 || response.status === 403) {
             return {
                 catalog: null,
-                reason: `Zugriff auf den Funktionskatalog wurde abgelehnt (HTTP ${response.status}). CURAFLOW_CATALOG_TOKEN pruefen — das Token ist moeglicherweise abgelaufen.`
+                reason: `Zugriff auf den Funktionskatalog wurde abgelehnt (HTTP ${response.status}). ${config.envPrefix}_CATALOG_TOKEN pruefen — das Token ist moeglicherweise abgelaufen.`
             };
         }
 
         if (response.status !== 200) {
             return {
                 catalog: null,
-                reason: `CuraFlow antwortete mit HTTP ${response.status} statt 200 (${url}).`
+                reason: `${config.label} antwortete mit HTTP ${response.status} statt 200 (${url}).`
             };
         }
 
@@ -198,12 +275,12 @@ async function loadCatalog(options) {
             if (isAbortError(err)) {
                 return {
                     catalog: null,
-                    reason: `Zeitueberschreitung: CuraFlow antwortete nicht innerhalb von ${config.timeoutMs} ms (${url}).`
+                    reason: `Zeitueberschreitung: ${config.label} antwortete nicht innerhalb von ${config.timeoutMs} ms (${url}).`
                 };
             }
             return {
                 catalog: null,
-                reason: `Die Antwort von CuraFlow ist kein gueltiges JSON (${url}): ${describeError(err)}`
+                reason: `Die Antwort von ${config.label} ist kein gueltiges JSON (${url}): ${describeError(err)}`
             };
         }
 
@@ -214,9 +291,7 @@ async function loadCatalog(options) {
             };
         }
 
-        cache.baseUrl = config.baseUrl;
-        cache.catalog = payload;
-        cache.at = Date.now();
+        cache.set(cacheKey, { catalog: payload, at: Date.now() });
         return { catalog: payload, reason: null };
     } finally {
         if (timer) clearTimeout(timer);
@@ -224,9 +299,10 @@ async function loadCatalog(options) {
 }
 
 /**
- * Holt den Funktionskatalog.
+ * Holt den Funktionskatalog einer Quelle.
  *
- * @param {{ force?: boolean }} [options] force umgeht den Cache.
+ * @param {{ force?: boolean, source?: 'curaflow'|'schreibdienst' }} [options]
+ *        force umgeht den Cache, source waehlt die Quelle (Default curaflow).
  * @returns {Promise<{ catalog: object|null, reason: string|null }>}
  */
 async function fetchCatalog(options = {}) {
@@ -242,9 +318,7 @@ async function fetchCatalog(options = {}) {
 
 /** Nur fuer Tests: Cache leeren, damit Faelle sich nicht beeinflussen. */
 function clearCatalogCache() {
-    cache.baseUrl = null;
-    cache.catalog = null;
-    cache.at = 0;
+    cache.clear();
 }
 
 module.exports = {
@@ -252,6 +326,15 @@ module.exports = {
     formatCatalog,
     clearCatalogCache,
     isValidCatalog,
+    normalizeSource,
+    resolveProjectionSource,
+    sourceLabel,
+    SOURCE_DEFINITIONS,
+    CAPABILITY_SOURCES,
+    PROJECTION_SOURCES,
+    DEFAULT_SOURCE,
+    FREITEXT_SOURCE,
+    FREITEXT_LABEL,
     DEFAULT_TIMEOUT_MS,
     DEFAULT_TTL_MS,
     FLOW_PATH

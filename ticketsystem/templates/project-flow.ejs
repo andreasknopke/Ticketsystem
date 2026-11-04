@@ -122,10 +122,15 @@
         <% if (canManage) { %>
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-3">
             <div>
-                <p class="text-sm font-medium text-gray-800">CuraFlow Funktionskatalog</p>
-                <p class="text-xs text-gray-500">Prüft, ob der Katalog erreichbar ist (CURAFLOW_BASE_URL / Token).</p>
+                <p class="text-sm font-medium text-gray-800">Funktionskataloge</p>
+                <p class="text-xs text-gray-500">Prüft, ob der Katalog eines Systems erreichbar ist (BASE_URL / Token je System).</p>
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
+                <select id="catalogTestSource" class="form-select text-sm" aria-label="Katalogquelle">
+                    <% projectionSources.filter(source => source.mode === 'catalog').forEach(source => { %>
+                    <option value="<%= source.id %>"><%= source.label %></option>
+                    <% }); %>
+                </select>
                 <span id="curaflowCatalogTestResult" class="text-sm text-gray-500" aria-live="polite"></span>
                 <button type="button" id="curaflowCatalogTestButton" class="btn-secondary text-sm whitespace-nowrap">Verbindung testen</button>
             </div>
@@ -158,11 +163,11 @@
         <% } %>
 
         <% workflowGroups.forEach(group => { %>
-        <%- include('partials/flow-workflow-card', { group, canManage, aiStaff, hasWorkflows }) %>
+        <%- include('partials/flow-workflow-card', { group, canManage, aiStaff, hasWorkflows, projectionSources }) %>
         <% }); %>
 
         <% if (unassigned.hasData) { %>
-        <%- include('partials/flow-workflow-card', { group: unassigned, canManage, aiStaff, hasWorkflows }) %>
+        <%- include('partials/flow-workflow-card', { group: unassigned, canManage, aiStaff, hasWorkflows, projectionSources }) %>
         <% } %>
     </main>
 
@@ -243,15 +248,21 @@
             return value ? Number(value) : null;
         }
 
-        // --- CuraFlow Funktionskatalog: Verbindung testen ---
+        // --- Funktionskataloge: Verbindung testen ---
 
         async function testCuraflowCatalog() {
             const button = document.getElementById('curaflowCatalogTestButton');
             const result = document.getElementById('curaflowCatalogTestResult');
+            const sourceSelect = document.getElementById('catalogTestSource');
+            const source = sourceSelect && sourceSelect.value ? sourceSelect.value : 'curaflow';
+            const sourceLabel = sourceSelect && sourceSelect.selectedOptions.length
+                ? sourceSelect.selectedOptions[0].textContent.trim()
+                : source;
             if (button) button.disabled = true;
             if (result) { result.textContent = 'Prüfe…'; result.className = 'text-sm text-gray-500'; }
             try {
-                const resp = await fetch('/api/projects/' + PROJECT_ID + '/curaflow-catalog-test', {
+                const resp = await fetch('/api/projects/' + PROJECT_ID + '/curaflow-catalog-test?source='
+                    + encodeURIComponent(source), {
                     headers: { 'X-CSRF-Token': CSRF_TOKEN }
                 });
                 const data = await resp.json().catch(() => ({}));
@@ -264,12 +275,13 @@
                     if (result) {
                         const version = (data.catalogVersion === null || data.catalogVersion === undefined)
                             ? 'unbekannt' : data.catalogVersion;
-                        result.textContent = 'Erreichbar — ' + data.capabilityCount + ' Funktionen (Version ' + version + ')';
+                        result.textContent = sourceLabel + ': erreichbar — ' + data.capabilityCount
+                            + ' Funktionen (Version ' + version + ')';
                         result.className = 'text-sm text-green-700';
                     }
                 } else {
                     if (result) {
-                        result.textContent = data.reason || 'Nicht erreichbar.';
+                        result.textContent = sourceLabel + ': ' + (data.reason || 'Nicht erreichbar.');
                         result.className = 'text-sm text-amber-700';
                     }
                 }
@@ -579,17 +591,46 @@
             }
         }
 
-        // --- Soll-Workflow (Zielzustand) aus dem CuraFlow-Katalog ---
+        // --- Soll-Workflow (Zielzustand) aus Katalog oder Freitext ---
+
+        // Das Freitext-Feld ist nur bei der Quelle "Freitext" sichtbar.
+        function syncSollSourceField(key) {
+            const root = groupRoot(key);
+            if (!root) return;
+            const select = root.querySelector('[data-soll-source]');
+            const row = root.querySelector('[data-soll-source-text-row]');
+            if (!select || !row) return;
+            row.classList.toggle('hidden', select.value !== 'freitext');
+        }
+
+        document.querySelectorAll('[data-soll-source]').forEach((select) => {
+            const root = select.closest('[data-flow-group]');
+            const key = root ? root.dataset.flowGroup : null;
+            select.addEventListener('change', () => syncSollSourceField(key));
+        });
 
         async function createSollFlow(key) {
             const root = groupRoot(key);
             const button = root ? root.querySelector('[data-soll-create]') : null;
-            if (!confirm('Soll-Workflow aus dem CuraFlow-Funktionskatalog ableiten? Das kann einige Sekunden dauern.')) return;
-
             const workflowId = workflowIdOf(key);
             const staffSelect = root ? root.querySelector('[data-soll-staff]') : null;
             const detailSelect = root ? root.querySelector('[data-soll-detail]') : null;
+            const sourceSelect = root ? root.querySelector('[data-soll-source]') : null;
+            const sourceTextArea = root ? root.querySelector('[data-soll-source-text-row] textarea') : null;
             const landscape = root ? root.querySelector('[data-soll-landscape]') : null;
+
+            const source = sourceSelect && sourceSelect.value ? sourceSelect.value : 'curaflow';
+            const sourceText = sourceTextArea ? sourceTextArea.value.trim() : '';
+            if (source === 'freitext' && !sourceText) {
+                alert('Bei der Quelle "Freitext" bitte beschreiben, wie der Ablauf künftig aussehen soll.');
+                if (sourceTextArea) sourceTextArea.focus();
+                return;
+            }
+
+            const sourceLabel = sourceSelect && sourceSelect.selectedOptions.length
+                ? sourceSelect.selectedOptions[0].textContent.trim()
+                : source;
+            if (!confirm('Soll-Workflow aus "' + sourceLabel + '" ableiten? Das kann einige Sekunden dauern.')) return;
 
             if (button) { button.disabled = true; button.textContent = 'Erstelle…'; }
             try {
@@ -599,12 +640,18 @@
                     body: JSON.stringify({
                         staff_id: staffSelect && staffSelect.value ? Number(staffSelect.value) : undefined,
                         detail_level: detailSelect && detailSelect.value ? detailSelect.value : undefined,
+                        source,
+                        source_text: source === 'freitext' ? sourceText : undefined,
                         orientation: landscape && landscape.checked ? 'landscape' : 'portrait',
                         workflow_id: workflowId || undefined
                     })
                 });
                 const data = await resp.json().catch(() => ({}));
-                if (!resp.ok) { alert('Fehler: ' + (data.error || resp.statusText)); return; }
+                if (!resp.ok) {
+                    const hint = data.hint ? '\n\n' + data.hint : '';
+                    alert('Fehler: ' + (data.error || resp.statusText) + hint);
+                    return;
+                }
                 location.reload();
             } finally {
                 if (button) { button.disabled = false; button.textContent = 'Soll-Workflow erstellen'; }

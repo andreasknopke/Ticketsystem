@@ -11,21 +11,33 @@
 const DETAIL_LEVELS = ['grob', 'mittel', 'fein'];
 const DETAIL_LEVEL_DEFAULT = 'mittel';
 
+const DEFAULT_SYSTEM_NAME = 'CuraFlow';
+
+function normalizeSystemName(value) {
+    const name = String(value == null ? '' : value).trim();
+    return name || DEFAULT_SYSTEM_NAME;
+}
+
 /**
  * Gilt in jedem Detailgrad und fuer jede Ableitung.
  *
  * Der Detailgrad darf die Darstellung verkuerzen, aber nicht das Bild
- * verfaelschen: Rollen (Lanes) und Arbeit ausserhalb von CuraFlow sind Teil
+ * verfaelschen: Rollen (Lanes) und Arbeit ausserhalb des Zielsystems sind Teil
  * des Ablaufs. Wer sie weglaesst, zeigt einen Ablauf, den es so nicht gibt —
  * und im Beratungsgespraech entsteht der Eindruck, die Software erledige
  * alles.
  */
-const NEVER_OMIT = [
-    'Unabhaengig vom Detailgrad gilt:',
-    '- Lanes/Swimlanes (alle beteiligten Rollen bzw. Abteilungen) werden nie weggelassen.',
-    '- Aufgaben, die NICHT in CuraFlow stattfinden (z. B. Unterschrift, Papier, Telefon, Excel, Fremdsystem, Sichtkontrolle), werden immer genannt — mit "funktion": "gap" oder "manuell" und ihrer Rolle.',
-    '- Der Detailgrad entscheidet nur, wie stark Taetigkeiten INNERHALB von CuraFlow zusammengefasst werden.'
-].join('\n');
+function buildNeverOmit(systemName) {
+    const name = normalizeSystemName(systemName);
+    return [
+        'Unabhaengig vom Detailgrad gilt:',
+        '- Lanes/Swimlanes (alle beteiligten Rollen bzw. Abteilungen) werden nie weggelassen.',
+        `- Aufgaben, die NICHT in ${name} stattfinden (z. B. Unterschrift, Papier, Telefon, Excel, Fremdsystem, Sichtkontrolle), werden immer genannt — mit "funktion": "gap" oder "manuell" und ihrer Rolle.`,
+        `- Der Detailgrad entscheidet nur, wie stark Taetigkeiten INNERHALB von ${name} zusammengefasst werden.`
+    ].join('\n');
+}
+
+const NEVER_OMIT = buildNeverOmit(DEFAULT_SYSTEM_NAME);
 
 const DETAIL_LEVEL_SPECS = {
     grob: {
@@ -109,13 +121,18 @@ function detailLevelLabel(value) {
  *
  * kind: 'summary' (Ist-Zusammenfassung), 'steps' (Soll-Schritte),
  * 'vorteile' (Soll-Vorteile) oder 'bpmn' (beide Diagramme). Mehrere kinds
- * werden in einem Baustein zusammengefasst.
+ * werden in einem Baustein zusammengefasst. options.systemName benennt das
+ * Zielsystem; ohne Angabe gilt CuraFlow.
  */
-function buildDetailInstruction(value, kind) {
+function buildDetailInstruction(value, kind, options = {}) {
     const spec = getDetailLevelSpec(value);
+    const systemName = normalizeSystemName(options && options.systemName);
     const kinds = Array.isArray(kind) ? kind : [kind];
-    const blocks = kinds.map((key) => spec[key]).filter(Boolean);
-    return `Detailgrad: ${spec.label}.\n${blocks.join('\n')}\n\n${NEVER_OMIT}`;
+    const blocks = kinds
+        .map((key) => spec[key])
+        .filter(Boolean)
+        .map((text) => text.replace(/CuraFlow/g, systemName));
+    return `Detailgrad: ${spec.label}.\n${blocks.join('\n')}\n\n${buildNeverOmit(systemName)}`;
 }
 
 module.exports = {
@@ -123,6 +140,7 @@ module.exports = {
     DETAIL_LEVEL_DEFAULT,
     DETAIL_LEVEL_SPECS,
     NEVER_OMIT,
+    buildNeverOmit,
     normalizeDetailLevel,
     resolveDetailLevel,
     getDetailLevelSpec,
