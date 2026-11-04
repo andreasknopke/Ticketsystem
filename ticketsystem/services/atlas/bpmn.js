@@ -472,4 +472,15 @@ async function layoutBpmnXml(xml, { orientation = 'portrait' } = {}) {
     return out;
 }
 
-module.exports = { layoutBpmnXml };
+/**
+ * Hat das XML bereits Diagramm-Koordinaten (BPMNDiagram)?
+ *
+ * Importierte Dateien aus einem Modellierungswerkzeug bringen eigene
+ * Positionen mit; die duerfen wir nicht ueberschreiben. Selbst erzeugte oder
+ * nachbearbeitete XML ohne DI brauchen dagegen ein Layout.
+ */
+function hasBpmnDiagram(xml) {
+    return /<\s*(?:[\w.-]+:)?BPMNDiagram\b/i.test(String(xml || ''));
+}
+
+module.exports = { layoutBpmnXml, hasBpmnDiagram };

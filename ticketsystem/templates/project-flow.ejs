@@ -520,6 +520,61 @@
             });
         });
 
+        // --- Gespeicherte BPMN-Datei laden (Ist und Soll) ---
+
+        // Liest die gewaehlte Datei und schickt das XML an den jeweiligen
+        // Endpunkt. Vorhandene Koordinaten der Datei bleiben erhalten; fehlen
+        // sie, setzt der Server das Layout.
+        function bindBpmnFileLoad(input, buildUrl, hint) {
+            if (!input) return;
+            input.addEventListener('change', async () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                const url = buildUrl();
+                if (!url) { alert('Kein Ziel zum Speichern gefunden.'); return; }
+
+                const setHint = (text, tone) => {
+                    if (!hint) return;
+                    hint.textContent = text;
+                    hint.className = 'text-xs ' + (tone || 'text-gray-400');
+                };
+
+                setHint('Lese ' + file.name + ' …');
+                try {
+                    const xml = await file.text();
+                    if (!xml.trim()) throw new Error('Die Datei ist leer.');
+                    const resp = await fetch(url, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+                        body: JSON.stringify({ bpmn_xml: xml })
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) throw new Error(data.error || resp.statusText);
+                    setHint('Gespeichert: ' + file.name, 'text-green-700');
+                    location.reload();
+                } catch (err) {
+                    setHint('Fehler: ' + (err.message || err), 'text-red-600');
+                    input.value = '';
+                }
+            });
+        }
+
+        document.querySelectorAll('[data-bpmn-load-input]').forEach((input) => {
+            const row = input.closest('[data-bpmn-load-row]');
+            const summaryId = row ? Number(row.dataset.summaryId) : 0;
+            bindBpmnFileLoad(input,
+                () => summaryId ? '/api/projects/' + PROJECT_ID + '/flow-summary/' + summaryId + '/bpmn' : null,
+                row ? row.querySelector('[data-bpmn-load-hint]') : null);
+        });
+
+        document.querySelectorAll('[data-soll-bpmn-load-input]').forEach((input) => {
+            const row = input.closest('[data-soll-bpmn-load-row]');
+            const sollId = row ? Number(row.dataset.sollId) : 0;
+            bindBpmnFileLoad(input,
+                () => sollId ? '/api/projects/' + PROJECT_ID + '/soll-flow/' + sollId + '/bpmn' : null,
+                row ? row.querySelector('[data-soll-bpmn-load-hint]') : null);
+        });
+
         async function deleteFile(id) {
             if (!confirm('Datei wirklich entfernen?')) return;
             const resp = await fetch('/api/projects/' + PROJECT_ID + '/attachments/' + id, {

@@ -254,6 +254,21 @@ Programm: CuraFlow</bpmn:documentation>
     check(shapes.every((s) => s.y >= 0 && s.y + s.h <= poolPar.h && s.x >= 0 && s.x + s.w <= poolPar.w),
         'Stack: alle Shapes bleiben innerhalb des Pools');
 
+    // --- Import: vorhandene Koordinaten erkennen ---
+    console.log('\n🧪  BPMN: Import\n');
+    check(bpmn.hasBpmnDiagram('<bpmn:definitions><bpmndi:BPMNDiagram id="D"/></bpmn:definitions>'),
+        'BPMNDiagram mit Prefix wird erkannt');
+    check(bpmn.hasBpmnDiagram('<definitions><BPMNDiagram id="D"/></definitions>'),
+        'BPMNDiagram ohne Prefix wird erkannt');
+    check(!bpmn.hasBpmnDiagram(SAMPLE.replace(/<bpmndi:BPMNDiagram[\s\S]*?<\/bpmndi:BPMNDiagram>/g, '')),
+        'XML ohne Diagramm wird als "ohne DI" erkannt');
+    check(!bpmn.hasBpmnDiagram(''), 'leeres XML hat kein Diagramm');
+    check(!bpmn.hasBpmnDiagram(null), 'null hat kein Diagramm');
+
+    const embeddedDi = SAMPLE.replace('</bpmn:definitions>',
+        '<bpmndi:BPMNDiagram id="D1"><bpmndi:BPMNPlane id="P1" bpmnElement="Process_1"/></bpmndi:BPMNDiagram></bpmn:definitions>');
+    check(bpmn.hasBpmnDiagram(embeddedDi), 'eingebettetes Diagramm wird erkannt');
+
     console.log(`\n  ${passed} bestanden${failures ? `, ${failures} fehlgeschlagen` : ''}\n`);
     process.exit(failures > 0 ? 1 : 0);
 }

@@ -117,6 +117,12 @@ async function main() {
     check(html.includes('Ziel.png'), 'Output-Dokument erscheint');
     check(html.includes('data-bpmn-canvas'), 'Diagramm-Container vorhanden');
     check(html.includes('data-summary-detail'), 'Detailgrad-Auswahl fuer den Ist-Workflow vorhanden');
+    check(html.includes('data-bpmn-load-row') && html.includes('data-bpmn-load-input'),
+        'Ist-Visualisierung bietet das Laden einer BPMN-Datei an');
+    check(/data-bpmn-load-row data-summary-id="9"/.test(html),
+        'Lade-Zeile kennt die Zusammenfassung (Ist)');
+    check(html.includes('Gespeichertes BPMN laden'), 'Lade-Button ist beschriftet');
+    check(/accept="[^"]*\.bpmn/.test(html), 'Dateiauswahl akzeptiert .bpmn');
     check(html.includes('data-soll-detail'), 'Detailgrad-Auswahl fuer den Soll-Workflow vorhanden');
     check(html.includes('Grob (weniger Schritte)') && html.includes('Fein (mehr Schritte)'),
         'Detailgrad-Optionen sind benannt');
@@ -224,6 +230,9 @@ async function main() {
     };
     html = await render(withSollDiagram);
     check(html.includes('data-soll-id="11"'), 'Soll-Formular kennt den Soll-Workflow');
+    check(/data-soll-bpmn-load-row data-soll-id="11"/.test(html),
+        'Lade-Zeile kennt den Soll-Workflow');
+    check(html.includes('data-soll-bpmn-load-input'), 'Soll-Visualisierung bietet das Laden einer BPMN-Datei an');
     check(html.includes('Diagramm bearbeiten'), 'Soll-Formular ist beschriftet');
     check(html.includes('sollBpmnRefine-wf-1'), 'Soll-Formular hat ein eigenes Eingabefeld');
     check(html.includes('Bisherige Anpassungen (1)'), 'Soll-Anpassungsverlauf wird angezeigt');
@@ -237,7 +246,10 @@ async function main() {
         }]
     };
     html = await render(sollWithoutDiagram);
-    check(!html.includes('data-soll-id='), 'ohne Soll-Diagramm kein Soll-Formular');
+    check(!/<form class="bpmn-refine-form[^>]*data-soll-id/.test(html),
+        'ohne Soll-Diagramm kein Soll-Ueberarbeiten-Formular');
+    check(html.includes('data-soll-bpmn-load-row'),
+        'Soll-Diagramm laesst sich auch ohne vorhandenes Diagramm laden');
 
     // Quelle: Freitext zeigt die eigene Beschreibung und das Eingabefeld.
     const freeTextSoll = {

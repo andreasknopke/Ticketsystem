@@ -1065,24 +1065,86 @@ module.exports = function registerAtlasRoutes(app, deps) {
     });
 
     // Speichert das im Editor verschobene/angepasste BPMN-Diagramm zurueck.
+    // Wird auch fuer den Import einer gespeicherten .bpmn-Datei genutzt:
+    // vorhandene Koordinaten bleiben erhalten, fehlende werden gesetzt.
     app.patch('/api/projects/:projectId/flow-summary/:summaryId/bpmn', requireAuth, requireAdmin, async (req, res) => {
         try {
             const projectId = toId(req.params.projectId);
             const summaryId = toId(req.params.summaryId);
             if (!projectId || !summaryId) return res.status(400).json({ error: 'Ungueltige IDs.' });
 
-            const bpmnXml = normalizeText(req.body.bpmn_xml);
-            if (!bpmnXml) return res.status(400).json({ error: 'Kein bpmn_xml uebergeben.' });
+            const raw = normalizeText(req.body.bpmn_xml);
+            if (!raw) return res.status(400).json({ error: 'Kein bpmn_xml uebergeben.' });
+            const extracted = flowSummary.extractBpmnXml(raw);
+            if (!extracted) {
+                return res.status(400).json({
+                    error: 'Die Datei enthaelt kein BPMN-Diagramm (kein <definitions>-Element gefunden).'
+                });
+            }
 
             const existing = await getAsync(
                 'SELECT id FROM project_flow_summaries WHERE id = ? AND project_id = ?',
                 [summaryId, projectId]);
             if (!existing) return res.status(404).json({ error: 'Zusammenfassung nicht gefunden.' });
 
+            // Importierte Dateien bringen eigene Positionen mit; nur ohne DI
+            // setzt der Server das Layout (sonst wuerde er sie ueberschreiben).
+            let bpmnXml = extracted;
+            if (!bpmn.hasBpmnDiagram(extracted)) {
+                try {
+                    bpmnXml = await bpmn.layoutBpmnXml(extracted, {
+                        orientation: req.body.orientation === 'landscape' ? 'landscape' : 'portrait'
+                    });
+                } catch (err) {
+                    return res.status(400).json({ error: 'Diagramm konnte nicht gesetzt werden: ' + err.message });
+                }
+            }
+
             await runAsync('UPDATE project_flow_summaries SET bpmn_xml = ? WHERE id = ?',
                 [bpmnXml, summaryId]);
 
-            res.json({ id: summaryId, updated: true });
+            res.json({ id: summaryId, updated: true, laid_out: bpmnXml !== extracted });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Speichert ein BPMN-Diagramm am Soll-Workflow (Editor-Speichern oder
+    // Import einer gespeicherten Datei). Text und Vorteile bleiben unberuehrt.
+    app.patch('/api/projects/:projectId/soll-flow/:sollId/bpmn', requireAuth, requireAdmin, async (req, res) => {
+        try {
+            const projectId = toId(req.params.projectId);
+            const sollId = toId(req.params.sollId);
+            if (!projectId || !sollId) return res.status(400).json({ error: 'Ungueltige IDs.' });
+
+            const raw = normalizeText(req.body.bpmn_xml);
+            if (!raw) return res.status(400).json({ error: 'Kein bpmn_xml uebergeben.' });
+            const extracted = flowSummary.extractBpmnXml(raw);
+            if (!extracted) {
+                return res.status(400).json({
+                    error: 'Die Datei enthaelt kein BPMN-Diagramm (kein <definitions>-Element gefunden).'
+                });
+            }
+
+            const existing = await getAsync(
+                'SELECT id FROM project_soll_flows WHERE id = ? AND project_id = ?',
+                [sollId, projectId]);
+            if (!existing) return res.status(404).json({ error: 'Soll-Workflow nicht gefunden.' });
+
+            let bpmnXml = extracted;
+            if (!bpmn.hasBpmnDiagram(extracted)) {
+                try {
+                    bpmnXml = await bpmn.layoutBpmnXml(extracted, {
+                        orientation: req.body.orientation === 'landscape' ? 'landscape' : 'portrait'
+                    });
+                } catch (err) {
+                    return res.status(400).json({ error: 'Diagramm konnte nicht gesetzt werden: ' + err.message });
+                }
+            }
+
+            await runAsync('UPDATE project_soll_flows SET bpmn_xml = ? WHERE id = ?', [bpmnXml, sollId]);
+
+            res.json({ id: sollId, updated: true, laid_out: bpmnXml !== extracted });
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
