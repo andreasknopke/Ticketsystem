@@ -11,6 +11,16 @@ const {
     searchCodeInRepo
 } = require('../workflow/githubContext');
 
+// Capability-Index: autoritative Quelle fuer CAPABILITY-Fragen
+// ("gibt es diese Funktion in CuraFlow schon?"). Symbol-/Dateifragen bleiben
+// bei grep/read_file — die beiden Ebenen werden bewusst nicht vermischt.
+const {
+    fetchCapabilityIndex,
+    capabilityExists,
+    searchCapabilities,
+    formatCapabilityMatches
+} = require('../atlas/catalog');
+
 const MAX_GREP_BYTES_PER_FILE = 120 * 1024;    // 120 KB Cap je Datei beim Grep
 const MAX_GREP_HITS = 200;                      // max. Treffer im Ergebnis
 const MAX_GREP_FILES = 200;                     // max. Dateien je grep-Aufruf
@@ -358,6 +368,51 @@ async function tool_grep({ integration, pattern, glob, context }) {
     }
 }
 
+// ---- Tool: capability_exists ----------------------------------------------
+// Autoritative Capability-Existenz (Index-Projektion von CuraFlow).
+async function tool_capability_exists({ alias }) {
+    if (typeof alias !== 'string' || !alias.trim()) {
+        return { error: 'Parameter "alias" fehlt (z. B. "Qualifikation erteilen")' };
+    }
+    const { catalog, reason } = await fetchCapabilityIndex();
+    // Wichtig: Index nicht erreichbar ist ein FEHLER, kein "existiert nicht".
+    // Sonst landet eine vorhandene Capability faelschlich in non_existent.
+    if (!catalog) return { error: `Capability-Index nicht verfuegbar: ${reason}` };
+
+    const match = await capabilityExists(alias, { catalog });
+    if (match) {
+        return {
+            result: `VORHANDEN: ${match.id} (Modul ${match.module}, Status ${match.status}) — Integration statt Neubau. `
+                + 'Die Implementierung existiert bereits; suche fuer die Anbindung weiter mit grep/read_file.'
+        };
+    }
+
+    // Bekannte Luecke (status "gap") von "nicht im Index" unterscheiden.
+    const possible = await searchCapabilities(alias, { catalog, phraseOnly: true, limit: 1 });
+    if (possible.length && possible[0].status === 'gap') {
+        return { result: `BEKANNTE LUECKE: ${possible[0].id} — als fehlend bekannt, NICHT verfuegbar.` };
+    }
+    return { result: `(keine Capability fuer "${alias}" im CuraFlow-Index)` };
+}
+
+// ---- Tool: search_capabilities --------------------------------------------
+async function tool_search_capabilities({ query, limit }) {
+    if (typeof query !== 'string' || !query.trim()) {
+        return { error: 'Parameter "query" fehlt' };
+    }
+    const { catalog, reason } = await fetchCapabilityIndex();
+    if (!catalog) return { error: `Capability-Index nicht verfuegbar: ${reason}` };
+
+    const matches = await searchCapabilities(query, {
+        catalog,
+        limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 20) : 8
+    });
+    if (!matches.length) {
+        return { result: `(keine Capability zu "${query}" im CuraFlow-Index)` };
+    }
+    return { result: formatCapabilityMatches(matches).replace(/ \[LUECKE\]/g, ' [LUECKE - nicht verfuegbar]') };
+}
+
 const TOOLS = {
     list_tree: {
         description: 'Listet alle Datei-Pfade im Repo (gefiltert auf Source-Endungen, max ' + MAX_TREE_ENTRIES + ' Eintraege).',
@@ -378,6 +433,16 @@ const TOOLS = {
         description: 'Sucht ein Regex-Pattern (case-insensitive) im Repo. Optional auf glob einschraenken (z.B. "ticketsystem/**/*.js"). Treffer werden gegen den Ticket-Kontext gerankt, damit promptfremde Bereiche nicht dominieren. Max ' + MAX_GREP_HITS + ' Treffer aus ' + MAX_GREP_FILES + ' Dateien.',
         params: '{ "pattern": "decideHumanStep|workflow_steps", "glob": "ticketsystem/**/*.js" }',
         run: tool_grep
+    },
+    capability_exists: {
+        description: 'Autoritativ pruefen, ob CuraFlow eine Faehigkeit (Capability) bereits hat. NUR fuer CAPABILITY-Fragen ("gibt es Funktion X?"). Kein Ersatz fuer grep/read_file bei Symbol-, Datei- oder Implementierungsfragen. status "gap" gilt als NICHT vorhanden. Ein Treffer heisst: bereits gebaut, plane Integration statt Neubau.',
+        params: '{ "alias": "Qualifikation erteilen" }',
+        run: tool_capability_exists
+    },
+    search_capabilities: {
+        description: 'Sucht CuraFlow-Capabilities ueber deutsche Aliase (summary nur als Volltext-Fallback). NUR fuer CAPABILITY-Fragen. Liefert id, Modul, Status und Aliase. Bei status "gap" ist die Funktion als fehlend bekannt und darf nicht als verfuegbar dargestellt werden.',
+        params: '{ "query": "Mitarbeiter einteilen", "limit": 8 }',
+        run: tool_search_capabilities
     }
 };
 

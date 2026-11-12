@@ -234,10 +234,19 @@ const { runCodeChecks } = require('./codeChecks');
 const { buildCodingBriefing, buildCorrectionFeedback, MAX_PROMPT_BYTES } = require('./briefing');
 const dossierExport = require('./dossierExport');
 const architectTools = require('../ai/architectTools');
+const { fetchCapabilityIndex, searchCapabilities } = require('../atlas/catalog');
 
 const ARCHITECT_TOOLS_ENABLED = process.env.ARCHITECT_TOOLS_ENABLED !== 'false';
 const ARCHITECT_TOOLS_BUDGET = parseInt(process.env.ARCHITECT_TOOLS_BUDGET, 10) || 6;
 const ARCHITECT_UI_REMOVAL_BUDGET = parseInt(process.env.ARCHITECT_UI_REMOVAL_BUDGET, 10) || Math.max(ARCHITECT_TOOLS_BUDGET, 10);
+
+// Der Capability-Index beschreibt CuraFlow. Fuer Tickets anderer Systeme ist
+// er keine Autoritaet — dort wuerde ein Alias-Treffer ("Dienst eintragen")
+// faelschlich "bereits gebaut" bedeuten. Deshalb nur bei CuraFlow-Zielsystem
+// in die Planung injizieren.
+function isCuraFlowTarget(systemName) {
+    return /curaflow/i.test(String(systemName || ''));
+}
 
 const MAX_RETRIES = parseInt(process.env.AI_WORKFLOW_MAX_RETRIES, 10) || 2;
 const CODING_MAX_CORRECTION_PASSES = Math.max(1, parseInt(process.env.AI_CODING_MAX_CORRECTION_PASSES, 10) || 2); // Aider-Style: 1 Versuch + n Korrekturen
@@ -810,6 +819,15 @@ function renderPlanMarkdown(out) {
         const calls = out.architect_explore.tool_calls?.length || 0;
         if (calls) lines.push(`\n_Basierend auf ${calls} Tool-Call(s)._`);
     }
+    if (out.architect_explore?.capability_index?.matches?.length) {
+        const caps = out.architect_explore.capability_index.matches;
+        lines.push(`\n**Bereits vorhandene CuraFlow-Funktionen (Capability-Index):**`);
+        caps.forEach((cap) => {
+            const names = [...new Set([cap.label].concat(Array.isArray(cap.aliases) ? cap.aliases : []).filter(Boolean))];
+            const gap = cap.status === 'gap' ? ' [LUECKE]' : '';
+            lines.push(`- \`${cap.id}\` (${cap.module}, ${cap.status}): ${names.join(' / ')}${gap} — Integration statt Neubau.`);
+        });
+    }
     if (out.architect_explore?.evidence_probe?.required) {
         const ev = out.architect_explore.evidence_probe;
         lines.push(`\n**Evidence-Contract:**`);
@@ -884,6 +902,40 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
 
     const codingPrompt = securityBundle?.coding_prompt || ticket.coding_prompt || ticket.redacted_description || ticket.description;
 
+    // ---- Capability-Index (autoritative Existenzpruefung) ---------------
+    // Beantwortet VOR der Repo-Recherche die Frage "gibt es die Funktion in
+    // CuraFlow schon?". Ergibt einen Treffer -> Plan zielt auf Integration,
+    // nicht auf Neubau. Symbol-/Dateifragen bleiben bei den grep-Tools.
+    let capabilityMatches = [];
+    let capabilityIndex = null;
+    if (isCuraFlowTarget(systemName)) {
+        try {
+            const indexResult = await fetchCapabilityIndex();
+            if (indexResult.catalog) {
+                const count = Array.isArray(indexResult.catalog.capabilities)
+                    ? indexResult.catalog.capabilities.length
+                    : 0;
+                capabilityIndex = { available: true, reason: null, count };
+                // Nur vollstaendige Alias-Wendungen im Ticket-Text: bewusst
+                // konservativ, damit kein zufaelliges Token "bereits gebaut" ausloest.
+                capabilityMatches = await searchCapabilities(codingPrompt, {
+                    catalog: indexResult.catalog,
+                    phraseOnly: true,
+                    limit: 8
+                });
+                wfInfo(`Stage:PLANNING capability index | count=${count} matches=${capabilityMatches.length}`);
+            } else {
+                capabilityIndex = { available: false, reason: indexResult.reason, count: 0 };
+                wfWarn(`Stage:PLANNING capability index unavailable`, indexResult.reason);
+            }
+        } catch (e) {
+            capabilityIndex = { available: false, reason: e.message, count: 0 };
+            wfWarn(`Stage:PLANNING capability index failed`, e.message);
+        }
+    } else if (systemName) {
+        wfInfo(`Stage:PLANNING capability index skipped (target system is not CuraFlow) | system="${systemName}"`);
+    }
+
     // ---- Architect-Tools (ReAct-Loop) -----------------------------------
     // Vor dem eigentlichen Plan-Schreiben darf der Architect gezielt Symbole,
     // Tabellen und Datei-Inhalte im Repo verifizieren. Verhindert die typischen
@@ -899,6 +951,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         toolTrace.push(...evidenceProbe.trace);
         const result = await runArchitectExplore({
             ticket, staff, codingPrompt, integration, repoTree, systemName,
+            capabilityMatches, capabilityIndex,
             budget: evidenceProbe.required ? ARCHITECT_UI_REMOVAL_BUDGET : ARCHITECT_TOOLS_BUDGET
         });
         exploreFindings.push(...result.findings);
@@ -929,6 +982,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo,
         exploreFindings, exploreNonExistent,
+        capabilityMatches, capabilityIndex,
         architectEvidence: evidenceProbe
     });
 
@@ -951,6 +1005,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo,
                 exploreFindings, exploreNonExistent,
+                capabilityMatches, capabilityIndex,
                 architectEvidence: evidenceProbe
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -985,6 +1040,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 resolverAnswers: [resolverAnswersText, evidenceCorrection].filter(Boolean).join('\n\n'),
                 systemName, repoInfo: planningRepoInfo,
                 exploreFindings, exploreNonExistent,
+                capabilityMatches, capabilityIndex,
                 architectEvidence: evidenceProbe
             });
             const evidenceRun = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt: evidencePrompt });
@@ -1039,7 +1095,20 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     }
 
     // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
-    if (toolTrace.length || exploreFindings.length || exploreNonExistent.length) {
+    const capabilityTrace = capabilityIndex
+        ? {
+            ...capabilityIndex,
+            matches: capabilityMatches.map(match => ({
+                id: match.id,
+                label: match.label,
+                aliases: match.aliases,
+                module: match.module,
+                status: match.status
+            }))
+        }
+        : null;
+    if (toolTrace.length || exploreFindings.length || exploreNonExistent.length
+        || (capabilityTrace && (capabilityTrace.matches.length || capabilityTrace.reason))) {
         out.architect_explore = {
             findings: exploreFindings,
             non_existent: exploreNonExistent,
@@ -1047,6 +1116,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             tree_validation_warnings: treeValidation.warnings,
             evidence_probe: evidenceProbe,
             evidence_violations: evidenceViolations,
+            capability_index: capabilityTrace,
             tool_calls: toolTrace,
             tokens: exploreTokens
         };
@@ -1070,7 +1140,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
  * Loop-Ende: model setzt "done": true ODER Budget aufgebraucht ODER zwei
  * Fehlversuche in Folge.
  */
-async function runArchitectExplore({ ticket, staff, codingPrompt, integration, repoTree, systemName, budget }) {
+async function runArchitectExplore({ ticket, staff, codingPrompt, integration, repoTree, systemName, budget, capabilityMatches, capabilityIndex }) {
     const trace = [];
     let findings = [];
     let nonExistent = [];
@@ -1083,7 +1153,8 @@ async function runArchitectExplore({ ticket, staff, codingPrompt, integration, r
         const userPrompt = prompts.PLANNING_EXPLORE.buildUser({
             codingPrompt, repoTree, toolDescriptions,
             history: trace, budgetLeft: budget - i,
-            systemName, repoInfo
+            systemName, repoInfo,
+            capabilityMatches, capabilityIndex
         });
         let r;
         try {

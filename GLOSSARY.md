@@ -69,8 +69,14 @@ _Avoid_: Zielbild, Future State, Prozessmodell
 
 **Funktionskatalog**:
 Die maschinenlesbare Liste der Funktionen eines Systems (id, Bezeichnung,
-Aliase, Modul), bezogen über `<Basis>/api/catalog/flow`. Grundlage der
-Soll-Projektion. Je System eine Quelle (`CURAFLOW_*`, `SCHREIBDIENST_*`).
+Aliase, Modul). Wird in zwei nicht austauschbaren Projektionen bezogen
+(siehe CuraFlow ADR-0003): `<Basis>/api/catalog/flow` für die Soll-Projektion
+und `<Basis>/api/catalog/index` als autoritative Antwort auf
+Capability-Existenzfragen im Architect/Pre-Plan (Aliase, Status, Endpunkte,
+`requiredPermission`). Der Index beantwortet nur „gibt es diese Funktion?“ —
+Symbol- und Dateifragen bleiben bei den Repo-Grep-Tools. Je System eine
+Quelle (`CURAFLOW_*`, `SCHREIBDIENST_*`). Anzahl und Status der Einträge
+ändern sich laufend und sind keine Konstante.
 _Avoid_: Feature-Liste, Capability-Dump
 
 **Freitext-Projektion**:

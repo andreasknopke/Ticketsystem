@@ -107,6 +107,18 @@ Verfuegbare Tools (siehe TOOLS-Block im User-Prompt) liefern read-only Repo-Zugr
 Pro Antwort darfst du EINEN Tool-Call machen ODER "done": true setzen, wenn du
 genug Information hast, um einen praezisen Plan zu schreiben.
 
+EBENEN-TRENNUNG — wird vom System geprueft:
+- CAPABILITY-Fragen ("gibt es in CuraFlow eine Funktion fuer X?") beantwortest du
+  AUSSCHLIESSLICH mit capability_exists/search_capabilities. Ein Treffer heisst:
+  bereits gebaut — plane Integration/Anbindung, keinen Neubau.
+- SYMBOL-/DATEI-Fragen ("wo ist X definiert?", "welche Datei rendert Y?")
+  beantwortest du weiterhin mit grep/read_file. Die Capability-Tools ersetzen
+  grep NICHT.
+- Ein leerer Capability-Treffer darf nur dann in "non_existent", wenn der Index
+  erreichbar war (kein Tool-Fehler). Formuliere dann "keine CuraFlow-Capability
+  fuer X" — NICHT "Funktion X existiert nirgends im Repo".
+- status "gap" bedeutet "als fehlend bekannt": niemals als verfuegbar darstellen.
+
 HARTE REGELN — werden vom System geprueft:
 - Wenn ein Tool-Call ein leeres Ergebnis liefert ("(keine Treffer)" / "NOT FOUND" /
   "0 Treffer"), MUSST du diesen Begriff in "non_existent" eintragen UND darfst ihn
@@ -154,11 +166,31 @@ Antworte AUSSCHLIESSLICH als JSON, ein Objekt:
 }
 
 Wenn done=true, lass tool=null und args={}. Die naechste Antwort wird der Plan.`,
-    buildUser: ({ codingPrompt, repoTree, toolDescriptions, history, budgetLeft, systemName, repoInfo }) => {
+    buildUser: ({ codingPrompt, repoTree, toolDescriptions, history, budgetLeft, systemName, repoInfo, capabilityMatches, capabilityIndex }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
       parts.push(`\n--- SEARCH-HINWEISE ---\n${buildArchitectSearchHints(codingPrompt)}`);
+        if (capabilityIndex && capabilityIndex.available) {
+            parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX (autoritativ, nur Funktions-Existenz) ---`);
+            parts.push(`Der Index beschreibt, welche Funktionen CuraFlow bereits hat (${capabilityIndex.count} Capabilities). `
+                + 'Ein Treffer bedeutet: Funktion ist gebaut — plane Integration, keinen Neubau. '
+                + 'Er ersetzt NICHT die Repo-Suche nach Symbolen/Dateien.');
+            if (Array.isArray(capabilityMatches) && capabilityMatches.length) {
+                capabilityMatches.forEach((match) => {
+                    const names = [match.label].concat(Array.isArray(match.aliases) ? match.aliases : []);
+                    const unique = [...new Set(names.filter(Boolean))];
+                    const gap = match.status === 'gap' ? ' [LUECKE - nicht verfuegbar]' : '';
+                    parts.push(`- ${match.id} (${match.module}, ${match.status}): ${unique.join(' / ')}${gap}`);
+                });
+            } else {
+                parts.push('Kein Alias aus dem Ticket-Text trifft den Index. Das belegt NICHT, dass eine Capability fehlt — pruefe bei Bedarf gezielt mit capability_exists/search_capabilities.');
+            }
+        } else if (capabilityIndex && capabilityIndex.reason) {
+            parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX: NICHT VERFUEGBAR ---`);
+            parts.push(`Grund: ${capabilityIndex.reason}`);
+            parts.push('Capability-Existenz ist damit NICHT widerlegt. Schreibe keine Capability in "non_existent", nur weil der Index fehlt.');
+        }
         parts.push(`\n--- TOOLS ---\n${toolDescriptions}`);
         if (repoTree) parts.push(`\n--- REPO-TREE (zum Orientieren) ---\n${repoTree}`);
         if (Array.isArray(history) && history.length) {
@@ -198,6 +230,14 @@ REPO-TREE-IST-GESETZ (wird programmatisch geprueft):
   kann ihn nicht bearbeiten.
 - Schreibe also NUR Pfade, die du im REPO-TREE siehst, ODER die du bewusst
   als neue Datei anlegst (change_kind="new").
+
+CAPABILITY-INDEX (wird vom System geprueft):
+- Wenn der Block "CURAFLOW-CAPABILITY-INDEX" eine passende Capability nennt, ist
+  die Funktion BEREITS VORHANDEN. Plane die Integration/Anbindung, keinen Neubau.
+  "verified" = vorhanden und geprueft, "draft" = vorhanden, aber ungeprueft,
+  "gap" = als fehlend bekannt — niemals als verfuegbar darstellen.
+- Der Index beantwortet nur Funktions-Existenz. Symbole, Dateien und Pfade
+  kommen weiterhin aus REPO-TREE und deiner Repo-Recherche.
 
 KONSISTENZ-PFLICHT (wird vom System geprueft):
 - Wenn dir ein Block "VERIFIZIERTE FAKTEN" gegeben wird, sind das die EINZIGE
@@ -246,10 +286,23 @@ Antworte ausschliesslich als JSON:
   "estimated_effort": "S|M|L|XL",
   "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
 }`,
-    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence, capabilityMatches, capabilityIndex }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
+        if (capabilityIndex && capabilityIndex.available && Array.isArray(capabilityMatches) && capabilityMatches.length) {
+            parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX (autoritativ: Funktion existiert bereits) ---`);
+            parts.push('Diese Capabilities deckt CuraFlow bereits ab. Wenn die Aufgabe eine davon verlangt, plane die Integration/Anbindung an die bestehende Funktion — keinen Neubau.');
+            capabilityMatches.forEach((match) => {
+                const names = [...new Set([match.label].concat(Array.isArray(match.aliases) ? match.aliases : []).filter(Boolean))];
+                const gap = match.status === 'gap' ? ' [LUECKE - nicht verfuegbar]' : '';
+                parts.push(`- ${match.id} (${match.module}, ${match.status}): ${names.join(' / ')}${gap}`);
+            });
+        } else if (capabilityIndex && capabilityIndex.reason) {
+            parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX: NICHT VERFUEGBAR ---`);
+            parts.push(`Grund: ${capabilityIndex.reason}`);
+            parts.push('Fehlende Index-Antwort belegt NICHT, dass eine Capability fehlt. Keine Capability als "existiert nicht" annehmen.');
+        }
         if (architectEvidence?.required) {
             parts.push(`\n--- EVIDENCE-CONTRACT (systemseitig erzwungen) ---`);
             parts.push(`Dieses Ticket ist eine UI-Entfernung. Du darfst allowed_files nur auf konkrete, positiv verifizierte Zielpfade setzen.`);
