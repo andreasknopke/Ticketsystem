@@ -238,6 +238,17 @@ CAPABILITY-INDEX (wird vom System geprueft):
   "gap" = als fehlend bekannt — niemals als verfuegbar darstellen.
 - Der Index beantwortet nur Funktions-Existenz. Symbole, Dateien und Pfade
   kommen weiterhin aus REPO-TREE und deiner Repo-Recherche.
+- Fuelle IMMER das Feld "capability_check" aus, wenn der Index erreichbar war:
+  * "feature_exists": true NUR wenn eine Capability mit status "verified" oder
+    "draft" die Anfrage vollstaendig abdeckt (der Nutzer kann das bereits —
+    Hinweis statt Neubau). "gap" zaehlt NICHT als vorhanden.
+  * "existing_capability": die id dieser Capability, sonst null.
+  * "related_feature": true wenn eine verwandte Capability existiert, deren
+    Erweiterung die Anfrage ermoeglichen wuerde, sie sie aber heute nicht
+    abdeckt.
+  * "related_capability": die id dieser Capability, sonst null.
+  * "note": 1 Satz Begruendung.
+  War der Index NICHT erreichbar, lasse "capability_check" komplett weg.
 
 KONSISTENZ-PFLICHT (wird vom System geprueft):
 - Wenn dir ein Block "VERIFIZIERTE FAKTEN" gegeben wird, sind das die EINZIGE
@@ -284,7 +295,14 @@ Antworte ausschliesslich als JSON:
   "constraints": ["harte Regeln, die der Coder einhalten muss"],
   "risks": ["..."],
   "estimated_effort": "S|M|L|XL",
-  "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"]
+  "open_questions": ["nur Resolver-Fragen, KEINE Mensch-Fragen"],
+  "capability_check": {
+    "feature_exists": true,
+    "existing_capability": "capability-id oder null",
+    "related_feature": false,
+    "related_capability": "capability-id oder null",
+    "note": "1 Satz Begruendung"
+  }
 }`,
     buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence, capabilityMatches, capabilityIndex }) => {
         const parts = [];

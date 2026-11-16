@@ -640,7 +640,28 @@ function normalizePlanningOutput(out) {
     if (!Array.isArray(out.constraints)) out.constraints = [];
     if (!Array.isArray(out.steps)) out.steps = [];
     if (!Array.isArray(out.risks)) out.risks = [];
+    out.capability_check = normalizeCapabilityCheck(out.capability_check);
     return out;
+}
+
+// Strukturiertes Verdikt des Architects zum Capability-Index ("gibt es die
+// Funktion schon?", "gibt es eine verwandte Funktion?"). Landet in
+// architect_explore.capability_index.assessment und wird auf der
+// Ticket-Seite als Checkliste gezeigt. null = Architect hat nichts
+// Verwertbares geliefert (z. B. Index nicht erreichbar).
+function normalizeCapabilityCheck(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const asBool = (v) => (v === true ? true : (v === false ? false : null));
+    const asId = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null);
+    const check = {
+        feature_exists: asBool(raw.feature_exists),
+        existing_capability: asId(raw.existing_capability),
+        related_feature: asBool(raw.related_feature),
+        related_capability: asId(raw.related_capability),
+        note: typeof raw.note === 'string' ? raw.note.trim().slice(0, 400) : ''
+    };
+    const hasContent = check.feature_exists !== null || check.related_feature !== null || check.note !== '';
+    return hasContent ? check : null;
 }
 
 function isUiRemovalTask(text) {
@@ -819,6 +840,22 @@ function renderPlanMarkdown(out) {
         const calls = out.architect_explore.tool_calls?.length || 0;
         if (calls) lines.push(`\n_Basierend auf ${calls} Tool-Call(s)._`);
     }
+    if (out.architect_explore?.capability_index) {
+        const ci = out.architect_explore.capability_index;
+        lines.push(`\n**Capability-Check (Funktionskatalog):**`);
+        if (ci.available) {
+            lines.push(`- Katalog gelesen: ja${ci.version != null ? ` (Version: ${ci.version})` : ''} — ${ci.count} Capabilities`);
+        } else {
+            lines.push(`- Katalog gelesen: NEIN${ci.reason ? ` — ${ci.reason}` : ''}`);
+        }
+        if (ci.assessment) {
+            const a = ci.assessment;
+            const yesNo = (v) => (v === true ? 'ja' : (v === false ? 'nein' : 'offen'));
+            lines.push(`- Funktion existiert bereits: ${yesNo(a.feature_exists)}${a.existing_capability ? ` (\`${a.existing_capability}\`)` : ''}`);
+            lines.push(`- Verwandte Funktion identifiziert: ${yesNo(a.related_feature)}${a.related_capability ? ` (\`${a.related_capability}\`)` : ''}`);
+            if (a.note) lines.push(`- Hinweis: ${a.note}`);
+        }
+    }
     if (out.architect_explore?.capability_index?.matches?.length) {
         const caps = out.architect_explore.capability_index.matches;
         lines.push(`\n**Bereits vorhandene CuraFlow-Funktionen (Capability-Index):**`);
@@ -915,7 +952,12 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 const count = Array.isArray(indexResult.catalog.capabilities)
                     ? indexResult.catalog.capabilities.length
                     : 0;
-                capabilityIndex = { available: true, reason: null, count };
+                capabilityIndex = {
+                    available: true,
+                    reason: null,
+                    count,
+                    version: indexResult.catalog.catalogVersion ?? null
+                };
                 // Nur vollstaendige Alias-Wendungen im Ticket-Text: bewusst
                 // konservativ, damit kein zufaelliges Token "bereits gebaut" ausloest.
                 capabilityMatches = await searchCapabilities(codingPrompt, {
@@ -1098,6 +1140,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     const capabilityTrace = capabilityIndex
         ? {
             ...capabilityIndex,
+            assessment: out.capability_check || null,
             matches: capabilityMatches.map(match => ({
                 id: match.id,
                 label: match.label,
@@ -1107,8 +1150,10 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
             }))
         }
         : null;
-    if (toolTrace.length || exploreFindings.length || exploreNonExistent.length
-        || (capabilityTrace && (capabilityTrace.matches.length || capabilityTrace.reason))) {
+    // Der Capability-Trace wird immer persistiert, sobald die Pruefung lief
+    // (capabilityIndex != null) — sonst fehlt auf der Ticket-Seite die
+    // Checkliste, wenn es weder Treffer noch Fehler gab.
+    if (toolTrace.length || exploreFindings.length || exploreNonExistent.length || capabilityTrace) {
         out.architect_explore = {
             findings: exploreFindings,
             non_existent: exploreNonExistent,

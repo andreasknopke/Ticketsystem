@@ -546,6 +546,7 @@
         // Socket.io für Echtzeit-Updates
         const socket = io();
         const ticketId = '<%= ticket.id %>';
+        const ticketType = <%- JSON.stringify(ticket.type || '') %>;
         const csrfToken = '<%= csrfToken %>';
         const canManageTickets = <%= canManageTickets ? 'true' : 'false' %>;
         let suppressTicketReload = false;
@@ -654,10 +655,37 @@
             return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
 
+        // Capability-Checkliste (nur Feature-Tickets): macht sichtbar, ob der
+        // Architect den Funktionskatalog gelesen hat und ob die angefragte
+        // Funktion bereits existiert bzw. eine verwandte Funktion gefunden
+        // wurde. Datenquelle: planning-step output.architect_explore.capability_index.
+        function renderCapabilityChecklist(ci) {
+            const rows = [];
+            const readOk = ci.available === true;
+            rows.push(`<li class="flex items-start gap-1.5"><span>${readOk ? '✅' : '❌'}</span><span><span class="font-semibold">Funktionskatalog gelesen</span>${readOk ? '' : `<br><span class="text-red-700">${escapeHtml(ci.reason || 'unbekannter Fehler')}</span>`}</span></li>`);
+            if (readOk) {
+                rows.push(`<li class="flex items-start gap-1.5"><span>ℹ️</span><span><span class="font-semibold">Katalog-Version:</span> ${ci.version != null ? escapeHtml(String(ci.version)) : 'unbekannt'} <span class="text-gray-500">(${ci.count != null ? ci.count : '?'} Capabilities)</span></span></li>`);
+            }
+            const a = ci.assessment;
+            if (a) {
+                const icon = (v) => v === true ? '✅' : (v === false ? '❌' : '➖');
+                const word = (v) => v === true ? 'ja' : (v === false ? 'nein' : 'offen');
+                rows.push(`<li class="flex items-start gap-1.5"><span>${icon(a.feature_exists)}</span><span><span class="font-semibold">Funktion existiert bereits:</span> ${word(a.feature_exists)}${a.existing_capability ? ` · <code class="text-xs bg-white px-1 rounded">${escapeHtml(a.existing_capability)}</code>` : ''}</span></li>`);
+                rows.push(`<li class="flex items-start gap-1.5"><span>${icon(a.related_feature)}</span><span><span class="font-semibold">Verwandte Funktion identifiziert:</span> ${word(a.related_feature)}${a.related_capability ? ` · <code class="text-xs bg-white px-1 rounded">${escapeHtml(a.related_capability)}</code>` : ''}</span></li>`);
+                if (a.note) rows.push(`<li class="flex items-start gap-1.5"><span>💬</span><span class="text-gray-600">${escapeHtml(a.note)}</span></li>`);
+            } else if (readOk) {
+                rows.push(`<li class="flex items-start gap-1.5"><span>➖</span><span class="text-gray-500">Kein Architect-Verdikt vorhanden (aellterer Lauf).</span></li>`);
+            }
+            return `<div class="mt-2 rounded border border-sky-200 bg-sky-50 p-3"><p class="text-xs font-bold text-sky-900 mb-1.5">🧭 Capability-Check (Funktionskatalog)</p><ul class="space-y-1 text-xs text-gray-800">${rows.join('')}</ul></div>`;
+        }
+
         function renderOutput(step) {
             if (!step.output) return '';
             const o = step.output;
             const parts = [];
+            if (ticketType === 'feature' && step.stage === 'planning' && o.architect_explore && o.architect_explore.capability_index) {
+                parts.push(renderCapabilityChecklist(o.architect_explore.capability_index));
+            }
             if (o.summary) parts.push(`<p class="text-sm text-gray-700">${escapeHtml(o.summary)}</p>`);
             if (o.decision) parts.push(`<p class="text-xs"><span class="font-semibold">Entscheidung:</span> ${escapeHtml(o.decision)}${o.coding_level ? ` <span class="badge bg-indigo-100 text-indigo-700">Level: ${escapeHtml(o.coding_level)}</span>` : ''}</p>`);
             if (o.reason) parts.push(`<p class="text-xs text-gray-600">${escapeHtml(o.reason)}</p>`);
