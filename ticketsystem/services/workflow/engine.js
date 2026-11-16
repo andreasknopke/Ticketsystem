@@ -1164,6 +1164,37 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         });
     }
 
+    // Rueckfrage an den Menschen: Wenn der Funktionskatalog sagt "die
+    // Funktion existiert bereits", muss ggf. GAR NICHTS gebaut werden —
+    // der Nutzer kannte die Funktion nur nicht. Bei Feature-Tickets pausiert
+    // der Workflow nach dem Planning und fragt den Bearbeiter, ob es
+    // trotzdem weitergehen soll. Der Verweis nennt id/Namen/Modul, damit
+    // die Funktion im Zielsystem (z. B. ueber den CuraFlow-Assistenten, der
+    // den Funktionskatalog kennt) gefunden werden kann.
+    if (ticket.type === 'feature' && out.capability_check?.feature_exists === true) {
+        const capId = out.capability_check.existing_capability;
+        const cap = capId && capabilityCatalog
+            ? (capabilityCatalog.capabilities || []).find(c => c && c.id === capId)
+            : null;
+        const refLines = [
+            'Der Funktionskatalog meldet: Die angefragte Funktion existiert bereits — muss hier überhaupt etwas gebaut werden?'
+        ];
+        if (cap) {
+            const names = [...new Set([cap.label].concat(Array.isArray(cap.aliases) ? cap.aliases : []).filter(Boolean))];
+            refLines.push(`\nCapability: ${cap.id} (Modul ${cap.module || '?'}, Status ${cap.status || '?'})`);
+            if (names.length) refLines.push(`Namen: ${names.join(' / ')}`);
+            if (Array.isArray(cap.endpoints) && cap.endpoints.length) refLines.push(`Endpunkte: ${cap.endpoints.join(', ')}`);
+            if (cap.requiredPermission) refLines.push(`Benötigte Berechtigung: ${cap.requiredPermission}`);
+            refLines.push(`So findest du die Funktion: im CuraFlow-Assistenten nach "${names[0] || cap.id}" fragen — er kennt den Funktionskatalog und zeigt den Weg.`);
+        } else if (capId) {
+            refLines.push(`\nCapability: ${capId}`);
+        }
+        if (out.capability_check.note) refLines.push(`\nArchitect: ${out.capability_check.note}`);
+        refLines.push('\nAntwort "weiter" + kurze Begründung = trotzdem bauen (z. B. Erweiterung nötig). Andernfalls das Ticket verwerfen.');
+        out.capability_followup_question = refLines.join('\n');
+        wfInfo(`Stage:PLANNING capability followup | ticket=${ticket.id} capability=${capId || '?'}`);
+    }
+
     // Tool-Trace persistieren — sichtbar im Workflow-Tab und im Dossier.
     const capabilityTrace = capabilityIndex
         ? {
@@ -1702,10 +1733,16 @@ async function runStages(runId, initialTicket, stages, ctxExtras) {
             }
             emit('workflow:step', { runId, stage: stage.role, status: 'done' });
 
-            // Nur wirklich unloesbare Fragen pausieren den Workflow
+            // Nur wirklich unloesbare Fragen pausieren den Workflow.
+            // Beim Planning kommt ggf. die Capability-Rueckfrage dazu
+            // ("Funktion existiert bereits — muss hier etwas gebaut werden?").
             const stillOpen = normalizeQuestions(result.output?.open_questions);
-            if (stillOpen.length) {
-                const paused = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, stillOpen, systemName, integration);
+            const followup = (stage.role === 'planning' && typeof result.output?.capability_followup_question === 'string')
+                ? [result.output.capability_followup_question]
+                : [];
+            const questionsToAsk = stillOpen.concat(followup);
+            if (questionsToAsk.length) {
+                const paused = await pauseForHumanQuestions(runId, initialTicket, stage.role, stage.sort_order, questionsToAsk, systemName, integration);
                 if (paused) return;
             }
 

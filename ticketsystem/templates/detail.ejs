@@ -672,6 +672,9 @@
                 const word = (v) => v === true ? 'ja' : (v === false ? 'nein' : 'offen');
                 rows.push(`<li class="flex items-start gap-1.5"><span>${icon(a.feature_exists)}</span><span><span class="font-semibold">Funktion existiert bereits:</span> ${word(a.feature_exists)}${a.existing_capability ? ` · <code class="text-xs bg-white px-1 rounded">${escapeHtml(a.existing_capability)}</code>` : ''}</span></li>`);
                 rows.push(`<li class="flex items-start gap-1.5"><span>${icon(a.related_feature)}</span><span><span class="font-semibold">Verwandte Funktion identifiziert:</span> ${word(a.related_feature)}${a.related_capability ? ` · <code class="text-xs bg-white px-1 rounded">${escapeHtml(a.related_capability)}</code>` : ''}</span></li>`);
+                if (a.feature_exists === true && a.existing_capability) {
+                    rows.push(`<li class="flex items-start gap-1.5"><span>➡️</span><span><span class="font-semibold">Funktion finden:</span> im CuraFlow-Assistenten nach <code class="text-xs bg-white px-1 rounded">${escapeHtml(a.existing_capability)}</code> fragen — er kennt den Funktionskatalog und zeigt den Weg.</span></li>`);
+                }
                 if (a.note) rows.push(`<li class="flex items-start gap-1.5"><span>💬</span><span class="text-gray-600">${escapeHtml(a.note)}</span></li>`);
             } else if (readOk) {
                 rows.push(`<li class="flex items-start gap-1.5"><span>➖</span><span class="text-gray-500">Kein Architect-Verdikt vorhanden (aellterer Lauf).</span></li>`);
@@ -803,7 +806,7 @@
                     <p class="text-sm font-bold text-amber-800 mb-2">❓ Rückfragen vom ${escapeHtml(sourceStage)}-Bot</p>
                     <p class="text-xs text-amber-700 mb-2">Der Bot hat folgende Fragen, die vor dem Fortfahren geklärt werden müssen:</p>
                     <ol class="list-decimal list-inside text-sm text-gray-800 mb-3 space-y-1">
-                        ${questions.map(q => `<li>${escapeHtml(typeof q === 'string' ? q : JSON.stringify(q))}</li>`).join('')}
+                        ${questions.map(q => `<li class="whitespace-pre-wrap">${escapeHtml(typeof q === 'string' ? q : JSON.stringify(q))}</li>`).join('')}
                     </ol>
                     <textarea id="dec-note-${step.id}" rows="3" class="form-input text-sm w-full" placeholder="Deine Antwort auf diese Fragen..."></textarea>
                     <div class="mt-2 flex flex-wrap gap-2">
