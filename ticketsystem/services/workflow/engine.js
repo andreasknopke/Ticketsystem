@@ -855,6 +855,9 @@ function renderPlanMarkdown(out) {
             lines.push(`- Verwandte Funktion identifiziert: ${yesNo(a.related_feature)}${a.related_capability ? ` (\`${a.related_capability}\`)` : ''}`);
             if (a.note) lines.push(`- Hinweis: ${a.note}`);
         }
+        if (Array.isArray(ci.probe) && ci.probe.length) {
+            lines.push(`- Kandidaten aus unscharfer Systemsuche: ${ci.probe.map(p => `\`${p.id}\` (${p.module}, ${p.status})`).join(', ')}`);
+        }
     }
     if (out.architect_explore?.capability_index?.matches?.length) {
         const caps = out.architect_explore.capability_index.matches;
@@ -945,10 +948,12 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
     // nicht auf Neubau. Symbol-/Dateifragen bleiben bei den grep-Tools.
     let capabilityMatches = [];
     let capabilityIndex = null;
+    let capabilityCatalog = null;
     if (isCuraFlowTarget(systemName)) {
         try {
             const indexResult = await fetchCapabilityIndex();
             if (indexResult.catalog) {
+                capabilityCatalog = indexResult.catalog;
                 const count = Array.isArray(indexResult.catalog.capabilities)
                     ? indexResult.catalog.capabilities.length
                     : 0;
@@ -1005,6 +1010,29 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         wfInfo(`Stage:PLANNING explore skipped (no repo integration)`);
     }
 
+    // Fallback-Probe: Hat der Explore-Loop trotz erreichbarem Index keinen
+    // einzigen Capability-Call gemacht (oder lief gar nicht), haengt das
+    // capability_check-Verdikt in der Luft. Dann sucht das SYSTEM selbst
+    // unscharf nach Kandidaten und legt sie dem Architect als Grundlage
+    // fuer "related_feature" vor. Treffer hier sind Kandidaten, keine
+    // Existenzbeweise — das Verdikt bleibt beim Architect.
+    let capabilityProbe = [];
+    if (capabilityCatalog && !capabilityMatches.length) {
+        const capabilityChecked = toolTrace.some(t => t && (t.tool === 'capability_exists' || t.tool === 'search_capabilities'));
+        if (!capabilityChecked) {
+            try {
+                capabilityProbe = await searchCapabilities(codingPrompt, {
+                    catalog: capabilityCatalog,
+                    phraseOnly: false,
+                    limit: 5
+                });
+                wfInfo(`Stage:PLANNING capability probe (fallback, explore ohne Capability-Call) | hits=${capabilityProbe.length}`);
+            } catch (e) {
+                wfWarn(`Stage:PLANNING capability probe failed`, e.message);
+            }
+        }
+    }
+
     // Boundary-Files laden (kleiner Kontext, damit der Architect sich orientieren kann)
     const boundary = (process.env.REPO_BOUNDARY_FILES || 'ticketsystem/package.json,ticketsystem/server.js,ticketsystem/README.md').split(',').map(s => s.trim()).filter(Boolean);
     let currentFiles = [];
@@ -1024,7 +1052,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
         resolverAnswers: '',
         systemName, repoInfo: planningRepoInfo,
         exploreFindings, exploreNonExistent,
-        capabilityMatches, capabilityIndex,
+        capabilityMatches, capabilityIndex, capabilityProbe,
         architectEvidence: evidenceProbe
     });
 
@@ -1047,7 +1075,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 resolverAnswers: resolverAnswersText,
                 systemName, repoInfo: planningRepoInfo,
                 exploreFindings, exploreNonExistent,
-                capabilityMatches, capabilityIndex,
+                capabilityMatches, capabilityIndex, capabilityProbe,
                 architectEvidence: evidenceProbe
             });
             r = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt });
@@ -1082,7 +1110,7 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 resolverAnswers: [resolverAnswersText, evidenceCorrection].filter(Boolean).join('\n\n'),
                 systemName, repoInfo: planningRepoInfo,
                 exploreFindings, exploreNonExistent,
-                capabilityMatches, capabilityIndex,
+                capabilityMatches, capabilityIndex, capabilityProbe,
                 architectEvidence: evidenceProbe
             });
             const evidenceRun = await callAIWithStaff(staff, { systemPrompt: prompts.PLANNING.system, userPrompt: evidencePrompt });
@@ -1145,6 +1173,12 @@ async function execPlanning({ ticket, staff, runId, securityBundle, integration,
                 id: match.id,
                 label: match.label,
                 aliases: match.aliases,
+                module: match.module,
+                status: match.status
+            })),
+            probe: capabilityProbe.map(match => ({
+                id: match.id,
+                label: match.label,
                 module: match.module,
                 status: match.status
             }))

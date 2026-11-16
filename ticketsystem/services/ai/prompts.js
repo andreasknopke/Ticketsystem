@@ -250,6 +250,8 @@ CAPABILITY-INDEX (wird vom System geprueft):
   * "related_capability": die id dieser Capability, sonst null.
   * "note": 1 Satz Begruendung.
   War der Index NICHT erreichbar, lasse "capability_check" komplett weg.
+  true/false sind gepruefte Aussagen: Wer NICHT geprueft hat, setzt den
+  jeweiligen Wert auf null (= offen) — niemals false aus Unwissenheit.
 
 KONSISTENZ-PFLICHT (wird vom System geprueft):
 - Wenn dir ein Block "VERIFIZIERTE FAKTEN" gegeben wird, sind das die EINZIGE
@@ -305,7 +307,7 @@ Antworte ausschliesslich als JSON:
     "note": "1 Satz Begruendung"
   }
 }`,
-    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence, capabilityMatches, capabilityIndex }) => {
+    buildUser: ({ codingPrompt, repoTree, currentFiles, resolverAnswers, systemName, repoInfo, exploreFindings, exploreNonExistent, architectEvidence, capabilityMatches, capabilityIndex, capabilityProbe }) => {
         const parts = [];
         if (systemName || repoInfo) parts.push(`Ziel-System: ${systemName || 'unbekannt'}${repoInfo ? ` | Repo: ${repoInfo}` : ''}`);
         parts.push(`AUFGABE (vom Security-Stage):\n${codingPrompt || '(leer)'}`);
@@ -324,10 +326,21 @@ Antworte ausschliesslich als JSON:
             // bereitgestellt worden.
             parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX (erreichbar, ${capabilityIndex.count} Capabilities) ---`);
             parts.push('Der Index wurde erfolgreich gelesen. Kein Alias aus dem Ticket-Text trifft ihn direkt — das belegt NICHT, dass eine Capability fehlt.');
-            parts.push('Grundlage fuer "capability_check" sind deine Recherche-Ergebnisse aus dem Explore-Schritt (capability_exists/search_capabilities, siehe "VERIFIZIERTE FAKTEN"). '
+            if (Array.isArray(capabilityProbe) && capabilityProbe.length) {
+                parts.push('Unscharfe Systemsuche (Fallback, weil im Explore-Schritt kein Capability-Tool genutzt wurde) fand diese Kandidaten:');
+                capabilityProbe.forEach((match) => {
+                    const names = [...new Set([match.label].concat(Array.isArray(match.aliases) ? match.aliases : []).filter(Boolean))];
+                    const gap = match.status === 'gap' ? ' [LUECKE - nicht verfuegbar]' : '';
+                    parts.push(`- ${match.id} (${match.module}, ${match.status}): ${names.join(' / ')}${gap}`);
+                });
+                parts.push('Bewerte damit "related_feature" (true, wenn die Erweiterung eines Kandidaten die Anfrage ermoeglicht). "feature_exists" nur bei eindeutiger Vollabdeckung.');
+            } else {
+                parts.push('Auch die unscharfe Systemsuche (Fallback) fand keine Kandidaten.');
+            }
+            parts.push('Grundlage fuer "capability_check" sind zuerst deine Recherche-Ergebnisse aus dem Explore-Schritt (capability_exists/search_capabilities, siehe "VERIFIZIERTE FAKTEN"), dann die Kandidaten oben. '
                 + 'Hast du dort eine passende Capability gefunden: feature_exists bzw. related_feature = true mit der id. '
-                + 'Hast du dort gezielt geprueft und nichts gefunden: false. '
-                + 'Hast du KEINE Capability-Pruefung durchgefuehrt, setze beide auf false und schreibe in "note" ausdruecklich, dass keine gezielte Pruefung stattfand — behaupte niemals, der Index sei nicht bereitgestellt worden.');
+                + 'Hast du gezielt geprueft und nichts gefunden (oder die Systemsuche fand nichts Passendes): false. '
+                + 'Konntest du gar nicht pruefen: null (= offen) — niemals false aus Unwissenheit, und behaupte niemals, der Index sei nicht bereitgestellt worden.');
         } else if (capabilityIndex && capabilityIndex.reason) {
             parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX: NICHT VERFUEGBAR ---`);
             parts.push(`Grund: ${capabilityIndex.reason}`);

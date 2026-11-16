@@ -676,6 +676,10 @@
             } else if (readOk) {
                 rows.push(`<li class="flex items-start gap-1.5"><span>➖</span><span class="text-gray-500">Kein Architect-Verdikt vorhanden (aellterer Lauf).</span></li>`);
             }
+            if (Array.isArray(ci.probe) && ci.probe.length) {
+                const cand = ci.probe.map(p => `<code class="text-xs bg-white px-1 rounded" title="${escapeHtml(p.module || '')} / ${escapeHtml(p.status || '')}">${escapeHtml(p.id)}</code>`).join(' ');
+                rows.push(`<li class="flex items-start gap-1.5"><span>🔎</span><span><span class="font-semibold">Kandidaten (Systemsuche):</span> ${cand}</span></li>`);
+            }
             return `<div class="mt-2 rounded border border-sky-200 bg-sky-50 p-3"><p class="text-xs font-bold text-sky-900 mb-1.5">🧭 Capability-Check (Funktionskatalog)</p><ul class="space-y-1 text-xs text-gray-800">${rows.join('')}</ul></div>`;
         }
 
