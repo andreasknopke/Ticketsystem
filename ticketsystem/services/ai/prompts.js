@@ -185,6 +185,7 @@ Wenn done=true, lass tool=null und args={}. Die naechste Antwort wird der Plan.`
                 });
             } else {
                 parts.push('Kein Alias aus dem Ticket-Text trifft den Index. Das belegt NICHT, dass eine Capability fehlt — pruefe bei Bedarf gezielt mit capability_exists/search_capabilities.');
+                parts.push('PFLICHT bei Feature-Anfragen: Pruefe die im Ticket genannte Kernfunktion mindestens einmal gezielt mit search_capabilities (und ggf. capability_exists), BEVOR du "done" setzt. Dein spaeteres capability_check-Verdikt wird dem Nutzer als Checkliste gezeigt — ein "nein" ohne geprueften Index ist falsch.');
             }
         } else if (capabilityIndex && capabilityIndex.reason) {
             parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX: NICHT VERFUEGBAR ---`);
@@ -316,6 +317,17 @@ Antworte ausschliesslich als JSON:
                 const gap = match.status === 'gap' ? ' [LUECKE - nicht verfuegbar]' : '';
                 parts.push(`- ${match.id} (${match.module}, ${match.status}): ${names.join(' / ')}${gap}`);
             });
+        } else if (capabilityIndex && capabilityIndex.available) {
+            // Index erreichbar, aber kein direkter Alias-Treffer im Ticket-Text.
+            // Ohne diesen Block "sieht" der Architect den Index gar nicht und
+            // behauptet im capability_check faelschlich, er sei nicht
+            // bereitgestellt worden.
+            parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX (erreichbar, ${capabilityIndex.count} Capabilities) ---`);
+            parts.push('Der Index wurde erfolgreich gelesen. Kein Alias aus dem Ticket-Text trifft ihn direkt — das belegt NICHT, dass eine Capability fehlt.');
+            parts.push('Grundlage fuer "capability_check" sind deine Recherche-Ergebnisse aus dem Explore-Schritt (capability_exists/search_capabilities, siehe "VERIFIZIERTE FAKTEN"). '
+                + 'Hast du dort eine passende Capability gefunden: feature_exists bzw. related_feature = true mit der id. '
+                + 'Hast du dort gezielt geprueft und nichts gefunden: false. '
+                + 'Hast du KEINE Capability-Pruefung durchgefuehrt, setze beide auf false und schreibe in "note" ausdruecklich, dass keine gezielte Pruefung stattfand — behaupte niemals, der Index sei nicht bereitgestellt worden.');
         } else if (capabilityIndex && capabilityIndex.reason) {
             parts.push(`\n--- CURAFLOW-CAPABILITY-INDEX: NICHT VERFUEGBAR ---`);
             parts.push(`Grund: ${capabilityIndex.reason}`);
