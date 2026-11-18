@@ -2757,8 +2757,8 @@ async function reviewFeaturesAgainstCatalog(systemId) {
         } catch (_) {}
         reviewTickets.push({
             id: t.id,
-            title: redact(String(t.title || '')).slice(0, 200),
-            description: redact(String(t.description || '')).slice(0, 600),
+            title: redact(String(t.title || '')).redacted.slice(0, 200),
+            description: redact(String(t.description || '')).redacted.slice(0, 600),
             directMatches: directMatches.map(m => m.id)
         });
     }
