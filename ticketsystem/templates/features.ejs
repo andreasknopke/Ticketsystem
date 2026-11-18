@@ -85,11 +85,29 @@
                     jederzeit wieder in den Plan verschoben werden.
                 </p>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 flex-wrap">
+                <% if (canManageTickets && selectedSystem && /curaflow/i.test(selectedSystem.name || '')) { %>
+                <form method="post" action="/features/capability-check"
+                    onsubmit="return confirm('Katalog-Prüfung für alle Features von „<%= selectedSystem.name %>“ starten?')">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                    <input type="hidden" name="system" value="<%= selected %>">
+                    <button type="submit" class="btn-secondary text-sm" title="Prüft alle Feature-Tickets dieses Systems gegen den CuraFlow-Funktionskatalog (max. 30 pro Lauf)">🧭 Katalog-Prüfung starten</button>
+                </form>
+                <% } %>
                 <a href="/ticket/new" class="btn-primary text-sm">Neues Feature melden</a>
                 <a href="/" class="btn-secondary text-sm">Zum Dashboard</a>
             </div>
         </div>
+
+        <% if (typeof capReview !== 'undefined' && capReview) { %>
+        <div class="mb-6 rounded border p-3 text-sm <%= capReview.status === 'done' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-red-300 bg-red-50 text-red-800' %>">
+            <% if (capReview.status === 'done') { %>
+            ✅ Katalog-Prüfung abgeschlossen: <%= capReview.checked %> Ticket(s) geprüft — <%= capReview.exists %> bereits vorhanden, <%= capReview.related %> mit verwandter Funktion.
+            <% } else { %>
+            ❌ Katalog-Prüfung fehlgeschlagen: <%= capReview.reason %>
+            <% } %>
+        </div>
+        <% } %>
 
         <!-- System-Auswahl -->
         <div class="card mb-6">
@@ -232,6 +250,9 @@
                                     <% } %>
                                     <% if (capInfo.live && Array.isArray(capInfo.candidates)) { %>
                                     <span class="badge bg-indigo-100 text-indigo-800" title="Automatischer Katalog-Abgleich (Alias-Suche auf Titel/Beschreibung), kein Architect-Verdikt">🧭 Katalog-Hinweis: <%= capInfo.candidates.map(c => c.id).join(', ') %></span>
+                                    <% } %>
+                                    <% if (capInfo.manual) { %>
+                                    <span class="text-xs text-gray-400" title="Ergebnis des manuellen Katalog-Checks<%= capInfo.checked_at ? ' (' + capInfo.checked_at.slice(0, 10) + ')' : '' %>">· manueller Check</span>
                                     <% } %>
                                 </p>
                                 <% } %>

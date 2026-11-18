@@ -808,4 +808,44 @@ Regeln:
     }
 };
 
-module.exports = { TRIAGE, SECURITY, PLANNING_EXPLORE, PLANNING, INTEGRATION, CODING, CODING_EXPLORE, CODING_EDIT, CLARIFIER };
+// -----------------------------------------------------------------------------
+// FEATURE_CATALOG_REVIEW — Batch-Verdikt von der Features-Seite
+// Manuell gestartete Pruefung: Welche Feature-Vorschlaege deckt der
+// Funktionskatalog bereits ab? Ein gebuendelter Call fuer alle Tickets eines
+// Systems, Ergebnis landet in tickets.capability_check.
+// -----------------------------------------------------------------------------
+const FEATURE_CATALOG_REVIEW = {
+    system: `Du pruefst Feature-Vorschlaege gegen den autoritativen CuraFlow-Funktionskatalog.
+Der Katalog beschreibt, welche Funktionen bereits existieren:
+- "verified" = vorhanden und geprueft, "draft" = vorhanden, aber ungeprueft,
+- "gap" = bekannt als fehlend — NIEMALS als vorhanden werten.
+
+Fuer JEDES Ticket entscheidest du:
+- "feature_exists": true NUR wenn eine Capability die Anfrage vollstaendig abdeckt
+  (der Nutzer kann es bereits — er kannte die Funktion nur nicht).
+  "existing_capability" = die id dieser Capability.
+- "related_feature": true wenn eine verwandte Capability existiert, deren
+  Erweiterung die Anfrage ermoeglichen wuerde, sie aber heute nicht abdeckt.
+  "related_capability" = die id dieser Capability.
+- Unsicher oder Anfrage unklar: null statt raten.
+- Erfinde KEINE Capability-ids — nur ids verwenden, die im Katalog stehen.
+- "note": 1 Satz Begruendung (deutsch).
+
+Antworte AUSSCHLIESSLICH als JSON:
+{ "verdicts": [ { "ticket_id": "...", "feature_exists": true|false|null, "existing_capability": "id"|null, "related_feature": true|false|null, "related_capability": "id"|null, "note": "..." } ] }
+Jedes Ticket genau einmal, ticket_id unveraendert uebernehmen.`,
+    buildUser: ({ catalogLines, tickets }) => {
+        const parts = [];
+        parts.push(`--- CURAFLOW-FUNKTIONSKATALOG ---\n${catalogLines}`);
+        parts.push(`\n--- FEATURE-VORSCHLAEGE (${tickets.length}) ---`);
+        tickets.forEach((t) => {
+            parts.push(`\n### TICKET ${t.id}`);
+            parts.push(`Titel: ${t.title || '(ohne Titel)'}`);
+            if (t.description) parts.push(`Beschreibung: ${t.description}`);
+            parts.push(`Direkte Alias-Treffer: ${t.directMatches.length ? t.directMatches.join(', ') : 'keine'}`);
+        });
+        return parts.join('\n');
+    }
+};
+
+module.exports = { TRIAGE, SECURITY, PLANNING_EXPLORE, PLANNING, INTEGRATION, CODING, CODING_EXPLORE, CODING_EDIT, CLARIFIER, FEATURE_CATALOG_REVIEW };

@@ -1597,7 +1597,8 @@ function initDb() {
             { col: 'feature_decision', sql: "ALTER TABLE tickets ADD COLUMN feature_decision TEXT CHECK(feature_decision IN ('pending', 'planned', 'rejected'))" },
             { col: 'feature_decided_at', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_at DATETIME' },
             { col: 'feature_decided_by', sql: 'ALTER TABLE tickets ADD COLUMN feature_decided_by TEXT' },
-            { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' }
+            { col: 'feature_reason', sql: 'ALTER TABLE tickets ADD COLUMN feature_reason TEXT' },
+            { col: 'capability_check', sql: 'ALTER TABLE tickets ADD COLUMN capability_check TEXT' }
         ];
 
         migrations.forEach(m => {
@@ -2107,7 +2108,8 @@ function initTicketsTable() {
             feature_decided_at DATETIME,
             feature_decided_by TEXT,
             feature_reason TEXT,
-            feature_rank INTEGER
+            feature_rank INTEGER,
+            capability_check TEXT
         )
     `, (err) => {
         if (err) console.error('Fehler beim Erstellen der tickets-Tabelle:', err.message);
@@ -6071,6 +6073,16 @@ app.get('/features', requireAuth, (req, res) => {
                 // Verdikt (z. B. alt oder ohne Workflow-Lauf) gibt es einen
                 // deterministischen Live-Hinweis aus dem gecachten Katalog.
                 const capabilityInfo = {};
+                // Rueckmeldung des manuellen Katalog-Checks (Query-Parameter vom Redirect)
+                const capReview = req.query.capreview
+                    ? {
+                        status: req.query.capreview === 'done' ? 'done' : 'failed',
+                        checked: parseInt(req.query.checked, 10) || 0,
+                        exists: parseInt(req.query.exists, 10) || 0,
+                        related: parseInt(req.query.related, 10) || 0,
+                        reason: typeof req.query.reason === 'string' ? req.query.reason.slice(0, 300) : ''
+                    }
+                    : null;
                 const renderFeatures = () => {
                     res.render('features', {
                         user: req.session.user,
@@ -6083,7 +6095,8 @@ app.get('/features', requireAuth, (req, res) => {
                         groups,
                         decisionLabels: FEATURE_DECISION_LABELS,
                         totalFeatures: (featureRows || []).length,
-                        capabilityInfo
+                        capabilityInfo,
+                        capReview
                     });
                 };
 
@@ -6112,6 +6125,28 @@ app.get('/features', requireAuth, (req, res) => {
                                 related_feature: a ? (a.related_feature ?? null) : null,
                                 related_capability: a ? (a.related_capability || null) : null,
                                 note: a ? (a.note || '') : ''
+                            };
+                        } catch (_) {}
+                    });
+
+                    // Zweite Quelle: gespeichertes Verdikt des manuellen
+                    // Katalog-Checks (tickets.capability_check). Das
+                    // Workflow-Verdikt (Planning-Step) geht vor.
+                    (featureRows || []).forEach(row => {
+                        if (capabilityInfo[row.id] || !row.capability_check) return;
+                        try {
+                            const stored = JSON.parse(row.capability_check);
+                            if (!stored || typeof stored !== 'object') return;
+                            capabilityInfo[row.id] = {
+                                available: true,
+                                version: stored.catalog_version ?? null,
+                                feature_exists: stored.feature_exists ?? null,
+                                existing_capability: stored.existing_capability || null,
+                                related_feature: stored.related_feature ?? null,
+                                related_capability: stored.related_capability || null,
+                                note: stored.note || '',
+                                manual: true,
+                                checked_at: stored.checked_at || null
                             };
                         } catch (_) {}
                     });
@@ -6206,6 +6241,24 @@ app.post('/ticket/:id/feature-decision', requireAuth, (req, res) => {
             res.redirect(redirectTarget || fallback);
         });
     });
+});
+
+// Manueller Katalog-Check: prueft die Feature-Tickets des gewaehlten Systems
+// gegen den CuraFlow-Funktionskatalog und speichert das Verdikt je Ticket
+// (tickets.capability_check). Synchron: ein gebündelter AI-Call, dann Redirect.
+app.post('/features/capability-check', requireAuth, async (req, res) => {
+    if (!canManageTickets(req)) return res.status(403).send('Keine Berechtigung.');
+    const system = String(req.body.system || '');
+    const base = `/features?system=${encodeURIComponent(system)}`;
+    try {
+        const result = await workflowEngine.reviewFeaturesAgainstCatalog(system);
+        if (!result.ok) {
+            return res.redirect(`${base}&capreview=failed&reason=${encodeURIComponent(result.reason || 'unbekannter Fehler')}`);
+        }
+        res.redirect(`${base}&capreview=done&checked=${result.checked || 0}&exists=${result.exists || 0}&related=${result.related || 0}`);
+    } catch (e) {
+        res.redirect(`${base}&capreview=failed&reason=${encodeURIComponent(String(e.message || e).slice(0, 200))}`);
+    }
 });
 
 app.get('/ticket/new', requireAuth, (req, res) => {

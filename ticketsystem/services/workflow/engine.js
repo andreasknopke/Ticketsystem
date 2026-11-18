@@ -2693,4 +2693,114 @@ async function rerunStage(runId, stepId, extraInfo, actor) {
     return { status: 'rerun_started', stage: step.stage };
 }
 
-module.exports = { init, startForTicket, decideHumanStep, rerunStage, markTicketUeberprueft };
+// ---------- Feature-Katalog-Review (manuell, von der Features-Seite) ----------
+
+// Max. Tickets pro Review-Lauf — ein gebündelter AI-Call, kein Workflow pro Ticket.
+const FEATURE_REVIEW_MAX_TICKETS = 30;
+
+/**
+ * Prueft die Feature-Tickets eines Systems gegen den CuraFlow-Funktionskatalog
+ * und speichert das Verdikt je Ticket in tickets.capability_check (JSON).
+ *
+ * Manueller Trigger von der Features-Seite: deckt Tickets ohne Workflow-Lauf
+ * ab und erlaubt Auffrischung. Das Workflow-Verdikt (Planning-Step) bleibt
+ * unberuehrt — die Anzeige auf der Features-Seite laesst es vorgehen.
+ *
+ * Wirft nie; Fehler werden als { ok: false, reason } gemeldet.
+ *
+ * @returns {Promise<{ ok: boolean, reason?: string, checked?: number, exists?: number, related?: number }>}
+ */
+async function reviewFeaturesAgainstCatalog(systemId) {
+    const sysId = parseInt(systemId, 10);
+    if (!Number.isInteger(sysId)) {
+        return { ok: false, reason: 'Ungueltige System-ID.' };
+    }
+    const sys = await getRow('SELECT id, name FROM systems WHERE id = ?', [sysId]);
+    if (!sys) return { ok: false, reason: 'System nicht gefunden.' };
+    // Gleiche Regel wie im Planning-Stage: der Index beschreibt nur CuraFlow.
+    if (!isCuraFlowTarget(sys.name)) {
+        return { ok: false, reason: `Der Funktionskatalog gilt nur fuer CuraFlow — "${sys.name}" wird nicht geprueft.` };
+    }
+
+    const indexResult = await fetchCapabilityIndex();
+    if (!indexResult.catalog) {
+        return { ok: false, reason: `Funktionskatalog nicht erreichbar: ${indexResult.reason}` };
+    }
+    const catalog = indexResult.catalog;
+    const validCaps = new Map();
+    (catalog.capabilities || []).forEach(c => { if (c && typeof c.id === 'string') validCaps.set(c.id, c); });
+
+    const tickets = await getAll(
+        `SELECT id, title, description FROM tickets
+         WHERE type = 'feature' AND system_id = ?
+         ORDER BY CASE COALESCE(feature_decision,'pending') WHEN 'pending' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, created_at DESC
+         LIMIT ?`, [sysId, FEATURE_REVIEW_MAX_TICKETS]);
+    if (!tickets.length) return { ok: true, checked: 0, exists: 0, related: 0 };
+
+    const staff = await pickStaff('triage', 'ai').catch(() => null) || await pickStaff('clarifier', 'ai').catch(() => null);
+    if (!staff) return { ok: false, reason: 'Kein AI-Mitarbeiter (Rolle triage/clarifier) verfuegbar.' };
+
+    // Katalog als kompakte Liste inkl. summary — das Review-Urteil braucht
+    // mehr Kontext als die reine Namensliste des Soll-Workflows.
+    const catalogLines = (catalog.capabilities || []).map((c) => {
+        const names = [...new Set([c.label].concat(Array.isArray(c.aliases) ? c.aliases : []).filter(Boolean))];
+        const gap = c.status === 'gap' ? ' [LUECKE]' : '';
+        return `- ${c.id} (${c.module || '?'}, ${c.status || '?'}): ${names.join(' / ') || c.id}${gap}${c.summary ? ` — ${c.summary}` : ''}`;
+    }).join('\n');
+
+    const reviewTickets = [];
+    for (const t of tickets) {
+        const text = `${t.title || ''}\n${t.description || ''}`;
+        let directMatches = [];
+        try {
+            directMatches = await searchCapabilities(text, { catalog, phraseOnly: true, limit: 3 });
+        } catch (_) {}
+        reviewTickets.push({
+            id: t.id,
+            title: redact(String(t.title || '')).slice(0, 200),
+            description: redact(String(t.description || '')).slice(0, 600),
+            directMatches: directMatches.map(m => m.id)
+        });
+    }
+
+    const r = await callAIWithStaff(staff, {
+        systemPrompt: prompts.FEATURE_CATALOG_REVIEW.system,
+        userPrompt: prompts.FEATURE_CATALOG_REVIEW.buildUser({ catalogLines, tickets: reviewTickets })
+    });
+    const verdicts = Array.isArray(r.parsed?.verdicts) ? r.parsed.verdicts : null;
+    if (!verdicts) {
+        return { ok: false, reason: 'AI-Antwort nicht parsebar (kein verdicts-Array).' };
+    }
+
+    const requested = new Set(tickets.map(t => t.id));
+    let checked = 0, exists = 0, related = 0;
+    for (const v of verdicts) {
+        if (!v || typeof v !== 'object' || !requested.has(v.ticket_id)) continue;
+        // Nur echte Katalog-ids akzeptieren; "gap" zaehlt nicht als vorhanden.
+        const capOf = (id) => {
+            const c = (typeof id === 'string' && validCaps.has(id)) ? validCaps.get(id) : null;
+            return (c && c.status !== 'gap') ? c.id : null;
+        };
+        const asBool = (x) => (x === true ? true : (x === false ? false : null));
+        const existing = capOf(v.existing_capability);
+        const relatedCap = capOf(v.related_capability);
+        const payload = {
+            source: 'manual_review',
+            checked_at: new Date().toISOString(),
+            catalog_version: catalog.catalogVersion ?? null,
+            feature_exists: existing ? (asBool(v.feature_exists) ?? true) : (asBool(v.feature_exists) === true ? null : asBool(v.feature_exists)),
+            existing_capability: existing,
+            related_feature: relatedCap ? (asBool(v.related_feature) ?? true) : (asBool(v.related_feature) === true ? null : asBool(v.related_feature)),
+            related_capability: relatedCap,
+            note: typeof v.note === 'string' ? v.note.trim().slice(0, 400) : ''
+        };
+        if (payload.feature_exists === true) exists += 1;
+        if (payload.related_feature === true) related += 1;
+        await run('UPDATE tickets SET capability_check = ? WHERE id = ?', [JSON.stringify(payload), v.ticket_id]);
+        checked += 1;
+    }
+    wfInfo(`Feature-Katalog-Review | system="${sys.name}" tickets=${tickets.length} checked=${checked} exists=${exists} related=${related}`);
+    return { ok: true, checked, exists, related };
+}
+
+module.exports = { init, startForTicket, decideHumanStep, rerunStage, markTicketUeberprueft, reviewFeaturesAgainstCatalog };
