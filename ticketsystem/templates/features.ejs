@@ -218,6 +218,23 @@
                                     <% if (t.assigned_name) { %> &middot; zugewiesen an <%= t.assigned_name %><% } %>
                                     <% if (t.feature_decided_by && section.key !== 'pending') { %> &middot; entschieden von <%= t.feature_decided_by %><% } %>
                                 </p>
+                                <% const capInfo = (typeof capabilityInfo !== 'undefined' && capabilityInfo) ? capabilityInfo[String(t.id)] : null; %>
+                                <% if (capInfo) { %>
+                                <p class="mt-1 flex flex-wrap items-center gap-1.5">
+                                    <% if (capInfo.feature_exists === true) { %>
+                                    <span class="badge bg-green-100 text-green-800"<% if (capInfo.note) { %> title="<%= capInfo.note %>"<% } %>>✅ Existiert bereits<%= capInfo.existing_capability ? ': ' + capInfo.existing_capability : '' %></span>
+                                    <span class="text-xs text-gray-400">im CuraFlow-Assistenten danach fragen — ggf. ist nichts zu bauen</span>
+                                    <% } else if (capInfo.feature_exists === false && capInfo.related_feature !== true) { %>
+                                    <span class="badge bg-gray-100 text-gray-600" title="Der Funktionskatalog kennt keine passende Funktion">🆕 Keine Abdeckung im Katalog</span>
+                                    <% } %>
+                                    <% if (capInfo.related_feature === true) { %>
+                                    <span class="badge bg-sky-100 text-sky-800" title="Eine verwandte Funktion existiert — Erweiterung statt Neubau prüfen">🔎 Verwandte Funktion<%= capInfo.related_capability ? ': ' + capInfo.related_capability : '' %></span>
+                                    <% } %>
+                                    <% if (capInfo.live && Array.isArray(capInfo.candidates)) { %>
+                                    <span class="badge bg-indigo-100 text-indigo-800" title="Automatischer Katalog-Abgleich (Alias-Suche auf Titel/Beschreibung), kein Architect-Verdikt">🧭 Katalog-Hinweis: <%= capInfo.candidates.map(c => c.id).join(', ') %></span>
+                                    <% } %>
+                                </p>
+                                <% } %>
                                 <% if (t.feature_reason && section.key === 'rejected') { %>
                                 <p class="mt-1 text-xs text-gray-600"><strong>Begründung:</strong> <%= t.feature_reason %></p>
                                 <% } %>

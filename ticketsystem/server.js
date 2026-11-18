@@ -46,7 +46,7 @@ const dossierExport = require('./services/workflow/dossierExport');
 const atlasSchema = require('./services/atlas/schema');
 const registerAtlasRoutes = require('./services/atlas/routes');
 const flowSummary = require('./services/atlas/flowSummary');
-const { PROJECTION_SOURCES, sourceLabel: catalogSourceLabel } = require('./services/atlas/catalog');
+const { PROJECTION_SOURCES, sourceLabel: catalogSourceLabel, fetchCapabilityIndex, searchCapabilities } = require('./services/atlas/catalog');
 const {
     EXTERNAL_DISPATCH_PROMPT_BRANCH_TOKEN,
     EXTERNAL_DISPATCH_PROMPT_TEMPLATE,
@@ -6065,17 +6065,82 @@ app.get('/features', requireAuth, (req, res) => {
                     ? { id: 'none', name: 'Ohne System' }
                     : systemList.find(s => String(s.id) === selected) || null;
 
-                res.render('features', {
-                    user: req.session.user,
-                    role: req.session.role || 'user',
-                    canManageTickets: canManageTickets(req),
-                    systems: systemList,
-                    counts,
-                    selected,
-                    selectedSystem,
-                    groups,
-                    decisionLabels: FEATURE_DECISION_LABELS,
-                    totalFeatures: (featureRows || []).length
+                // Capability-Info je Ticket fuer die Review-Entscheidung:
+                // Primaerquelle ist das gespeicherte Architect-Verdikt aus dem
+                // neuesten Planning-Step (output_payload). Fuer Tickets ohne
+                // Verdikt (z. B. alt oder ohne Workflow-Lauf) gibt es einen
+                // deterministischen Live-Hinweis aus dem gecachten Katalog.
+                const capabilityInfo = {};
+                const renderFeatures = () => {
+                    res.render('features', {
+                        user: req.session.user,
+                        role: req.session.role || 'user',
+                        canManageTickets: canManageTickets(req),
+                        systems: systemList,
+                        counts,
+                        selected,
+                        selectedSystem,
+                        groups,
+                        decisionLabels: FEATURE_DECISION_LABELS,
+                        totalFeatures: (featureRows || []).length,
+                        capabilityInfo
+                    });
+                };
+
+                const ids = (featureRows || []).map(r => r.id);
+                if (!ids.length) return renderFeatures();
+                const placeholders = ids.map(() => '?').join(',');
+                db.all(`SELECT r.ticket_id, s.output_payload
+                    FROM ticket_workflow_steps s
+                    JOIN ticket_workflow_runs r ON r.id = s.run_id
+                    WHERE s.stage = 'planning' AND r.ticket_id IN (${placeholders})
+                    ORDER BY s.id DESC`, ids, (capErr, capRows) => {
+                    if (capErr) capRows = [];
+                    (capRows || []).forEach(row => {
+                        // ORDER BY s.id DESC: der erste Treffer je Ticket ist der neueste.
+                        if (capabilityInfo[row.ticket_id]) return;
+                        try {
+                            const payload = JSON.parse(row.output_payload || '{}');
+                            const ci = payload && payload.architect_explore && payload.architect_explore.capability_index;
+                            if (!ci || typeof ci !== 'object') return;
+                            const a = ci.assessment || null;
+                            capabilityInfo[row.ticket_id] = {
+                                available: ci.available === true,
+                                version: ci.version ?? null,
+                                feature_exists: a ? (a.feature_exists ?? null) : null,
+                                existing_capability: a ? (a.existing_capability || null) : null,
+                                related_feature: a ? (a.related_feature ?? null) : null,
+                                related_capability: a ? (a.related_capability || null) : null,
+                                note: a ? (a.note || '') : ''
+                            };
+                        } catch (_) {}
+                    });
+
+                    // Live-Fallback nur bei CuraFlow-Zielsystem: der Index
+                    // beschreibt CuraFlow, fuer andere Systeme waere ein
+                    // Alias-Treffer irrefuehrend (gleiche Regel wie im
+                    // Planning-Stage der Workflow-Engine).
+                    const isCuraFlow = /curaflow/i.test(String(selectedSystem && selectedSystem.name || ''));
+                    const missing = (featureRows || []).filter(r => !capabilityInfo[r.id]);
+                    if (!isCuraFlow || !missing.length) return renderFeatures();
+                    fetchCapabilityIndex().then(async ({ catalog }) => {
+                        if (catalog) {
+                            for (const row of missing) {
+                                try {
+                                    const text = `${row.title || ''}\n${row.description || ''}`;
+                                    const hits = await searchCapabilities(text, { catalog, phraseOnly: true, limit: 3 });
+                                    if (hits.length) {
+                                        capabilityInfo[row.id] = {
+                                            available: true,
+                                            live: true,
+                                            candidates: hits.map(h => ({ id: h.id, label: h.label, status: h.status }))
+                                        };
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+                        renderFeatures();
+                    }).catch(() => renderFeatures());
                 });
             });
         });
